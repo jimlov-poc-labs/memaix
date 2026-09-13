@@ -22,6 +22,25 @@ still resolves `_mailbox_cfg`/SMTP config directly in tools/email.py.
 
 from __future__ import annotations
 
+from typing import Iterable, Protocol, cast
+
+
+class _MailSource(Protocol):
+    """The subset of the `_imap` duck type (base.py MailBackend + the
+    `.folder.set` proxy tools/email.py calls) that this aggregator fans
+    out over. Every registered mail adapter (imap_user, the shared IMAP
+    connector, mail_microsoft) already satisfies it."""
+
+    @property
+    def folder(self) -> "_FolderSetter": ...
+    def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None) -> Iterable: ...
+    def append(self, msg_bytes: bytes, flags: str, *, folder: str) -> None: ...
+    def logout(self) -> None: ...
+
+
+class _FolderSetter(Protocol):
+    def set(self, name: str) -> None: ...
+
 
 class _MultiMailFolderProxy:
     def __init__(self, backend: "MultiMailBackend") -> None:
@@ -54,7 +73,13 @@ class MultiMailBackend:
     def __init__(self, sources: list[tuple[str, object]]) -> None:
         if not sources:
             raise ValueError("MultiMailBackend requires at least one source")
-        self._sources = sources
+        # get_all() types adapters as `object` (it can't know the capability
+        # at return time); every adapter registered under the "mail"
+        # capability satisfies _MailSource by construction. Narrow once here
+        # so the fan-out below is checked against the real duck type.
+        self._sources: list[tuple[str, _MailSource]] = [
+            (label, cast(_MailSource, adapter)) for label, adapter in sources
+        ]
         self._folder = "INBOX"
 
     @property
