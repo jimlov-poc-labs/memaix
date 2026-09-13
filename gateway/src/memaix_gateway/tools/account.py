@@ -28,6 +28,11 @@ _pending_states: dict[str, dict] = {}
 
 PROVIDERS = {"google", "microsoft"}
 
+# Providers linked via a non-OAuth credential form (no authorization-code
+# redirect) rather than the OAuth state/callback flow above. IMAP has no
+# OAuth flow at all — the user supplies host/user/password directly.
+NON_OAUTH_PROVIDERS = {"imap"}
+
 
 class _PendingStateSQLite:
     """SQLite-backed pending-state store shared across processes."""
@@ -115,9 +120,25 @@ def _purge_expired(now: int) -> None:
 
 
 def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict:
-    """Generate an OAuth link URL. Returns {link_url, expires_in, provider}."""
-    if provider not in PROVIDERS:
+    """Generate a link URL for the given provider.
+
+    For OAuth providers (PROVIDERS) this is an authorization-code state URL
+    consumed by /link/{provider}'s callback. IMAP has no OAuth flow — it
+    links via a credential form instead (web/api/accounts.py's
+    api_accounts_link_imap), so this returns a link_url to that form page
+    with no server-side state token (the form POSTs host/user/password
+    directly, nothing to correlate a callback with).
+
+    Returns {link_url, expires_in, provider}. expires_in is 600 for OAuth
+    providers (matches the state token's TTL); 0 for non-OAuth providers
+    (the form page itself has no expiry).
+    """
+    if provider not in PROVIDERS and provider not in NON_OAUTH_PROVIDERS:
         raise ValueError(f"unknown provider: {provider!r}")
+
+    if provider in NON_OAUTH_PROVIDERS:
+        link_url = f"{public_url.rstrip('/')}/app/settings#accounts"
+        return {"link_url": link_url, "expires_in": 0, "provider": provider}
 
     import secrets
     import time
@@ -133,6 +154,39 @@ def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict
     return {"link_url": link_url, "expires_in": 600, "provider": provider}
 
 
+def account_link_imap(
+    user_id: str,
+    account_email: str,
+    host: str,
+    user: str,
+    password: str,
+    store: TokenStore,
+    port: int | None = None,
+) -> dict:
+    """Store a per-user IMAP mailbox credential (non-OAuth link path).
+
+    Called only from web/api/accounts.py's api_accounts_link_imap — never
+    exposed as an MCP tool, and the password never appears as an MCP-tool
+    argument, log line, or return value (AGENTS.md §2/§3). Returns
+    {ok, provider, account} — deliberately NOT the stored token_data, so a
+    caller can't reflect the password back out through this function's
+    return value either.
+
+    account_email is the token-store key distinguishing this mailbox from
+    any other 'imap'-provider account the same user links later (multiple
+    per-user IMAP mailboxes per memaix-src's multi-account data model).
+    """
+    if not account_email or not host or not user or not password:
+        raise ValueError("account_email, host, user and password are all required")
+
+    token_data: dict = {"host": host, "user": user, "password": password}
+    if port is not None:
+        token_data["port"] = int(port)
+
+    store.store(user_id, "imap", account_email, token_data)
+    return {"ok": True, "provider": "imap", "account": account_email}
+
+
 def account_list(acl: Acl, user_id: str, store: TokenStore) -> list[dict]:
     """List linked accounts for the calling user."""
     return store.list_accounts(user_id)
@@ -146,7 +200,7 @@ def account_unlink(
     store: TokenStore,
 ) -> dict:
     """Unlink (delete) an account. Returns {ok: True}."""
-    if provider not in PROVIDERS:
+    if provider not in PROVIDERS and provider not in NON_OAUTH_PROVIDERS:
         raise ValueError(f"unknown provider: {provider!r}")
     deleted = store.delete(user_id, provider, account)
     if not deleted:

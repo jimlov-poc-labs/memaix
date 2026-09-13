@@ -427,6 +427,7 @@ web_routes = [
     # Accounts + calendar mode (FEATURE-WEB-UI-MVP.md §4.5)
     Route("/app/api/accounts", _api_accounts.api_accounts_list, methods=["GET"]),
     Route("/app/api/accounts/link/{provider}", _api_accounts.api_accounts_link, methods=["GET"]),
+    Route("/app/api/accounts/link-imap", _api_accounts.api_accounts_link_imap, methods=["POST"]),
     Route("/app/api/accounts/{provider}", _api_accounts.api_accounts_unlink, methods=["DELETE"]),
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_get, methods=["GET"]),
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_set, methods=["POST"]),
