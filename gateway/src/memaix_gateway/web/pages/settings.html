@@ -8,6 +8,15 @@
       <button class="btn btn-primary" id="link-google" data-i18n="web_settings_link_google">Link Google account</button>
       <button class="btn btn-primary" id="link-microsoft" data-i18n="web_settings_link_microsoft">Link Microsoft account</button>
     </div>
+    <form id="imap-link-form" class="settings-form">
+      <h3 data-i18n="web_settings_link_imap">Link IMAP mailbox</h3>
+      <input type="email" id="imap-account-email" placeholder="you@example.com" autocomplete="email" required>
+      <input type="text" id="imap-host" placeholder="imap.example.com" autocomplete="off" required>
+      <input type="text" id="imap-user" placeholder="IMAP username" autocomplete="off" required>
+      <input type="password" id="imap-password" placeholder="IMAP password" autocomplete="new-password" required>
+      <input type="number" id="imap-port" placeholder="993" min="1" max="65535">
+      <button class="btn btn-primary" type="submit" data-i18n="web_settings_link_imap_submit">Link mailbox</button>
+    </form>
   </div>
   <div class="card" id="brief">
     <h2 data-i18n="web_brief_title">Daily brief</h2>

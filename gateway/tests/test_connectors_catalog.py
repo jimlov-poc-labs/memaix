@@ -232,6 +232,41 @@ def test_default_registry_is_a_lazy_singleton():
     assert first is second
 
 
+def test_catalog_registers_imap_user_for_mail(registry, monkeypatch):
+    """Per-user IMAP (type='imap_user', provider='imap') coexists with the
+    shared type='imap' spec — get_all's per_user sweep can pick it up even
+    though acl.yaml's mailbox resource still says type='imap' (shared)."""
+    sentinel = object()
+    import memaix_gateway.connectors.adapters.mail_imap_user as t_imap_user
+
+    monkeypatch.setattr(t_imap_user, "build_mailbox", lambda token: sentinel)
+
+    acl_no_mail = Acl(
+        users={"alice": {"grants": {"acme": "owner"}}},
+        projects={"acme": {"vault": "/srv/vaults/acme"}},
+    )
+
+    class _ImapUserStore:
+        def list_accounts(self, user):
+            return [{"provider": "imap", "account": "alice@personal.example.com"}]
+
+        def load_one(self, user, provider, account):
+            return {"host": "imap.personal.example.com", "user": "alice", "password": "pw"}
+
+    result = registry.get_all(acl_no_mail, _ImapUserStore(), "acme", "mail", "alice")
+    assert any(adapter is sentinel for _, adapter in result)
+
+
+def test_shared_imap_spec_and_imap_user_spec_are_distinct_types(registry):
+    """The two mail/imap* specs must not collide in the registry's (capability, type) key."""
+    imap_spec = registry.get_spec("mail", "imap")
+    imap_user_spec = registry.get_spec("mail", "imap_user")
+    assert imap_spec is not None and imap_user_spec is not None
+    assert imap_spec.auth == "shared"
+    assert imap_user_spec.auth == "per_user"
+    assert imap_user_spec.provider == "imap"
+
+
 def test_catalog_registers_google_calendar_spec(registry, monkeypatch):
     """Google per_user spec is registered — get_all sweep can pick it up."""
     sentinel = object()

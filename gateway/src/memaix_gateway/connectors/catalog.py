@@ -37,6 +37,20 @@ calendar are typically different CalDAV collections; likewise `deck` and
 `notes` both default to type 'nextcloud' but are separate resource keys
 (a project can link one, the other, both, or neither).
 
+`mail`/`imap_user` wraps `connectors/adapters/mail_imap_user.py`'s
+`build_mailbox`, `auth="per_user"`, `provider="imap"`: a user can link their
+own personal IMAP mailbox (or several — `TokenStore.store` is unique on
+`(memaix_user, provider, account_email)`, so multiple `imap`-provider
+accounts per user are just multiple rows) via the non-OAuth web form
+(`web/api/accounts.py`'s `api_accounts_link_imap`) instead of a project's
+static `mailbox` resource. Distinct `type` from the existing shared
+`type="imap"` spec so the two coexist: a project's `mailbox` resource can
+still be `type: imap` (shared, unchanged), while `get_all()`'s per_user
+sweep independently discovers each user's own linked `imap`-provider
+accounts under `type="imap_user"` — see registry.get_all's per-user sweep,
+which iterates registered specs by `type`, not by resource `type` key, so
+both can be live for the same "mail" capability at once without collision.
+
 `chat` has no adapter to wrap yet — it gets a registered spec once a real
 backend exists (Nextcloud Talk).
 """
@@ -86,6 +100,12 @@ def _microsoft_mail_factory(acl, project, user, resource_cfg, token):
     return GraphMailAdapter(token["access_token"])
 
 
+def _imap_user_factory(acl, project, user, resource_cfg, token):
+    from .adapters.mail_imap_user import build_mailbox
+
+    return build_mailbox(token)
+
+
 def _carddav_factory(acl, project, user, resource_cfg, token):
     from .. import config
     from .adapters.contacts_carddav import CardDavContactsAdapter
@@ -130,6 +150,9 @@ def register_defaults(registry: ConnectorRegistry) -> None:
     registry.register(
         ConnectorSpec(type="imap", capability="mail", auth="shared", factory=_imap_factory),
         ConnectorSpec(type="microsoft", capability="mail", auth="per_user", factory=_microsoft_mail_factory),
+        ConnectorSpec(
+            type="imap_user", capability="mail", auth="per_user", provider="imap", factory=_imap_user_factory,
+        ),
         ConnectorSpec(type="caldav", capability="calendar", auth="shared", factory=_caldav_factory),
         ConnectorSpec(type="public_ics", capability="calendar", auth="shared", factory=_public_ics_factory),
         ConnectorSpec(type="google", capability="calendar", auth="per_user", factory=_google_calendar_factory),

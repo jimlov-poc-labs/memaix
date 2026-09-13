@@ -13,6 +13,7 @@ from memaix_gateway.backends.token_store import TokenStore
 from memaix_gateway.tools.account import (
     _pending_states,
     account_link,
+    account_link_imap,
     account_list,
     account_unlink,
     validate_state,
@@ -164,3 +165,89 @@ def test_account_unlink_deletes(acl, store):
 def test_account_unlink_missing_raises(acl, store):
     with pytest.raises(FileNotFoundError):
         account_unlink(acl, "alice", "google", "ghost@gmail.com", store)
+
+
+# ---------------------------------------------------------------------------
+# IMAP (non-OAuth per-user link path)
+# ---------------------------------------------------------------------------
+
+
+def test_account_link_imap_returns_settings_page_url_not_oauth_state(acl):
+    """IMAP has no OAuth flow — account_link(provider='imap') must return a
+    link to the web form, not a /link/{provider}?state=... OAuth URL."""
+    result = account_link(acl, "alice", "imap", "http://localhost:8080")
+    assert result["provider"] == "imap"
+    assert "/link/imap" not in result["link_url"]
+    assert "state=" not in result["link_url"]
+    assert "/app/settings" in result["link_url"]
+    # No OAuth state was allocated for a non-OAuth provider.
+    assert _pending_states == {}
+
+
+def test_account_link_imap_stores_encrypted_credential(store):
+    result = account_link_imap(
+        "alice", "alice@personal.example.com", "imap.personal.example.com",
+        "alice", "s3cret-pw", store,
+    )
+    assert result == {"ok": True, "provider": "imap", "account": "alice@personal.example.com"}
+    stored = store.load_one("alice", "imap", "alice@personal.example.com")
+    assert stored == {"host": "imap.personal.example.com", "user": "alice", "password": "s3cret-pw"}
+
+
+def test_account_link_imap_stores_optional_port(store):
+    account_link_imap(
+        "alice", "alice@personal.example.com", "imap.personal.example.com",
+        "alice", "pw", store, port=1993,
+    )
+    stored = store.load_one("alice", "imap", "alice@personal.example.com")
+    assert stored["port"] == 1993
+
+
+def test_account_link_imap_missing_field_raises(store):
+    with pytest.raises(ValueError):
+        account_link_imap("alice", "", "imap.example.com", "alice", "pw", store)
+    with pytest.raises(ValueError):
+        account_link_imap("alice", "a@x.com", "", "alice", "pw", store)
+    with pytest.raises(ValueError):
+        account_link_imap("alice", "a@x.com", "imap.example.com", "", "pw", store)
+    with pytest.raises(ValueError):
+        account_link_imap("alice", "a@x.com", "imap.example.com", "alice", "", store)
+
+
+def test_account_link_imap_return_value_never_contains_password(store):
+    result = account_link_imap(
+        "alice", "alice@personal.example.com", "imap.personal.example.com",
+        "alice", "s3cret-pw", store,
+    )
+    assert "s3cret-pw" not in str(result)
+    assert "password" not in result
+
+
+def test_account_list_never_leaks_imap_password(store):
+    account_link_imap(
+        "alice", "alice@personal.example.com", "imap.personal.example.com",
+        "alice", "s3cret-pw", store,
+    )
+    acl = Acl(users={"alice": {"grants": {}}}, projects={})
+    accounts = account_list(acl, "alice", store)
+    assert len(accounts) == 1
+    assert accounts[0]["provider"] == "imap"
+    assert accounts[0]["account"] == "alice@personal.example.com"
+    assert "s3cret-pw" not in str(accounts)
+    assert "password" not in accounts[0]
+
+
+def test_account_unlink_allows_imap_provider(store):
+    account_link_imap(
+        "alice", "alice@personal.example.com", "imap.personal.example.com",
+        "alice", "pw", store,
+    )
+    acl = Acl(users={"alice": {"grants": {}}}, projects={})
+    result = account_unlink(acl, "alice", "imap", "alice@personal.example.com", store)
+    assert result == {"ok": True}
+    assert account_list(acl, "alice", store) == []
+
+
+def test_account_link_still_rejects_unknown_provider(acl):
+    with pytest.raises(ValueError, match="unknown provider"):
+        account_link(acl, "alice", "yahoo", "http://localhost:8080")

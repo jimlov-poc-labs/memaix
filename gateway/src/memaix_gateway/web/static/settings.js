@@ -62,6 +62,25 @@
   document.getElementById('link-google')?.addEventListener('click', () => linkFlow('google'));
   document.getElementById('link-microsoft')?.addEventListener('click', () => linkFlow('microsoft'));
 
+  // --- IMAP mailbox linking (non-OAuth credential form) ------------------
+  document.getElementById('imap-link-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      account_email: document.getElementById('imap-account-email').value,
+      host: document.getElementById('imap-host').value,
+      user: document.getElementById('imap-user').value,
+      password: document.getElementById('imap-password').value,
+    };
+    const portVal = document.getElementById('imap-port').value;
+    if (portVal) body.port = Number(portVal);
+    try {
+      await api('POST', '/app/api/accounts/link-imap', body);
+      toast(t('web_saved'), 'success');
+      e.target.reset();
+      renderAccounts();
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
   // --- Calendar mode -----------------------------------------------------
   const select = document.getElementById('calendar-mode-select');
   const icalInput = document.getElementById('calendar-ical-url');

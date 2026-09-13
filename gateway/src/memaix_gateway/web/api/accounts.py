@@ -43,9 +43,13 @@ def _public_url() -> str:
 async def api_accounts_list(request: Request) -> JSONResponse:
     """GET /app/api/accounts → [{provider, account, status, scopes, readonly?, project?}]
 
-    OAuth accounts come from the token store. IMAP/mailbox accounts are read
-    from the ACL's project configs and returned as readonly entries so the UI
-    can display them without offering an unlink action.
+    account_list(...) (token store) returns everything the user has linked
+    via account_link/account_link_imap, OAuth or not — this now includes
+    per-user IMAP mailboxes (provider='imap', unlinkable like any other
+    entry). Project-shared IMAP mailboxes (acl.yaml's static `mailbox`
+    resource) are a *different* thing — a project config, not a per-user
+    link — so they're read separately below and returned as readonly
+    entries the UI can display without offering an unlink action.
     """
     user = _require_user(request)
     if not user:
@@ -94,6 +98,41 @@ async def api_accounts_unlink(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except FileNotFoundError:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(result)
+
+
+async def api_accounts_link_imap(request: Request) -> JSONResponse:
+    """POST /app/api/accounts/link-imap {account_email, host, user, password, port?}
+    → {ok, provider, account}
+
+    Cookie-authed, non-OAuth link path for a per-user IMAP mailbox
+    (FEATURE-CONNECTOR-FRAMEWORK.md — IMAP as per_user, imap_user connector
+    type). The password is read from the request body here and handed
+    straight to tools/account.account_link_imap for encrypted storage — it
+    is never logged (no log line in this handler touches `body`) and never
+    echoed back: the JSON response only ever contains {ok, provider,
+    account}, matching what account_link_imap itself returns.
+    """
+    user = _require_user(request)
+    if not user:
+        return _json_401()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+
+    account_email = body.get("account_email", "")
+    host = body.get("host", "")
+    imap_user = body.get("user", "")
+    password = body.get("password", "")
+    port = body.get("port")
+
+    try:
+        result = t_acc.account_link_imap(
+            user, account_email, host, imap_user, password, _token_store(), port=port,
+        )
+    except (ValueError, TypeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse(result)
 
 

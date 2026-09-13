@@ -237,6 +237,60 @@ uppdaterar inget själv (samma ansvarsuppdelning som `_resolve_calendar_dav`'s
 Google-uppdatering). **Test:** `test_mail_microsoft_adapter.py` (mockad HTTP mot adaptern
 isolerat) + `test_mail_microsoft_server.py` (token-uppdatering + registret end-to-end).
 
+### Steg 6b — IMAP per-user + multi-account mail
+
+✅ **IMAP som per-user-connector (parallellt med den delade).** Fram till nu var
+`type="imap"` alltid `auth="shared"` — ett projekts mailbox-resurs, en
+credential via `config.secret`. Nu kan en enskild användare *dessutom* länka
+sin egen IMAP-brevlåda, precis som Microsoft-kontot i Steg 6, fast utan
+OAuth. Ny adapter `connectors/adapters/mail_imap_user.py` (`build_mailbox`)
+bygger en riktig `imap_tools.MailBox` från ett token-store-objekt
+(`{host, user, password, port?}`) istället för från `acl.yaml`. Registrerad i
+`catalog.py` som en *egen* type, `ConnectorSpec(type="imap_user",
+capability="mail", auth="per_user", provider="imap")` — parallell med, inte
+en ersättning för, den delade `type="imap"`-specen. De två har olika
+`(capability, type)`-nycklar i registret och räknas därför aldrig som samma
+källa i `get_all()`.
+
+**Länkning utan OAuth.** IMAP har ingen auktoriseringsserver att skicka
+användaren till, så `account_link(provider="imap")` returnerar inte en
+`/link/imap?state=...`-URL utan en länk till `/app/settings#accounts`, där
+ett formulär (`web/pages/settings.html` + `web/static/settings.js`) postar
+`{account_email, host, user, password, port?}` till den nya routen `POST
+/app/api/accounts/link-imap` (`web/api/accounts.py:api_accounts_link_imap`
+→ `tools/account.py:account_link_imap`). Lösenordet är aldrig ett
+MCP-tool-argument, loggas aldrig, och returneras aldrig — varken i
+länksvaret, i felsvar, eller i `account_list`s output (token-storen krypterar
+det vid vila; se `test_accounts_imap_web.py` och `test_account.py` för
+uttryckliga negativa tester på det här).
+
+**Flera mailkällor samtidigt.** `server.py`'s `_mail_backend` gick från
+`registry.get(..., "mail", user)` till `registry.get_all(..., "mail", user)`
+— med en enda källa (dagens vanliga fall: en delad IMAP eller ett länkat
+Microsoft-konto) degenererar den till `sources[0][1]` direkt, noll
+indirektion, byte-identiskt med innan (`test_email_server.py`/
+`test_mail_microsoft_server.py` oförändrade och gröna). Med 2+ källor (t.ex.
+projektets delade IMAP + en användares egen länkade IMAP, eller flera
+länkade konton) fångar `connectors/adapters/mail_multi.py`s
+`MultiMailBackend` upp dem: `fetch()` frågar alla källor och slår ihop
+resultatet, varje meddelandes `uid` prefixas med en källetikett
+(`"{label}|{uid}"`, `|` valt som separator eftersom etiketten själv redan
+innehåller `:`) så att `email_read` kan dirigera en `UID {id}`-läsning
+tillbaka till rätt källa. `append` (utkast) går alltid till den första
+källan — samma en-brevlåda-semantik som innan, bara med ett explicit "vilken"
+nu när det finns fler att välja på. `email_send`/SMTP är oberört och
+avsiktligt utanför den här leveransen.
+
+**Isolering bevisad, inte bara påstådd.** `test_mail_multi_account_server.py`
+kör hela vägen genom den riktiga katalog-wiringen (inte en handbyggd fejk som
+`test_email_server.py`): en användare utan länkat IMAP-konto ser bara
+projektets delade brevlåda, aldrig en annan användares länkade konto
+(`test_user_without_linked_imap_account_sees_only_shared_mailbox`,
+`test_bobs_linked_account_never_appears_for_alice`), och ett separat test
+(`test_token_store_queries_are_scoped_to_the_calling_user`) bevisar direkt
+att `TokenStore.list_accounts(user)` filtrerar på `memaix_user` snarare än
+att bara lita på verktygslagrets output.
+
 ### Steg 7 — Config + docs
 Bekräfta att `acl.example.yaml`-resursformatet (BACKENDS.md §Config) räcker; lägg
 ev. `auth: per_user`-flagga per resurs. Registrera doket i `docs/INDEX.md` (gjort);
