@@ -2112,20 +2112,45 @@ def notes_sync(project: str) -> dict:
 
 
 def _mail_backend(project: str, user: str):
-    """Resolve the project's mail connector (FEATURE-CONNECTOR-FRAMEWORK.md
-    Byggordning step 4/6) — same imap adapter _make_mailbox always built for
-    the shared-IMAP case, or the per-user Microsoft Graph adapter if the
-    user has a linked microsoft account and the project's mail resource
-    selects it (see ConnectorRegistry.get's per_user auth branch).
+    """Resolve the mail connector(s) for this project/user
+    (FEATURE-CONNECTOR-FRAMEWORK.md — IMAP per-user, multiple mail sources
+    per user).
+
+    Uses registry.get_all() (not get()) so a user with more than one linked
+    mail source (a project's shared IMAP mailbox AND/OR their own linked
+    per-user IMAP mailbox(es)) sees all of them merged — see
+    _multi_mail_backend below. With exactly one source (today's
+    overwhelmingly common case: one shared IMAP mailbox, or one linked
+    Microsoft account) this degenerates to returning that single adapter
+    directly, so tools/email.py's behavior is byte-identical to before
+    get_all() existed here — proven by test_email_server.py and
+    test_mail_microsoft_server.py staying green unmodified.
 
     _ensure_fresh_microsoft_mail_token runs first: the registry's per_user
     branch just loads whatever token is stored, it doesn't refresh an
     expiring one — refreshing (and re-storing) has to happen before load,
     same division of labor as _resolve_calendar_dav's Google refresh."""
-    from .connectors.registry import default_registry
+    from .connectors.registry import ConnectorAuthRequired, default_registry
 
     _ensure_fresh_microsoft_mail_token(user)
-    return default_registry().get(_get_acl(), _get_token_store(), project, "mail", user)
+    acl = _get_acl()
+    token_store = _get_token_store()
+    registry = default_registry()
+
+    sources = registry.get_all(acl, token_store, project, "mail", user)
+    if not sources:
+        # get_all() never raises for "nothing configured/linked" (registry.py's
+        # documented contract) — but email_list/read/search callers expect the
+        # same ConnectorAuthRequired/ValueError get() always raised in that
+        # case, so re-derive it via get() for an identical error message.
+        registry.get(acl, token_store, project, "mail", user)
+        raise ConnectorAuthRequired("mail", "unknown")  # pragma: no cover - get() above always raises first
+    if len(sources) == 1:
+        return sources[0][1]
+
+    from .connectors.adapters.mail_multi import MultiMailBackend
+
+    return MultiMailBackend(sources)
 
 
 def _with_mail_backend(fn):
