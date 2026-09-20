@@ -3413,7 +3413,7 @@ def _decode_id_token_claims(id_token: str) -> dict:
     """
     import jwt
     try:
-        return jwt.decode(  # NOSONAR -- token from provider's OAuth endpoint (server-side TLS), not client-supplied; only used as stable account identifier, not for auth
+        return jwt.decode(  # NOSONAR -- provider token, not client-supplied; see docstring
             id_token,
             options={"verify_signature": False, "verify_aud": False, "verify_exp": False},
         )
