@@ -72,6 +72,36 @@ class ConnectorRegistry:
         for spec in specs:
             self._specs[(spec.capability, spec.type)] = spec
 
+    def capabilities(self) -> list[str]:
+        """Every capability any registered spec serves, sorted.
+
+        Exposed for TokenStore.backfill_scopes_once, which has to grant
+        pre-existing accounts a wildcard per capability and must not
+        hard-code the list — a capability added to the catalog later would
+        otherwise be missed by the one-shot migration and silently start
+        out denied.
+        """
+        return sorted({spec.capability for spec in self._specs.values()})
+
+    @staticmethod
+    def _scoped_accounts(
+        token_store, user: str, provider: str, capability: str, project: str
+    ) -> list[dict]:
+        """This user's linked accounts for `provider` that `project` may use.
+
+        The single project-scope gate. Every mail and calendar tool resolves
+        its sources through get()/get_all(), so filtering here covers the
+        whole surface without touching a single tool. Shared acl.yaml
+        resources deliberately bypass it — those belong to the project, not
+        to the user, and were never the user's to scope.
+        """
+        return [
+            a
+            for a in token_store.list_accounts(user)
+            if a["provider"] == provider
+            and token_store.is_allowed(user, provider, a["account"], capability, project)
+        ]
+
     def get(self, acl, token_store, project: str, capability: str, user: str):
         """Resolve `acl.resource(project, capability)`'s `type` to a spec, resolve
         credentials per its `auth` mode, and build the adapter via its factory.
@@ -92,8 +122,8 @@ class ConnectorRegistry:
         token = None
         if spec.auth == "per_user":
             provider = spec.provider or spec.type
-            accounts = token_store.list_accounts(user)
-            match = next((a for a in accounts if a["provider"] == provider), None)
+            accounts = self._scoped_accounts(token_store, user, provider, capability, project)
+            match = next(iter(accounts), None)
             if match is None:
                 raise ConnectorAuthRequired(capability, spec.type)
             token = token_store.load_one(user, provider, match["account"])
@@ -126,6 +156,11 @@ class ConnectorRegistry:
            source configs (each shaped like a resource_cfg), for e.g. a
            second CalDAV calendar alongside a per-user Google chain.
 
+        Per-user accounts from either origin are filtered through
+        _scoped_accounts: linking an account no longer makes it visible
+        everywhere, only in the projects it's been scoped to for this
+        capability.
+
         Never raises ConnectorAuthRequired or ValueError for missing/unlinked
         sources — those just contribute zero adapters. An empty result means
         "nothing configured/linked yet", which callers (calendar_cache.py)
@@ -145,10 +180,10 @@ class ConnectorRegistry:
             if base_spec is not None:
                 if base_spec.auth == "per_user":
                     provider = base_spec.provider or base_spec.type
-                    accounts = token_store.list_accounts(user)
+                    accounts = self._scoped_accounts(
+                        token_store, user, provider, capability, project
+                    )
                     for account in accounts:
-                        if account["provider"] != provider:
-                            continue
                         token = token_store.load_one(user, provider, account["account"])
                         if token is None:
                             continue
@@ -166,8 +201,10 @@ class ConnectorRegistry:
                 token = None
                 if spec.auth == "per_user":
                     provider = spec.provider or spec.type
-                    accounts = token_store.list_accounts(user)
-                    match = next((a for a in accounts if a["provider"] == provider), None)
+                    accounts = self._scoped_accounts(
+                        token_store, user, provider, capability, project
+                    )
+                    match = next(iter(accounts), None)
                     if match is None:
                         continue
                     token = token_store.load_one(user, provider, match["account"])
@@ -188,9 +225,9 @@ class ConnectorRegistry:
                 continue
             handled_types.add(type_)
             provider = spec.provider or spec.type
-            for account in token_store.list_accounts(user):
-                if account["provider"] != provider:
-                    continue
+            for account in self._scoped_accounts(
+                token_store, user, provider, capability, project
+            ):
                 token = token_store.load_one(user, provider, account["account"])
                 if token is None:
                     continue

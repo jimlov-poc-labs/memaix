@@ -139,6 +139,14 @@ Prioriterad ordning (var och en = en adapter + ev. nya verktyg, isolerat testbar
   token-store serverside (BACKENDS.md-principen); loggas aldrig.
 - **Per-user isolering** — `auth='per_user'` väljer token för den inloggade användaren;
   fel användare kan aldrig nå annans token (samma ACL som idag).
+- **Projektskopning per konto** — ett länkat konto är inte automatiskt tillgängligt i
+  varje projekt. `account_scopes` (token-store) avgör vilka projekt som får använda
+  kontot, **per kapabilitet** — mail och kalender skopas var för sig. Grinden sitter i
+  `registry.get()/get_all()`s `per_user`-grenar, så alla mail- och kalenderverktyg
+  omfattas utan att något verktyg ändras. Default är opt-in: ett nyss länkat konto syns
+  ingenstans förrän ägaren delat det (`account_scope_set`). Delade `acl.yaml`-resurser
+  berörs inte — de tillhör projektet, inte användaren. Konton som fanns före funktionen
+  fick `'*'` i en engångsmigrering (`backfill_scopes_once`, markör i `schema_meta`).
 - **Feltålighet** — adapterfel isoleras per anrop (timeout + tydligt fel), fäller inte
   gatewayen. Retry/backoff för nätverksanrop.
 - **Utgående via Utkorgen** — `chat_post`, `issue_create`, `email_send` m.fl. som är

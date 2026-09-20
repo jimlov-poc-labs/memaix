@@ -80,9 +80,25 @@ class _FakeMailbox:
         pass
 
 
+class _AutoScopedTokenStore(TokenStore):
+    """TokenStore whose store() also shares the account with every project.
+
+    These tests are about merging mail across sources, not about access
+    control, and they predate project scoping — for them `store()` has
+    always meant "linked AND usable here". Granting '*' on link keeps that
+    meaning without threading a set_scopes call through fifteen call sites.
+    The gate itself is covered in test_account_scopes.py.
+    """
+
+    def store(self, user, provider, account, token_data):
+        super().store(user, provider, account, token_data)
+        for capability in ("mail", "calendar"):
+            self.set_scopes(user, provider, account, capability, ["*"])
+
+
 @pytest.fixture()
 def token_store(tmp_path):
-    return TokenStore.for_path(tmp_path / "tokens.db", Fernet.generate_key())
+    return _AutoScopedTokenStore.for_path(tmp_path / "tokens.db", Fernet.generate_key())
 
 
 @pytest.fixture()

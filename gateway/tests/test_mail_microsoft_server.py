@@ -25,9 +25,23 @@ from memaix_gateway.connectors.registry import ConnectorRegistry, ConnectorSpec
 from memaix_gateway.connectors.adapters.mail_microsoft import GraphMailAdapter
 
 
+class _AutoScopedTokenStore(TokenStore):
+    """TokenStore whose store() also shares the account with every project.
+
+    This suite is about Graph routing, not access control; granting '*' on
+    link preserves its pre-scoping meaning of "linked AND usable here".
+    The gate itself is covered in test_account_scopes.py.
+    """
+
+    def store(self, user, provider, account, token_data):
+        super().store(user, provider, account, token_data)
+        for capability in ("mail", "calendar"):
+            self.set_scopes(user, provider, account, capability, ["*"])
+
+
 @pytest.fixture()
 def token_store(tmp_path):
-    return TokenStore.for_path(tmp_path / "tokens.db", Fernet.generate_key())
+    return _AutoScopedTokenStore.for_path(tmp_path / "tokens.db", Fernet.generate_key())
 
 
 @pytest.fixture()

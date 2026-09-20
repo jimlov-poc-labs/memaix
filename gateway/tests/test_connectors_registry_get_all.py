@@ -10,15 +10,25 @@ from memaix_gateway.connectors.registry import ConnectorRegistry, ConnectorSpec
 
 
 class _FakeTokenStore:
-    def __init__(self, accounts=None, tokens=None):
+    def __init__(self, accounts=None, tokens=None, scopes=None):
         self._accounts = accounts or {}
         self._tokens = tokens or {}
+        # scopes=None means default-allow, so the tests that predate project
+        # scoping keep asserting resolution behaviour only. Pass an explicit
+        # {(provider, account, capability): [projects]} map to exercise the gate.
+        self._scopes = scopes
 
     def list_accounts(self, user: str) -> list[dict]:
         return self._accounts.get(user, [])
 
     def load_one(self, user: str, provider: str, account: str):
         return self._tokens.get((user, provider, account))
+
+    def is_allowed(self, user, provider, account, capability, project) -> bool:
+        if self._scopes is None:
+            return True
+        granted = self._scopes.get((provider, account, capability), [])
+        return project in granted or "*" in granted
 
 
 def _acl(calendar_cfg):

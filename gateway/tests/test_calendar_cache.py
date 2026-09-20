@@ -29,6 +29,9 @@ class _FakeTokenStore:
     def load_one(self, user: str, provider: str, account: str):
         return None
 
+    def is_allowed(self, user, provider, account, capability, project):
+        return True
+
 
 class _FakeBackend:
     def __init__(self, events=None, raises=None):

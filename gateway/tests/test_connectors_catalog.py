@@ -18,6 +18,9 @@ class _FakeTokenStore:
     def load_one(self, user, provider, account):
         return None
 
+    def is_allowed(self, user, provider, account, capability, project):
+        return True
+
 
 @pytest.fixture()
 def acl():
@@ -253,6 +256,9 @@ def test_catalog_registers_imap_user_for_mail(registry, monkeypatch):
         def load_one(self, user, provider, account):
             return {"host": "imap.personal.example.com", "user": "alice", "password": "pw"}
 
+        def is_allowed(self, user, provider, account, capability, project):
+            return True
+
     result = registry.get_all(acl_no_mail, _ImapUserStore(), "acme", "mail", "alice")
     assert any(adapter is sentinel for _, adapter in result)
 
@@ -286,6 +292,9 @@ def test_catalog_registers_google_calendar_spec(registry, monkeypatch):
         def load_one(self, user, provider, account):
             return {"access_token": "tok"}
 
+        def is_allowed(self, user, provider, account, capability, project):
+            return True
+
     result = registry.get_all(acl_no_cal, _GoogleStore(), "acme", "calendar", "alice")
     assert any(adapter is sentinel for _, adapter in result)
 
@@ -308,6 +317,9 @@ def test_catalog_registers_ical_secret_calendar_spec(registry, monkeypatch):
 
         def load_one(self, user, provider, account):
             return {"ical_url": "https://cal.example/secret.ics"}
+
+        def is_allowed(self, user, provider, account, capability, project):
+            return True
 
     result = registry.get_all(acl_no_cal, _ICalStore(), "acme", "calendar", "alice")
     assert any(adapter is sentinel for _, adapter in result)

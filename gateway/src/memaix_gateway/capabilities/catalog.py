@@ -18,6 +18,10 @@ from .registry import Capability, register
 INTERNAL_TOOLS: frozenset[str] = frozenset(
     {
         "whoami", "onboarding_complete", "account_link", "account_list", "account_unlink",
+        # account_scope_* share that classification: the settings page is their
+        # discovery surface, not the capability list. Revisit if they ever need
+        # to be suggested on their own (would need i18n title/summary keys).
+        "account_scope_set", "account_scope_list",
         # Discoverability's own meta-surface (docs/FEATURE-DISCOVERABILITY.md §9) —
         # these describe/surface capabilities, they aren't a "job to be done" themselves.
         "capabilities", "next_suggestion",

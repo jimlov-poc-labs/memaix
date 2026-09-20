@@ -188,8 +188,90 @@ def account_link_imap(
 
 
 def account_list(acl: Acl, user_id: str, store: TokenStore) -> list[dict]:
-    """List linked accounts for the calling user."""
-    return store.list_accounts(user_id)
+    """List linked accounts for the calling user.
+
+    Each account carries a `scopes_by_capability` map ({capability:
+    [project, ...]}, '*' meaning every project) so the settings UI can draw
+    the account x capability x project matrix from this one call. Absent or
+    empty means the account is linked but not yet usable by any project —
+    the opt-in default for anything linked after this feature shipped.
+
+    Note the name collision with the existing `scopes` key, which is the
+    OAuth scope string from the provider. Different axis entirely: `scopes`
+    is what Google let us ask for, `scopes_by_capability` is what Jimmy let
+    a project see.
+    """
+    accounts = store.list_accounts(user_id)
+    by_account: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for entry in store.list_scopes(user_id):
+        key = (entry["provider"], entry["account"])
+        by_account.setdefault(key, {})[entry["capability"]] = entry["projects"]
+    for account in accounts:
+        account["scopes_by_capability"] = by_account.get(
+            (account["provider"], account["account"]), {}
+        )
+    return accounts
+
+
+def account_scope_set(
+    acl: Acl,
+    user_id: str,
+    provider: str,
+    account: str,
+    capability: str,
+    projects: list[str],
+    store: TokenStore,
+) -> dict:
+    """Set which projects may use a linked account for one capability.
+
+    Replaces the grant set for that capability — projects=[] revokes it,
+    projects=['*'] grants every project the user can reach. Other
+    capabilities on the same account are untouched, so mail and calendar
+    are scoped independently.
+
+    Each named project goes through acl.enforce, so you cannot grant an
+    account to a project you have no access to yourself — that would
+    otherwise be a quiet way to stage a source for someone else. '*' is not
+    enforced per-project: it means "every project I can see", and
+    visibility is re-evaluated by the registry on each call, so a grant
+    made today doesn't outlive the access it was made under.
+    """
+    if provider not in PROVIDERS and provider not in NON_OAUTH_PROVIDERS:
+        raise ValueError(f"unknown provider: {provider!r}")
+    if not capability:
+        raise ValueError("capability is required")
+
+    linked = store.list_accounts(user_id)
+    if not any(a["provider"] == provider and a["account"] == account for a in linked):
+        raise FileNotFoundError(f"no linked account: {provider}/{account}")
+
+    for project in projects:
+        if project != "*":
+            acl.enforce(user_id, project, "reader")
+
+    stored = store.set_scopes(user_id, provider, account, capability, projects)
+    return {
+        "ok": True,
+        "provider": provider,
+        "account": account,
+        "capability": capability,
+        "projects": stored,
+    }
+
+
+def account_scope_list(
+    acl: Acl,
+    user_id: str,
+    store: TokenStore,
+    provider: str | None = None,
+    account: str | None = None,
+) -> list[dict]:
+    """List project grants for the caller's linked accounts.
+
+    Returns [{provider, account, capability, projects}]. Accounts with no
+    grants at all simply don't appear — use account_list to see those.
+    """
+    return store.list_scopes(user_id, provider, account)
 
 
 def account_unlink(

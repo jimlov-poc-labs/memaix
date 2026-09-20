@@ -152,6 +152,9 @@ class _FakeTokenStore:
             if u == user
         ]
 
+    def list_scopes(self, user, provider=None, account=None):
+        return []
+
     def store(self, user, provider, account, data):
         self.records[(user, provider, account)] = data
 
