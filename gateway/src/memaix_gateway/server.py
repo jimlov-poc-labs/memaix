@@ -2622,6 +2622,33 @@ def calendar_update(project: str, id: str, idempotency_key: str | None = None, *
         return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": "Kör calendar_setup för att välja åtkomstläge"}
 
 
+def _stamp_expiry(token_data: dict) -> dict:
+    """Convert the provider's relative `expires_in` into an absolute
+    `expires_at`, in place, before the token is stored.
+
+    OAuth responses date themselves relatively ("valid for 3599 seconds"),
+    which stops being true the moment it's written to disk. Every freshness
+    check wants an absolute instant, and without one the fallback
+    `created_at(0) + expires_in` evaluates to an epoch timestamp in 1970 —
+    so a token stored this way is read as expired on EVERY request, forever.
+
+    That was the live behaviour: each Gmail call burned a refresh round
+    trip, and the moment a refresh_token was revoked the account went from
+    "needs re-linking eventually" to "hard 401 on every call" with no
+    usable access token left in between.
+
+    Only stamped when `expires_in` is actually numeric — a provider that
+    omits it leaves the existing (unknown) handling alone rather than
+    getting a fabricated deadline.
+    """
+    import time
+
+    expires_in = token_data.get("expires_in")
+    if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool):
+        token_data["expires_at"] = time.time() + expires_in
+    return token_data
+
+
 def _refresh_google_token(cfg: dict, store, user: str, account: str, token_data: dict) -> str | None:
     """Use the stored refresh_token to mint a new access_token. Updates store on success."""
     import requests as req_lib
@@ -2646,7 +2673,7 @@ def _refresh_google_token(cfg: dict, store, user: str, account: str, token_data:
         new_data = resp.json()
         # Google doesn't re-issue refresh_token on refresh — preserve the original
         new_data.setdefault("refresh_token", refresh_token)
-        store.store(user, "google", account, new_data)
+        store.store(user, "google", account, _stamp_expiry(new_data))
         return new_data.get("access_token")
     except Exception:
         return None
@@ -2677,7 +2704,7 @@ def _refresh_microsoft_token(cfg: dict, store, user: str, account: str, token_da
         new_data = resp.json()
         # Microsoft may not re-issue refresh_token on every refresh — preserve the original
         new_data.setdefault("refresh_token", refresh_token)
-        store.store(user, "microsoft", account, new_data)
+        store.store(user, "microsoft", account, _stamp_expiry(new_data))
         return new_data.get("access_token")
     except Exception:
         return None
@@ -3060,7 +3087,7 @@ def build_http_app():
         account_email = token_data.get("email", "") or _get_account_email(provider, token_data)
 
         store = _get_token_store()
-        store.store(user_id, provider, account_email, token_data)
+        store.store(user_id, provider, account_email, _stamp_expiry(token_data))
 
         # HTML-escape values that ultimately derive from an IdP claim
         # (account_email) or the provider string before embedding them in the
