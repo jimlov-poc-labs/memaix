@@ -178,7 +178,7 @@ class EmbeddingStore:
                 "GROUP BY project",
                 projects,
             ).fetchall()
-        counts = {p: 0 for p in projects}
+        counts = dict.fromkeys(projects, 0)
         for r in rows:
             counts[r["project"]] = r["n"]
         return counts

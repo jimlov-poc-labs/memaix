@@ -25,7 +25,7 @@ class CyclicTaskGraphError(ValueError):
 
 def _topological_order(task_ids: list[int], deps: list[dict]) -> list[int]:
     """Kahn's algorithm. Raises CyclicTaskGraphError if a cycle exists."""
-    indegree = {t: 0 for t in task_ids}
+    indegree = dict.fromkeys(task_ids, 0)
     successors: dict[int, list[int]] = {t: [] for t in task_ids}
     for d in deps:
         if d["predecessor_id"] not in indegree or d["successor_id"] not in indegree:

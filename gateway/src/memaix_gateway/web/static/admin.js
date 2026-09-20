@@ -165,7 +165,7 @@
     name.placeholder = 'claude-sonnet-4-5 / gpt-… / gemini-…';
     const endpoint = field('web_admin_llm_endpoint', document.createElement('input'));
     endpoint.value = llm.endpoint || '';
-    endpoint.placeholder = 'http://192.168.x.x:11434 (lokalt nät eller molninstans)';
+    endpoint.placeholder = 'http://192.168.x.x:11434 (lokalt nät eller molninstans)'; // NOSONAR — placeholder text, not an actual HTTP connection
     const key = field('web_admin_llm_key', document.createElement('input'));
     key.type = 'password';
     key.placeholder = llm.has_key ? t('web_admin_llm_key_kept') : 'sk-…';

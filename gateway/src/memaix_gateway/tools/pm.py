@@ -166,7 +166,7 @@ def pm_status_report(
 
     items = t_backlog.backlog_list(acl, user_id, project)
     statuses = ["inbox", "triaged", "evaluated", "approved", "rejected", "in-dev", "done"]
-    counts: dict[str, int] = {s: 0 for s in statuses}
+    counts: dict[str, int] = dict.fromkeys(statuses, 0)
     for item in items:
         s = item.get("status", "inbox")
         if s in counts:
