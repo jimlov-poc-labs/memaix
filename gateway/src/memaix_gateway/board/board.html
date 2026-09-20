@@ -335,7 +335,7 @@ function mdNodes(src){
     var hm=block.match(/^(#{1,4})\s+(.+)$/);
     if(hm){frag.appendChild(el('h'+Math.min(hm[1].length,4),'',hm[2]));return;}
     if(/^---+$/.test(block)){frag.appendChild(document.createElement('hr'));return;}
-    var cm=block.match(/^```(?:[^\n]*)?\n?([\s\S]*?)```$/); // NOSONAR -- empty code blocks are valid markdown
+    var cm=block.match(/^```(?:[^\n]*)?\n?([\s\S]+?)```$/);
     if(cm){var pre=el('pre');pre.appendChild(el('code','',cm[1]));frag.appendChild(pre);return;}
     if(/^- /m.test(block)){
       var ul=el('ul');
