@@ -59,6 +59,21 @@ def _mailbox_cfg(acl: Acl, project: str) -> dict:
     return cfg
 
 
+def _inbox_address(acl: Acl, project: str) -> str:
+    """The project's own mailbox address, or "" if it has none.
+
+    Deliberately tolerant where _mailbox_cfg is strict. The acl.yaml
+    `mailbox` resource carries two unrelated things: the credentials
+    _make_mailbox needs (host/user/password_ref) and a human-readable
+    "which inbox is this?" address. A project whose only mail source is a
+    per-user linked account (Google, Microsoft) has the second concern but
+    not the first — the connector framework resolved its adapter from the
+    token store, never from acl.yaml. Raising here would make such a
+    project unable to list its own mail.
+    """
+    return (acl.resource(project, "mailbox") or {}).get("user", "")
+
+
 def _make_mailbox(acl: Acl, project: str):
     from imap_tools import MailBox
 
@@ -122,7 +137,7 @@ def email_list(
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
     mb.folder.set(folder)
     msgs = list(mb.fetch("ALL", mark_seen=False, limit=limit))
-    inbox = _mailbox_cfg(acl, project).get("user", "")
+    inbox = _inbox_address(acl, project)
     return [_msg_to_dict(m, inbox=inbox) for m in msgs]
 
 
@@ -201,13 +216,18 @@ def email_create_draft(
 ) -> dict:
     """IMAP APPEND to Drafts folder.  Returns {status, subject}."""
     acl.enforce(user_id, project, "collaborator")
-    cfg = _mailbox_cfg(acl, project)
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
 
     msg = EmailMessage()
     msg["To"] = to
     msg["Subject"] = subject
-    msg["From"] = cfg.get("user", "")
+    # Omitted, not blanked, when the source is a linked account rather than
+    # an acl.yaml mailbox: Gmail and Graph both stamp the authenticated
+    # account's own address on a draft that arrives without a From header,
+    # but an empty `From:` is a malformed header, not an absent one.
+    sender = _inbox_address(acl, project)
+    if sender:
+        msg["From"] = sender
     if cc:
         msg["Cc"] = cc
     if in_reply_to:

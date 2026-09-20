@@ -294,8 +294,8 @@ class TokenStore:
                 ).fetchone()
         return row is not None
 
-    def backfill_scopes_once(self, capabilities: list[str]) -> int:
-        """Grant every pre-existing linked account '*' for each capability.
+    def backfill_scopes_once(self, capabilities_by_provider: dict[str, list[str]]) -> int:
+        """Grant pre-existing linked accounts '*' for what they already served.
 
         Runs at most once per database, guarded by a schema_meta marker.
         Without it, deploying the scope gate would silence every already-
@@ -303,6 +303,13 @@ class TokenStore:
         only safe for accounts linked *after* the feature exists.  The marker
         is what stops a user who deliberately revoked all their scopes from
         having them handed back on the next restart.
+
+        The grant is per provider, not blanket, and that distinction matters:
+        a Google account linked for its calendar must NOT silently become a
+        mail source the day a Gmail adapter is registered.  Restoring the
+        status quo means restoring what actually worked before the gate —
+        anything new stays opt-in, which was the whole point.  Providers
+        absent from the map get nothing.
 
         Returns the number of scope rows inserted (0 if already backfilled).
         """
@@ -320,7 +327,7 @@ class TokenStore:
                 rows = [
                     (a["memaix_user"], a["provider"], a["account_email"], cap, "*", now)
                     for a in accounts
-                    for cap in capabilities
+                    for cap in capabilities_by_provider.get(a["provider"], [])
                 ]
                 conn.executemany(
                     """

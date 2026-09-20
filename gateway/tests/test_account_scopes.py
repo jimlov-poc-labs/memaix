@@ -132,32 +132,56 @@ def test_list_scopes_folds_rows_into_one_entry_per_capability(linked):
 # ------------------------------------------------------------------
 
 
-def test_backfill_grants_preexisting_accounts_everything(linked):
-    inserted = linked.backfill_scopes_once(["mail", "calendar"])
-    assert inserted == 2
-    assert linked.is_allowed("alice", "google", "a@gmail.com", "mail", "acme") is True
+_LEGACY = {"google": ["calendar"], "imap": ["mail"]}
+
+
+def test_backfill_restores_what_the_provider_already_served(linked):
+    inserted = linked.backfill_scopes_once(_LEGACY)
+    assert inserted == 1
     assert linked.is_allowed("alice", "google", "a@gmail.com", "calendar", "beta") is True
 
 
+def test_backfill_does_not_grant_a_capability_the_provider_gains_later(linked):
+    """The trap this constant exists to avoid: a Google account linked for
+    its calendar must not silently become a mailbox the day a Gmail adapter
+    is registered. New capability on an existing provider = opt-in."""
+    linked.backfill_scopes_once(_LEGACY)
+    assert linked.is_allowed("alice", "google", "a@gmail.com", "mail", "acme") is False
+
+
+def test_backfill_ignores_providers_absent_from_the_map(store):
+    store.store("alice", "carrier-pigeon", "a@example.com", {"token": "x"})
+    assert store.backfill_scopes_once(_LEGACY) == 0
+
+
 def test_backfill_runs_only_once(linked):
-    linked.backfill_scopes_once(["mail", "calendar"])
-    assert linked.backfill_scopes_once(["mail", "calendar"]) == 0
+    linked.backfill_scopes_once(_LEGACY)
+    assert linked.backfill_scopes_once(_LEGACY) == 0
 
 
 def test_backfill_does_not_resurrect_revoked_scopes(linked):
     """The marker is the whole point: a user who deliberately un-shared an
     account must not have it handed back on the next restart."""
-    linked.backfill_scopes_once(["mail", "calendar"])
-    linked.set_scopes("alice", "google", "a@gmail.com", "mail", [])
-    linked.backfill_scopes_once(["mail", "calendar"])
-    assert linked.is_allowed("alice", "google", "a@gmail.com", "mail", "acme") is False
+    linked.backfill_scopes_once(_LEGACY)
+    linked.set_scopes("alice", "google", "a@gmail.com", "calendar", [])
+    linked.backfill_scopes_once(_LEGACY)
+    assert linked.is_allowed("alice", "google", "a@gmail.com", "calendar", "acme") is False
 
 
 def test_backfill_does_not_cover_accounts_linked_afterwards(linked):
     """Opt-in only makes sense if the migration is a one-time amnesty."""
-    linked.backfill_scopes_once(["mail", "calendar"])
+    linked.backfill_scopes_once(_LEGACY)
     linked.store("alice", "imap", "later@example.com", {"host": "h", "user": "u", "password": "p"})
     assert linked.is_allowed("alice", "imap", "later@example.com", "mail", "acme") is False
+
+
+def test_legacy_map_covers_every_preexisting_per_user_provider():
+    """Guards against a provider being forgotten in the frozen snapshot,
+    which would silently un-share working accounts on migration."""
+    from memaix_gateway.connectors.catalog import LEGACY_PER_USER_CAPABILITIES
+
+    assert set(LEGACY_PER_USER_CAPABILITIES) == {"imap", "microsoft", "google", "ical_secret"}
+    assert LEGACY_PER_USER_CAPABILITIES["google"] == ["calendar"]
 
 
 # ------------------------------------------------------------------
@@ -178,10 +202,6 @@ def _registry():
         ),
     )
     return registry
-
-
-def test_capabilities_lists_every_registered_capability():
-    assert _registry().capabilities() == ["calendar", "mail"]
 
 
 def test_get_all_hides_an_unscoped_account(linked):

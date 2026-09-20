@@ -72,17 +72,6 @@ class ConnectorRegistry:
         for spec in specs:
             self._specs[(spec.capability, spec.type)] = spec
 
-    def capabilities(self) -> list[str]:
-        """Every capability any registered spec serves, sorted.
-
-        Exposed for TokenStore.backfill_scopes_once, which has to grant
-        pre-existing accounts a wildcard per capability and must not
-        hard-code the list — a capability added to the catalog later would
-        otherwise be missed by the one-shot migration and silently start
-        out denied.
-        """
-        return sorted({spec.capability for spec in self._specs.values()})
-
     @staticmethod
     def _scoped_accounts(
         token_store, user: str, provider: str, capability: str, project: str
