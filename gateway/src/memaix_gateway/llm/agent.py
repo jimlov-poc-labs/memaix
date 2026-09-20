@@ -28,9 +28,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from ..paths import data_dir as _data_dir
 from .client import LLMClient, LLMError
 from .toolbridge import ToolBridge
-from ..paths import data_dir as _data_dir
 
 # Per-användare-lås: serialiserar check→kör→bokför så två samtidiga turer för
 # SAMMA användare inte båda kan passera taket innan någon hunnit skriva
