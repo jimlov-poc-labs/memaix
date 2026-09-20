@@ -24,6 +24,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ..paths import data_dir as _data_dir
+
 
 class RateLimiter:
     """Thread-safe sliding-window rate limiter."""
@@ -160,7 +162,7 @@ def make_rate_limiter():
     """Build the rate limiter from env (default: in-memory)."""
     backend = os.environ.get("MEMAIX_RATELIMIT_BACKEND", "memory").strip().lower()
     if backend == "sqlite":
-        db = Path(os.environ.get("MEMAIX_RATELIMIT_DB", "/tmp/memaix-ratelimit.db"))
+        db = Path(os.environ.get("MEMAIX_RATELIMIT_DB", str(_data_dir() / "memaix-ratelimit.db")))
         return SQLiteRateLimiter(db)
     return RateLimiter()
 

@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from ...outbox.policy import can_approve
+from ...paths import data_dir as _data_dir
 from .. import routes as w
 
 
@@ -33,14 +34,14 @@ def _json_401() -> JSONResponse:
 def _queue():
     from ...outbox.queue import ActionQueue
 
-    db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", "/tmp/memaix-outbox.db"))  # nosec B108 -- same default as board/routes
+    db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", str(_data_dir() / "memaix-outbox.db")))
     return ActionQueue.for_path(db_path)
 
 
 def _audit():
     from ...safety.audit import AuditLog
 
-    db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", "/tmp/memaix-audit.db"))  # nosec B108 -- same default as board/routes
+    db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", str(_data_dir() / "memaix-audit.db")))
     return AuditLog.for_path(db_path)
 
 

@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .client import LLMClient, LLMError
 from .toolbridge import ToolBridge
+from ..paths import data_dir as _data_dir
 
 # Per-användare-lås: serialiserar check→kör→bokför så två samtidiga turer för
 # SAMMA användare inte båda kan passera taket innan någon hunnit skriva
@@ -66,7 +67,7 @@ class DailyBudget:
     omstart — ett kostnadstak som nollställs av en deploy är inget tak."""
 
     def __init__(self, db_path: str | None = None):
-        path = db_path or os.environ.get("MEMAIX_CHAT_DB", "/tmp/memaix-chat.db")  # nosec B108
+        path = db_path or os.environ.get("MEMAIX_CHAT_DB", str(_data_dir() / "memaix-chat.db"))
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.execute(

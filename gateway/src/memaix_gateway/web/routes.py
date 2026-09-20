@@ -26,6 +26,7 @@ from starlette.routing import Route
 
 from ..board.routes import _board_html_with_locale, _check_cookie, _config_locale
 from ..i18n import locale_from_request
+from ..paths import data_dir as _data_dir
 
 _WEB_DIR = Path(__file__).parent
 _PAGES = _WEB_DIR / "pages"
@@ -344,7 +345,7 @@ def _pending_outbox_count(acl, user: str) -> int:
         from ..outbox.queue import ActionQueue
         from ..server import _can_approve_action
 
-        db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", "/tmp/memaix-outbox.db"))  # nosec B108 -- same default as board/routes
+        db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", str(_data_dir() / "memaix-outbox.db")))
         queue = ActionQueue.for_path(db_path)
         actions = queue.list(acl.visible_projects(user), "pending")
         return sum(1 for a in actions if _can_approve_action(acl, user, a))

@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from ..acl import AccessDenied, Acl
+from ..paths import data_dir as _data_dir
 from ..safety.audit import AuditLog
 from ..safety.rate_limit import rate_limiter
 from . import store as s
@@ -133,19 +134,19 @@ def _user_projects(user: str, acl: Acl) -> list[str]:
 
 
 def _audit() -> AuditLog:
-    db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", "/tmp/memaix-audit.db"))
+    db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", str(_data_dir() / "memaix-audit.db")))
     return AuditLog.for_path(db_path)
 
 
 def _outbox():
     from ..outbox.queue import ActionQueue
-    db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", "/tmp/memaix-outbox.db"))
+    db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", str(_data_dir() / "memaix-outbox.db")))
     return ActionQueue.for_path(db_path)
 
 
 def _timeline():
     from ..timeline.store import ActionsStore
-    db_path = Path(os.environ.get("MEMAIX_ACTIONS_DB", "/tmp/memaix-actions.db"))
+    db_path = Path(os.environ.get("MEMAIX_ACTIONS_DB", str(_data_dir() / "memaix-actions.db")))
     return ActionsStore.for_path(db_path)
 
 

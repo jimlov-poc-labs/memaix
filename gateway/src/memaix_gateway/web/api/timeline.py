@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from ...acl import AccessDenied
+from ...paths import data_dir as _data_dir
 from .. import routes as w
 
 
@@ -25,7 +26,7 @@ def _require_user(request: Request) -> str | None:
 def _timeline_store():
     from ...timeline.store import ActionsStore
 
-    db_path = Path(os.environ.get("MEMAIX_ACTIONS_DB", "/tmp/memaix-actions.db"))  # nosec B108 -- same default as board/routes
+    db_path = Path(os.environ.get("MEMAIX_ACTIONS_DB", str(_data_dir() / "memaix-actions.db")))
     return ActionsStore.for_path(db_path)
 
 

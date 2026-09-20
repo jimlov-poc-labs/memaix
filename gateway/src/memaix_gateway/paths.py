@@ -11,8 +11,18 @@ See docs/DEVELOPMENT-PROPOSALS.md §1.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
+
+def data_dir() -> Path:
+    """Return the base directory for memaix runtime data files.
+
+    Reads MEMAIX_DATA_DIR; falls back to /var/lib/memaix so databases are never
+    placed in /tmp where they would be world-readable and ephemeral.
+    """
+    return Path(os.environ.get("MEMAIX_DATA_DIR", "/var/lib/memaix"))
+
 
 # Safe id: starts alphanumeric, then alphanumerics / dot / dash / underscore.
 # Matches backlog ids ("a1b2c3d4"), sprint ids ("SPRINT-01"), report names, etc.

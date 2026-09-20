@@ -14,6 +14,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from ...paths import data_dir as _data_dir
 from .. import routes as w
 
 
@@ -44,7 +45,7 @@ def _require_admin(request: Request):
 def _audit_log():
     from ...safety.audit import AuditLog
 
-    db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", "/tmp/memaix-audit.db"))  # nosec B108 -- same default as board/routes
+    db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", str(_data_dir() / "memaix-audit.db")))
     return AuditLog.for_path(db_path)
 
 

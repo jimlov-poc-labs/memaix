@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..paths import data_dir as _data_dir
+
 TERMINAL_STATUSES = frozenset({"rejected", "executed", "failed", "expired"})
 
 
@@ -173,7 +175,7 @@ def default_queue() -> "ActionQueue":
     """
     global _default_instance
     if _default_instance is None:
-        db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", "/tmp/memaix-outbox.db"))
+        db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", str(_data_dir() / "memaix-outbox.db")))
         _default_instance = ActionQueue.for_path(db_path)
     return _default_instance
 

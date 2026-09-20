@@ -26,7 +26,9 @@ import threading
 import uuid
 from pathlib import Path
 
-_DEFAULT_DB_PATH = "/tmp/memaix-consent.db"
+from ..paths import data_dir as _data_dir
+
+_DEFAULT_DB_PATH = str(_data_dir() / "memaix-consent.db")
 RETENTION_DAYS = 365
 
 
