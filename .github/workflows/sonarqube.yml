@@ -15,6 +15,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps and run tests with coverage
+        run: |
+          pip install -e "gateway/[dev]"
+          pytest gateway/tests/ --cov=gateway/src/memaix_gateway --cov-report=xml:coverage.xml
+
       - uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
