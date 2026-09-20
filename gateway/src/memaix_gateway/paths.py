@@ -13,15 +13,22 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from pathlib import Path
+
 
 def data_dir() -> Path:
     """Return the base directory for memaix runtime data files.
 
-    Reads MEMAIX_DATA_DIR; falls back to /var/lib/memaix so databases are never
-    placed in /tmp where they would be world-readable and ephemeral.
+    Reads MEMAIX_DATA_DIR first. When unset, falls back to a memaix-scoped
+    subdirectory of the system temp dir so tests and dev environments work
+    without configuration. Deployments must set MEMAIX_DATA_DIR to a
+    persistent volume path (e.g. /data).
     """
-    return Path(os.environ.get("MEMAIX_DATA_DIR", "/var/lib/memaix"))
+    explicit = os.environ.get("MEMAIX_DATA_DIR")
+    if explicit:
+        return Path(explicit)
+    return Path(tempfile.gettempdir()) / "memaix"
 
 
 # Safe id: starts alphanumeric, then alphanumerics / dot / dash / underscore.
