@@ -147,6 +147,14 @@ def _get_token_store():
             key = key_ref.encode() if isinstance(key_ref, str) else key_ref
         db_path = Path(os.environ.get("MEMAIX_TOKEN_DB", "/tmp/memaix-tokens.db"))
         _token_store = TokenStore.for_path(db_path, key)
+        # Accounts linked before project scoping existed keep working: they
+        # get a wildcard grant for every capability, once. Anything linked
+        # afterwards starts scoped to nothing until the user says otherwise.
+        # Safe to call from every worker — the schema_meta marker makes it
+        # a no-op after the first.
+        from .connectors.registry import default_registry
+
+        _token_store.backfill_scopes_once(default_registry().capabilities())
     return _token_store
 
 
@@ -773,6 +781,32 @@ def account_unlink(provider: str, account: str) -> dict:
     user = _user()
     store = _get_token_store()
     return t_account.account_unlink(_get_acl(), user, provider, account, store)
+
+
+@mcp.tool()
+def account_scope_set(
+    provider: str, account: str, capability: str, projects: list[str]
+) -> dict:
+    """Choose which projects may use a linked account for mail or calendar.
+
+    capability is 'mail' or 'calendar' — set them separately to let a
+    project read an account's calendar without reading its mail. projects
+    replaces the current selection: ['*'] means every project you can see,
+    [] revokes the capability entirely.
+    """
+    user = _user()
+    store = _get_token_store()
+    return t_account.account_scope_set(
+        _get_acl(), user, provider, account, capability, projects, store
+    )
+
+
+@mcp.tool()
+def account_scope_list(provider: str | None = None, account: str | None = None) -> list:
+    """Show which projects each of your linked accounts is shared with."""
+    user = _user()
+    store = _get_token_store()
+    return t_account.account_scope_list(_get_acl(), user, store, provider, account)
 
 
 # ------------------------------------------------------------------

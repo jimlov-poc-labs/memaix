@@ -24,6 +24,9 @@ class _FakeTokenStore:
     def load_one(self, user: str, provider: str, account: str):
         return self._tokens.get((user, provider, account))
 
+    def is_allowed(self, user, provider, account, capability, project) -> bool:
+        return True  # project scoping is covered in test_account_scopes.py
+
 
 @pytest.fixture()
 def acl():
