@@ -282,9 +282,35 @@ body[data-collapsed="true"] .sidebar-foot { display: none; }
   border: 1px solid var(--border); border-radius: 8px;
 }
 
+/* Per-account project scoping. .todo-list li is a flex row by default; an
+   account now stacks a header above its scope grid, so it overrides to a
+   column while .account-head keeps the original row layout. */
+.todo-list li.account-item { flex-direction: column; align-items: stretch; gap: .5rem; }
+/* The head holds three things of very different elasticity: an address that
+   may be long, a short status note, and a button. Flex items default to
+   min-width:auto, so without the overrides below the address refuses to
+   shrink and squeezes the other two into multi-line slivers instead. Only
+   the address is allowed to give. */
+.account-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.account-label { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.account-head .muted { white-space: nowrap; }
+.account-head .btn { margin-left: auto; white-space: nowrap; flex: 0 0 auto; }
+.scope-grid {
+  display: flex; flex-direction: column; gap: .4rem;
+  padding: .6rem .7rem; margin-left: 1.4rem;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.scope-row { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
+.scope-capability { min-width: 6rem; font-weight: 600; }
+.scope-row label { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; }
+.scope-row input[disabled] + span { color: var(--muted); }
+.scope-unshared { border-left: 3px solid var(--warning); padding-left: .5rem; }
+
 @media (max-width: 900px) {
   .memory-layout { grid-template-columns: 1fr; }
   .drawer { width: 100%; top: var(--topbar-h); }
+  .scope-grid { margin-left: 0; }
+  .scope-capability { min-width: 100%; }
 }
 
 /* --- Outbox (Fas C) ------------------------------------------------------ */

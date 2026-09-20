@@ -9,6 +9,92 @@
 
   // --- Linked accounts --------------------------------------------------
   const list = document.getElementById('accounts-list');
+
+  // Which projects may use this account, for one capability. Rendered under
+  // the account it belongs to rather than in a separate card: the question
+  // is "who may use THIS mailbox", and splitting it out would mean listing
+  // every account twice.
+  //
+  // `projects` arrives from the server as either ['*'] (every project the
+  // user can see, re-evaluated on each use — so a project added tomorrow is
+  // included without revisiting this page) or an explicit list. An empty
+  // list is the opt-in default and is called out in words, because "no
+  // boxes ticked" reads identically to "hasn't loaded yet".
+  const renderScopes = (acc) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'scope-grid';
+    const granted = acc.scopes_by_capability ?? {};
+    const shared = (acc.capabilities ?? []).some((c) => (granted[c] ?? []).length > 0);
+
+    if (!shared) {
+      const warn = document.createElement('div');
+      warn.className = 'muted scope-unshared';
+      warn.textContent = t('web_settings_scope_none');
+      wrap.append(warn);
+    }
+
+    for (const capability of acc.capabilities ?? []) {
+      const current = granted[capability] ?? [];
+      const row = document.createElement('div');
+      row.className = 'scope-row';
+
+      const heading = document.createElement('span');
+      heading.className = 'scope-capability';
+      // t() echoes the key back when it's missing, so a capability added by
+      // a future adapter degrades to its bare name rather than to
+      // "web_settings_capability_chat" staring back at the user.
+      const capKey = `web_settings_capability_${capability}`;
+      const capLabel = t(capKey);
+      heading.textContent = capLabel === capKey ? capability : capLabel;
+      row.append(heading);
+
+      const boxes = [];
+      const save = async (projects) => {
+        try {
+          await api('POST', '/app/api/accounts/scopes', {
+            provider: acc.provider, account: acc.account, capability, projects,
+          });
+          toast(t('web_saved'), 'success');
+          renderAccounts();
+        } catch (e) { toast(e.message, 'error'); renderAccounts(); }
+      };
+
+      const all = document.createElement('label');
+      const allBox = document.createElement('input');
+      allBox.type = 'checkbox';
+      allBox.checked = current.includes('*');
+      const allText = document.createElement('span');
+      allText.textContent = t('web_settings_scope_all');
+      all.append(allBox, allText);
+      allBox.addEventListener('change', () => {
+        // '*' is stored as a wildcard, not expanded into today's project
+        // list — unticking it therefore clears everything rather than
+        // leaving a frozen snapshot behind.
+        save(allBox.checked ? ['*'] : []);
+      });
+      row.append(all);
+
+      for (const proj of me.projects ?? []) {
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = proj;
+        box.checked = current.includes('*') || current.includes(proj);
+        box.disabled = current.includes('*');
+        const text = document.createElement('span');
+        text.textContent = proj;
+        label.append(box, text);
+        box.addEventListener('change', () => {
+          save(boxes.filter((b) => b.checked).map((b) => b.value));
+        });
+        boxes.push(box);
+        row.append(label);
+      }
+      wrap.append(row);
+    }
+    return wrap;
+  };
+
   const renderAccounts = async () => {
     list.textContent = '';
     let accounts = [];
@@ -16,18 +102,22 @@
     document.getElementById('accounts-empty').hidden = accounts.length > 0;
     for (const acc of accounts) {
       const li = document.createElement('li');
+      li.className = 'account-item';
+      const head = document.createElement('div');
+      head.className = 'account-head';
       const dot = document.createElement('span');
       dot.textContent = acc.readonly ? '🔵' : (acc.status === 'active' ? '🟢' : '🟡');
       const label = document.createElement('span');
+      label.className = 'account-label';
       const providerLabel = acc.provider === 'imap' ? 'IMAP' : acc.provider;
       const projectSuffix = acc.project ? ` (${acc.project})` : '';
       label.textContent = `${providerLabel} · ${acc.account}${projectSuffix}`;
-      li.append(dot, label);
+      head.append(dot, label);
       if (acc.status === 'needs_relink') {
         const note = document.createElement('span');
         note.className = 'muted';
         note.textContent = t('web_settings_needs_relink');
-        li.append(note);
+        head.append(note);
       }
       if (!acc.readonly) {
         const unlink = document.createElement('button');
@@ -40,7 +130,13 @@
             renderAccounts();
           } catch (e) { toast(e.message, 'error'); }
         });
-        li.append(unlink);
+        head.append(unlink);
+      }
+      li.append(head);
+      // Shared acl.yaml mailboxes belong to the project, not to the user —
+      // there is nothing for the user to scope, so no grid is drawn.
+      if (!acc.readonly && (acc.capabilities ?? []).length > 0) {
+        li.append(renderScopes(acc));
       }
       list.append(li);
     }

@@ -40,6 +40,12 @@ def _public_url() -> str:
     return config.load().get("memaix", {}).get("server", {}).get("public_url", "")
 
 
+def _capabilities_for(provider: str) -> list[str]:
+    from ...connectors.registry import default_registry
+
+    return default_registry().capabilities_for_provider(provider)
+
+
 async def api_accounts_list(request: Request) -> JSONResponse:
     """GET /app/api/accounts → [{provider, account, status, scopes, readonly?, project?}]
 
@@ -56,6 +62,14 @@ async def api_accounts_list(request: Request) -> JSONResponse:
         return _json_401()
     acl = _get_acl()
     oauth = t_acc.account_list(acl, user, _token_store())
+
+    # `capabilities` is what the account COULD be shared for;
+    # `scopes_by_capability` (already on each entry) is what it IS shared
+    # for. The settings UI needs both to draw an unchecked box — an empty
+    # scope list against a non-empty capability list is precisely the
+    # "linked but shared with nothing" state opt-in is supposed to produce.
+    for entry in oauth:
+        entry["capabilities"] = _capabilities_for(entry.get("provider", ""))
 
     imap: list[dict] = []
     for proj in acl.visible_projects(user):
@@ -133,6 +147,47 @@ async def api_accounts_link_imap(request: Request) -> JSONResponse:
         )
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(result)
+
+
+async def api_accounts_scope_set(request: Request) -> JSONResponse:
+    """POST /app/api/accounts/scopes {provider, account, capability, projects}
+    → {ok, provider, account, capability, projects}
+
+    `projects` REPLACES the grant set for that one capability: [] revokes
+    it entirely, ["*"] means every project the user can currently see.
+    Other capabilities on the same account are untouched — that separation
+    is the whole point, so sharing a calendar never hands over the mailbox
+    behind the same OAuth token.
+
+    Each named project is checked against the caller's own access in
+    tools/account.account_scope_set, so this cannot be used to stage a
+    source into a project the caller can't reach themselves.
+    """
+    user = _require_user(request)
+    if not user:
+        return _json_401()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+
+    projects = body.get("projects")
+    if not isinstance(projects, list) or any(not isinstance(p, str) for p in projects):
+        return JSONResponse({"error": "projects must be a list of strings"}, status_code=400)
+
+    try:
+        result = t_acc.account_scope_set(
+            _get_acl(), user,
+            body.get("provider", ""), body.get("account", ""),
+            body.get("capability", ""), projects, _token_store(),
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except FileNotFoundError:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    except AccessDenied:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(result)
 
 

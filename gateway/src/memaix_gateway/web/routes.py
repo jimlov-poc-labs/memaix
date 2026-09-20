@@ -428,6 +428,9 @@ web_routes = [
     Route("/app/api/accounts", _api_accounts.api_accounts_list, methods=["GET"]),
     Route("/app/api/accounts/link/{provider}", _api_accounts.api_accounts_link, methods=["GET"]),
     Route("/app/api/accounts/link-imap", _api_accounts.api_accounts_link_imap, methods=["POST"]),
+    # Before the /{provider} catch-all below: "scopes" is a literal path
+    # segment, not a provider name, and would otherwise be shadowed.
+    Route("/app/api/accounts/scopes", _api_accounts.api_accounts_scope_set, methods=["POST"]),
     Route("/app/api/accounts/{provider}", _api_accounts.api_accounts_unlink, methods=["DELETE"]),
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_get, methods=["GET"]),
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_set, methods=["POST"]),

@@ -121,6 +121,30 @@ class ConnectorRegistry:
 
         return spec.factory(acl, project, user, resource_cfg, token)
 
+    def capabilities_for_provider(self, provider: str) -> list[str]:
+        """Which capabilities a linked account of `provider` can serve, as the
+        registry stands right now — the set of checkboxes the settings UI
+        offers for that account.
+
+        Deliberately derived from the LIVE registry, which is the exact
+        opposite of what catalog.LEGACY_PER_USER_CAPABILITIES must do. That
+        map answers "what could this provider do when scoping was
+        introduced?" and has to stay frozen, or registering a new adapter
+        would retroactively widen grants that were never opted into. This
+        answers "what can it do now?", where a newly registered adapter
+        SHOULD appear — as an unchecked box the owner may tick.
+
+        Only auth='per_user' specs count: shared acl.yaml resources belong to
+        the project, not to the user, and are never scoped here.
+        """
+        return sorted(
+            {
+                spec.capability
+                for spec in self._specs.values()
+                if spec.auth == "per_user" and (spec.provider or spec.type) == provider
+            }
+        )
+
     def get_spec(self, capability: str, type_: str) -> "ConnectorSpec | None":
         """Look up a registered spec directly, bypassing acl.resource(...)
         resolution — for callers (e.g. calendar_sources.py) building an
