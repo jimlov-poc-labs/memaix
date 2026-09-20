@@ -171,14 +171,14 @@ class BrowserRootRedirect:
 # ------------------------------------------------------------------
 
 
-async def app_index(request: Request) -> HTMLResponse:
+def app_index(request: Request) -> HTMLResponse:
     return HTMLResponse(
         _html_with_locale("home", _locale(request)),
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
 
-async def app_login(request: Request) -> HTMLResponse:
+def app_login(request: Request) -> HTMLResponse:
     """GET /app/login — standalone login page (no shell wrapper).
 
     Cookie-based login for the web UI; redirects to ?next= on success.
@@ -193,7 +193,7 @@ async def app_login(request: Request) -> HTMLResponse:
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
-async def app_page(request: Request) -> Response:
+def app_page(request: Request) -> Response:
     page = request.path_params["page"]
     if page not in _KNOWN_PAGES:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -249,15 +249,15 @@ _TERMS_HTML = """<!DOCTYPE html>
 </body></html>"""
 
 
-async def privacy_page(request: Request) -> HTMLResponse:
+def privacy_page(request: Request) -> HTMLResponse:
     return HTMLResponse(_PRIVACY_HTML, headers={"Cache-Control": "public, max-age=86400"})
 
 
-async def terms_page(request: Request) -> HTMLResponse:
+def terms_page(request: Request) -> HTMLResponse:
     return HTMLResponse(_TERMS_HTML, headers={"Cache-Control": "public, max-age=86400"})
 
 
-async def app_board_frame(request: Request) -> HTMLResponse:
+def app_board_frame(request: Request) -> HTMLResponse:
     """The original board UI, served for embedding in the shell's iframe.
 
     /board itself is a 301 to /app/board, so the iframe needs a non-redirecting
@@ -269,7 +269,7 @@ async def app_board_frame(request: Request) -> HTMLResponse:
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
-async def app_static(request: Request) -> Response:
+def app_static(request: Request) -> Response:
     rel = request.path_params["path"]
     target = (_STATIC / rel).resolve()
     # Path-traversal guard: the resolved target must stay inside static/.
@@ -287,7 +287,7 @@ async def app_static(request: Request) -> Response:
     return FileResponse(target, media_type=media_type, headers={"Cache-Control": cache})
 
 
-async def board_redirect(request: Request) -> Response:
+def board_redirect(request: Request) -> Response:
     """GET /board → 301 /app/board (preserves query params, keeps bookmarks)."""
     qs = request.url.query
     target = "/app/board" + (f"?{qs}" if qs else "")
@@ -299,7 +299,7 @@ async def board_redirect(request: Request) -> Response:
 # ------------------------------------------------------------------
 
 
-async def api_me(request: Request) -> JSONResponse:
+def api_me(request: Request) -> JSONResponse:
     """GET /app/api/me — user identity + roles + project status. 401 unless
     authenticated. The single source all role-aware page JS builds on."""
     user = _require_user(request)

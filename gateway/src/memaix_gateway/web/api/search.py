@@ -18,7 +18,7 @@ def _require_user(request: Request) -> str | None:
     return w._require_user(request)
 
 
-async def api_search(request: Request) -> JSONResponse:
+def api_search(request: Request) -> JSONResponse:
     """GET /app/api/search?q=…&project=…&limit=8 → {results, semantic, projects_searched}"""
     user = _require_user(request)
     if not user:

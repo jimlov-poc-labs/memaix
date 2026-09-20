@@ -2932,10 +2932,10 @@ def build_http_app():
     # Custom HTTP handlers
     # ------------------------------------------------------------------
 
-    async def health_handler(request: Request) -> JSONResponse:
+    def health_handler(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "service": "memaix"})
 
-    async def protected_resource_handler(request: Request) -> JSONResponse:
+    def protected_resource_handler(request: Request) -> JSONResponse:
         """RFC 9728 protected resource metadata.
 
         FastMCP auto-generates this from AuthSettings.resource_server_url, but
@@ -3016,7 +3016,7 @@ def build_http_app():
             logger.warning("DCR proxy error: %s", exc)
             return JSONResponse({"error": "server_error"}, status_code=500)
 
-    async def link_start(request: Request) -> "RedirectResponse | JSONResponse":
+    def link_start(request: Request) -> "RedirectResponse | JSONResponse":
         """Start OAuth flow for a provider."""
         provider = request.path_params["provider"]
         state = request.query_params.get("state", "")

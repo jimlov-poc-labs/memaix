@@ -193,7 +193,7 @@ async def board_login(request: Request) -> JSONResponse:
     return resp
 
 
-async def board_logout(request: Request) -> JSONResponse:
+def board_logout(request: Request) -> JSONResponse:
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(_COOKIE_NAME)
     return resp
@@ -221,7 +221,7 @@ def _json_403() -> JSONResponse:
 # ------------------------------------------------------------------
 
 
-async def api_projects(request: Request) -> JSONResponse:
+def api_projects(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
         return _json_401()
@@ -229,7 +229,7 @@ async def api_projects(request: Request) -> JSONResponse:
     return JSONResponse({"user": user, "projects": _user_projects(user, acl)})
 
 
-async def api_board(request: Request) -> JSONResponse:
+def api_board(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
         return _json_401()
@@ -302,7 +302,7 @@ async def api_board(request: Request) -> JSONResponse:
     })
 
 
-async def api_sprints(request: Request) -> JSONResponse:
+def api_sprints(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
         return _json_401()
@@ -320,7 +320,7 @@ async def api_sprints(request: Request) -> JSONResponse:
     return JSONResponse({"sprints": sprints, "active": active})
 
 
-async def api_item(request: Request) -> JSONResponse:
+def api_item(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
         return _json_401()
@@ -401,7 +401,7 @@ async def api_item_patch(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "item": card})
 
 
-async def api_activity(request: Request) -> JSONResponse:
+def api_activity(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
         return _json_401()
@@ -434,7 +434,7 @@ async def api_activity(request: Request) -> JSONResponse:
 # ------------------------------------------------------------------
 
 
-async def api_outbox_list(request: Request) -> JSONResponse:
+def api_outbox_list(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
         return _json_401()

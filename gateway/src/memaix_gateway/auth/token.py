@@ -41,7 +41,7 @@ class HydraTokenVerifier:
         self._audiences = audiences or None
         self._jwks_client = jwt.PyJWKClient(jwks_uri, cache_keys=True, lifespan=3600)
 
-    async def verify_token(self, token: str) -> AccessToken | None:
+    def verify_token(self, token: str) -> AccessToken | None:
         """Return an AccessToken if the JWT is valid, None on any error."""
         try:
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
