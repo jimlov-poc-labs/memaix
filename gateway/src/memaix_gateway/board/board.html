@@ -229,11 +229,11 @@ if (window.parent !== window) document.body.classList.add('embedded');
     <p id="login-subtitle"></p>
     <div class="form-group">
       <label id="login-label-user"></label>
-      <input id="login-user" type="text" placeholder="alice" autocomplete="username">
+      <input id="login-user" type="text" placeholder="alice" autocomplete="username" aria-label="Username">
     </div>
     <div class="form-group">
       <label id="login-label-pass"></label>
-      <input id="login-pass" type="password" placeholder="..." autocomplete="current-password">
+      <input id="login-pass" type="password" placeholder="..." autocomplete="current-password" aria-label="Password">
     </div>
     <button class="btn-primary" id="login-btn"></button>
     <div class="login-error" id="login-error"></div>
@@ -243,8 +243,8 @@ if (window.parent !== window) document.body.classList.add('embedded');
 <div id="board-shell" hidden>
   <header>
     <span class="hdr-logo">&#x2B21; memaix</span>
-    <select id="project-select"></select>
-    <select id="sprint-select"></select>
+    <select id="project-select" aria-label="Project"></select>
+    <select id="sprint-select" aria-label="Sprint"></select>
     <button class="mine-filter" id="mine-btn" data-i18n="board_my_tasks">Mina tasks</button>
     <button class="icon-btn" id="refresh-btn">&#x21BB;</button>
     <div class="spacer"></div>
@@ -335,7 +335,7 @@ function mdNodes(src){
     var hm=block.match(/^(#{1,4})\s+(.+)$/);
     if(hm){frag.appendChild(el('h'+Math.min(hm[1].length,4),'',hm[2]));return;}
     if(/^---+$/.test(block)){frag.appendChild(document.createElement('hr'));return;}
-    var cm=block.match(/^```(?:[^\n]*)?\n?([\s\S]*?)```$/);
+    var cm=block.match(/^```(?:[^\n]*)?\n?([\s\S]*?)```$/); // NOSONAR -- empty code blocks are valid markdown
     if(cm){var pre=el('pre');pre.appendChild(el('code','',cm[1]));frag.appendChild(pre);return;}
     if(/^- /m.test(block)){
       var ul=el('ul');

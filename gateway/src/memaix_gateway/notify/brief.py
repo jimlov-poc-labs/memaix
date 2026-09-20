@@ -45,6 +45,67 @@ def _fmt_event_time(start: str, tz_name: str) -> str:
     return dt.astimezone(_tz_or_utc(tz_name)).strftime("%H:%M")
 
 
+def _calendar_lines(acl, user: str, project: str, fn, day_start, day_end, tz_name: str) -> list[str]:
+    if not fn or not acl.resource(project, "calendar"):
+        return []
+    try:
+        return [
+            f"- [{project}] {ev.get('title', '(ingen titel)')} — {_fmt_event_time(ev.get('start', ''), tz_name)}"
+            for ev in (fn(acl, user, project, day_start, day_end) or [])
+        ]
+    except Exception:
+        return []
+
+
+def _mail_lines(acl, user: str, project: str, fn, triage_fn, max_mail: int, mail_days: int) -> list[str]:
+    if not fn or not (acl.resource(project, "mailbox") or acl.resource(project, "email")):
+        return []
+    try:
+        msgs = fn(acl, user, project, "INBOX", max_mail, days=mail_days) or []
+        if triage_fn and msgs:
+            msgs = triage_fn(msgs) or msgs
+        priority_icons = {"Hög": "🔴", "Medel": "🟡", "Låg": "⚪"}
+        lines = []
+        for m in msgs[:max_mail]:
+            icon = priority_icons.get(m.get("priority", ""), "•")
+            account_tag = f" [{m['inbox']}]" if m.get("inbox") else ""
+            line = f"- [{project}]{account_tag} {icon} {m.get('subject', '(inget ämne)')} — {m.get('from', '')}"
+            if m.get("summary"):
+                line += f"\n  {m['summary']}"
+            lines.append(line)
+        return lines
+    except Exception:
+        return []
+
+
+def _backlog_lines(acl, user: str, project: str, fn, last_run_iso: str | None) -> list[str]:
+    if not fn or not acl.resource(project, "vault"):
+        return []
+    try:
+        items = fn(acl, user, project) or []
+        changed = (
+            [i for i in items if str(i.get("updated_at", "")) > last_run_iso]
+            if last_run_iso else []
+        )
+        return [
+            f"- [{project}] {i.get('id', '?')} — {i.get('title', '')} ({i.get('status', '')})"
+            for i in changed[:10]
+        ]
+    except Exception:
+        return []
+
+
+def _raid_open_count(acl, user: str, project: str, fn) -> int:
+    if not fn or not acl.resource(project, "vault"):
+        return 0
+    try:
+        raid = fn(acl, user, project)
+        entries = raid.get("entries", []) if isinstance(raid, dict) else []
+        return sum(1 for e in entries if e.get("status") == "open")
+    except Exception:
+        return 0
+
+
 def build(
     acl, user: str, cfg: dict | None, prefs: dict, *,
     now: datetime, tools: dict | None = None, last_run_iso: str | None = None,
@@ -73,63 +134,18 @@ def build(
     pm_raid_list_fn = tools.get("pm_raid_list")
     mail_triage_fn = tools.get("mail_triage")
 
-    calendar_lines: list[str] = []
+    cal_lines: list[str] = []
     mail_lines: list[str] = []
-    backlog_lines: list[str] = []
+    bl_lines: list[str] = []
     raid_open = 0
 
     for project in projects:
-        if calendar_events_fn and acl.resource(project, "calendar"):
-            try:
-                for ev in (calendar_events_fn(acl, user, project, day_start, day_end) or []):
-                    when = _fmt_event_time(ev.get('start', ''), tz_name)
-                    calendar_lines.append(f"- [{project}] {ev.get('title', '(ingen titel)')} — {when}")
-            except Exception:
-                pass
+        cal_lines += _calendar_lines(acl, user, project, calendar_events_fn, day_start, day_end, tz_name)
+        mail_lines += _mail_lines(acl, user, project, email_list_fn, mail_triage_fn, max_mail, mail_days)
+        bl_lines += _backlog_lines(acl, user, project, backlog_list_fn, last_run_iso)
+        raid_open += _raid_open_count(acl, user, project, pm_raid_list_fn)
 
-        if email_list_fn and (acl.resource(project, "mailbox") or acl.resource(project, "email")):
-            try:
-                msgs = email_list_fn(acl, user, project, "INBOX", max_mail, days=mail_days) or []
-                if mail_triage_fn and msgs:
-                    msgs = mail_triage_fn(msgs) or msgs
-                priority_icons = {"Hög": "🔴", "Medel": "🟡", "Låg": "⚪"}
-                for m in msgs[:max_mail]:
-                    icon = priority_icons.get(m.get("priority", ""), "•")
-                    subject = m.get("subject", "(inget ämne)")
-                    sender = m.get("from", "")
-                    summary = m.get("summary", "")
-                    inbox = m.get("inbox", "")
-                    account_tag = f" [{inbox}]" if inbox else ""
-                    line = f"- [{project}]{account_tag} {icon} {subject} — {sender}"
-                    if summary:
-                        line += f"\n  {summary}"
-                    mail_lines.append(line)
-            except Exception:
-                pass
-
-        if backlog_list_fn and acl.resource(project, "vault"):
-            try:
-                items = backlog_list_fn(acl, user, project) or []
-                changed = (
-                    [i for i in items if str(i.get("updated_at", "")) > last_run_iso]
-                    if last_run_iso else []
-                )
-                for i in changed[:10]:
-                    backlog_lines.append(
-                        f"- [{project}] {i.get('id', '?')} — {i.get('title', '')} ({i.get('status', '')})"
-                    )
-            except Exception:
-                pass
-
-        if pm_raid_list_fn and acl.resource(project, "vault"):
-            try:
-                raid = pm_raid_list_fn(acl, user, project)
-                entries = raid.get("entries", []) if isinstance(raid, dict) else []
-                raid_open += sum(1 for e in entries if e.get("status") == "open")
-            except Exception:
-                pass
-
-    has_content = bool(calendar_lines or mail_lines or backlog_lines or raid_open)
+    has_content = bool(cal_lines or mail_lines or bl_lines or raid_open)
     if not has_content and not send_when_empty:
         return {"subject": "", "markdown": "", "text": "", "empty": True}
 
@@ -138,9 +154,9 @@ def build(
 
     sections = [
         f"# Din brief — {today_str}",
-        "## Kalender idag\n" + ("\n".join(calendar_lines) if calendar_lines else "_Inget planerat._"),
+        "## Kalender idag\n" + ("\n".join(cal_lines) if cal_lines else "_Inget planerat._"),
         "## Mail som väntar\n" + ("\n".join(mail_lines) if mail_lines else "_Inget nytt._"),
-        "## Backlog-ändringar\n" + ("\n".join(backlog_lines) if backlog_lines else "_Inga ändringar sedan senast._"),
+        "## Backlog-ändringar\n" + ("\n".join(bl_lines) if bl_lines else "_Inga ändringar sedan senast._"),
         f"## Öppna RAID-poster\n{raid_open}",
     ]
     markdown = "\n\n".join(sections)

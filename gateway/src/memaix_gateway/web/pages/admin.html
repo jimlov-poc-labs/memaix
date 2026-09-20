@@ -9,15 +9,15 @@
 <div id="admin-projects" class="admin-pane card" hidden></div>
 <div id="admin-audit" class="admin-pane card" hidden>
   <form id="audit-filter" class="audit-filter">
-    <input type="text" id="audit-user" placeholder="user">
-    <input type="text" id="audit-project" placeholder="project">
-    <input type="text" id="audit-tool" placeholder="tool">
-    <select id="audit-ok">
+    <input type="text" id="audit-user" placeholder="user" aria-label="Filter by user">
+    <input type="text" id="audit-project" placeholder="project" aria-label="Filter by project">
+    <input type="text" id="audit-tool" placeholder="tool" aria-label="Filter by tool">
+    <select id="audit-ok" aria-label="Filter by status">
       <option value="">OK + fel</option>
       <option value="true">OK</option>
       <option value="false">Fel</option>
     </select>
-    <input type="date" id="audit-since">
+    <input type="date" id="audit-since" aria-label="Filter from date">
     <button class="btn btn-primary" type="submit" data-i18n="web_admin_filter">Filter</button>
   </form>
   <table class="admin-table">
