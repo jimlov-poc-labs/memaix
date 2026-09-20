@@ -41,9 +41,10 @@ def _audit_action(user: str, project, action_type: str, result: dict) -> None:
         import os
         from pathlib import Path
 
+        from ..paths import data_dir as _data_dir
         from ..safety.audit import AuditLog
 
-        audit = AuditLog.for_path(Path(os.environ.get("MEMAIX_AUDIT_DB", "/tmp/memaix-audit.db")))
+        audit = AuditLog.for_path(Path(os.environ.get("MEMAIX_AUDIT_DB", str(_data_dir() / "memaix-audit.db"))))
         audit.log(user, project or "-", f"rule_action:{action_type}", bool(result.get("ok")), result.get("error", ""))
     except Exception:
         pass
@@ -72,10 +73,11 @@ def _run_notify(acl, user: str, params: dict, *, tools: dict | None) -> dict:
 
         from ..notify.channels import build_channels
         from ..notify.store import NotifyStore
+        from ..paths import data_dir as _data_dir
 
         notify_store = (tools or {}).get("_notify_store")
         if notify_store is None:
-            db_path = Path(os.environ.get("MEMAIX_NOTIFY_DB", "/tmp/memaix-notify.db"))
+            db_path = Path(os.environ.get("MEMAIX_NOTIFY_DB", str(_data_dir() / "memaix-notify.db")))
             notify_store = NotifyStore.for_path(db_path)
         prefs = notify_store.get_prefs(user) or {}
         channels = build_channels(prefs.get("channels", []), acl=acl)

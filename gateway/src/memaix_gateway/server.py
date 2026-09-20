@@ -5,7 +5,7 @@ User identity:
   HTTP mode  — Bearer JWT verified by HydraTokenVerifier, subject mapped via acl.yaml.
   stdio mode — MEMAIX_USER env var (backward-compatible).
 Rate limiting: 60 req/min per user, 120 req/min per project.
-Audit: every tool call is logged to the audit DB (MEMAIX_AUDIT_DB or /tmp/...).
+Audit: every tool call is logged to the audit DB (MEMAIX_AUDIT_DB or MEMAIX_DATA_DIR/memaix-audit.db).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from .capabilities.catalog import register_defaults as _register_default_capabil
 # beroendet). Sätts enbart av ToolBridge.call() från en verifierad
 # webbsession, per-task-isolerad, alltid återställd i finally.
 from .llm.identity import AGENT_USER as _AGENT_USER
+from .paths import data_dir as _data_dir
 from .safety.audit import AuditLog
 from .safety.rate_limit import rate_limiter as _rate_limiter
 from .tools import account as t_account
@@ -145,7 +146,7 @@ def _get_token_store():
             key: bytes = Fernet.generate_key()
         else:
             key = key_ref.encode() if isinstance(key_ref, str) else key_ref
-        db_path = Path(os.environ.get("MEMAIX_TOKEN_DB", "/tmp/memaix-tokens.db"))
+        db_path = Path(os.environ.get("MEMAIX_TOKEN_DB", str(_data_dir() / "memaix-tokens.db")))
         _token_store = TokenStore.for_path(db_path, key)
         # Accounts linked before project scoping existed keep working: each
         # gets a wildcard grant for the capabilities its provider already
@@ -162,7 +163,7 @@ def _get_token_store():
 def _get_audit() -> AuditLog:
     global _audit
     if _audit is None:
-        db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", "/tmp/memaix-audit.db"))
+        db_path = Path(os.environ.get("MEMAIX_AUDIT_DB", str(_data_dir() / "memaix-audit.db")))
         _audit = AuditLog.for_path(db_path)
     return _audit
 
@@ -171,7 +172,7 @@ def _get_outbox():
     global _outbox_queue
     if _outbox_queue is None:
         from .outbox.queue import ActionQueue
-        db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", "/tmp/memaix-outbox.db"))
+        db_path = Path(os.environ.get("MEMAIX_OUTBOX_DB", str(_data_dir() / "memaix-outbox.db")))
         _outbox_queue = ActionQueue.for_path(db_path)
     return _outbox_queue
 
@@ -180,7 +181,7 @@ def _get_timeline():
     global _timeline_store
     if _timeline_store is None:
         from .timeline.store import ActionsStore
-        db_path = Path(os.environ.get("MEMAIX_ACTIONS_DB", "/tmp/memaix-actions.db"))
+        db_path = Path(os.environ.get("MEMAIX_ACTIONS_DB", str(_data_dir() / "memaix-actions.db")))
         _timeline_store = ActionsStore.for_path(db_path)
     return _timeline_store
 
@@ -342,7 +343,7 @@ def _get_search_store():
     global _search_store
     if _search_store is None:
         from .search.store import EmbeddingStore
-        db_path = Path(os.environ.get("MEMAIX_INDEX_DB", "/tmp/memaix-index.db"))
+        db_path = Path(os.environ.get("MEMAIX_INDEX_DB", str(_data_dir() / "memaix-index.db")))
         _search_store = EmbeddingStore.for_path(db_path)
     return _search_store
 
@@ -361,7 +362,7 @@ def _get_notify():
     global _notify_store
     if _notify_store is None:
         from .notify.store import NotifyStore
-        db_path = Path(os.environ.get("MEMAIX_NOTIFY_DB", "/tmp/memaix-notify.db"))
+        db_path = Path(os.environ.get("MEMAIX_NOTIFY_DB", str(_data_dir() / "memaix-notify.db")))
         _notify_store = NotifyStore.for_path(db_path)
     return _notify_store
 
@@ -493,7 +494,7 @@ def _get_rules():
     global _rules_store
     if _rules_store is None:
         from .rules.store import RulesStore
-        db_path = Path(os.environ.get("MEMAIX_RULES_DB", "/tmp/memaix-rules.db"))
+        db_path = Path(os.environ.get("MEMAIX_RULES_DB", str(_data_dir() / "memaix-rules.db")))
         _rules_store = RulesStore.for_path(db_path)
     return _rules_store
 
@@ -502,7 +503,7 @@ def _get_pm():
     global _pm_store
     if _pm_store is None:
         from .pm.store import PMStore
-        db_path = Path(os.environ.get("MEMAIX_PM_DB", "/tmp/memaix-pm.db"))
+        db_path = Path(os.environ.get("MEMAIX_PM_DB", str(_data_dir() / "memaix-pm.db")))
         _pm_store = PMStore.for_path(db_path)
     return _pm_store
 
@@ -511,7 +512,7 @@ def _get_idempotency():
     global _idempotency_store
     if _idempotency_store is None:
         from .safety.idempotency import IdempotencyStore
-        db_path = Path(os.environ.get("MEMAIX_IDEMPOTENCY_DB", "/tmp/memaix-idempotency.db"))
+        db_path = Path(os.environ.get("MEMAIX_IDEMPOTENCY_DB", str(_data_dir() / "memaix-idempotency.db")))
         _idempotency_store = IdempotencyStore.for_path(db_path)
     return _idempotency_store
 
@@ -520,7 +521,7 @@ def _get_nudge_state():
     global _nudge_state
     if _nudge_state is None:
         from .capabilities.nudges import NudgeState
-        db_path = Path(os.environ.get("MEMAIX_NUDGE_DB", "/tmp/memaix-nudges.db"))
+        db_path = Path(os.environ.get("MEMAIX_NUDGE_DB", str(_data_dir() / "memaix-nudges.db")))
         _nudge_state = NudgeState.for_path(db_path)
     return _nudge_state
 
@@ -2128,7 +2129,7 @@ def _get_notes_link_store():
     global _notes_link_store
     if _notes_link_store is None:
         from .nextcloud.notes_store import NotesLinkStore
-        db_path = Path(os.environ.get("MEMAIX_NOTES_LINK_DB", "/tmp/memaix-notes-link.db"))
+        db_path = Path(os.environ.get("MEMAIX_NOTES_LINK_DB", str(_data_dir() / "memaix-notes-link.db")))
         _notes_link_store = NotesLinkStore.for_path(db_path)
     return _notes_link_store
 

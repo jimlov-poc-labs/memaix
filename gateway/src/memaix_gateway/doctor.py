@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from collections import namedtuple
 from pathlib import Path
 from typing import Generator
@@ -121,7 +122,7 @@ def _check_rbac_isolation() -> Check:
     try:
         acl = Acl(
             users={},
-            projects={"test_project": {"vault": "/tmp/__memaix_test__"}},
+            projects={"test_project": {"vault": str(Path(tempfile.gettempdir()) / "__memaix_test__")}},
         )
         try:
             acl.enforce("__test_ghost__", "test_project", "reader")
