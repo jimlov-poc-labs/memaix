@@ -15,15 +15,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Debug SonarQube auth
-        run: |
-          echo "Token length: ${#SONAR_TOKEN}"
-          echo "Token prefix: ${SONAR_TOKEN:0:4}"
-          RESULT=$(curl -sf -H "Authorization: Bearer ${SONAR_TOKEN}" "https://sonar.jimlov.se/api/authentication/validate" || echo "CURL_FAILED")
-          echo "Auth result: $RESULT"
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
       - uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
