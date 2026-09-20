@@ -28,3 +28,26 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonar.jimlov.se
+
+  triage:
+    name: Triage Issues
+    runs-on: ubuntu-latest
+    needs: sonarqube
+    if: github.event_name == 'push'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run triage
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          SONAR_HOST_URL: https://sonar.jimlov.se
+          PROJECT_KEY: memaix
+          PROJECT_NAME: Memaix Gateway
+          GITHUB_SHA: ${{ github.sha }}
+        run: node .github/scripts/sonar-triage.js
