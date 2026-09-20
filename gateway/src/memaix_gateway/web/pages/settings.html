@@ -10,11 +10,11 @@
     </div>
     <form id="imap-link-form" class="settings-form">
       <h3 data-i18n="web_settings_link_imap">Link IMAP mailbox</h3>
-      <input type="email" id="imap-account-email" placeholder="you@example.com" autocomplete="email" required>
-      <input type="text" id="imap-host" placeholder="imap.example.com" autocomplete="off" required>
-      <input type="text" id="imap-user" placeholder="IMAP username" autocomplete="off" required>
-      <input type="password" id="imap-password" placeholder="IMAP password" autocomplete="new-password" required>
-      <input type="number" id="imap-port" placeholder="993" min="1" max="65535">
+      <input type="email" id="imap-account-email" placeholder="you@example.com" autocomplete="email" required aria-label="Email address">
+      <input type="text" id="imap-host" placeholder="imap.example.com" autocomplete="off" required aria-label="IMAP host">
+      <input type="text" id="imap-user" placeholder="IMAP username" autocomplete="off" required aria-label="IMAP username">
+      <input type="password" id="imap-password" placeholder="IMAP password" autocomplete="new-password" required aria-label="IMAP password">
+      <input type="number" id="imap-port" placeholder="993" min="1" max="65535" aria-label="IMAP port">
       <button class="btn btn-primary" type="submit" data-i18n="web_settings_link_imap_submit">Link mailbox</button>
     </form>
   </div>
@@ -23,8 +23,8 @@
     <div class="muted" id="brief-status"></div>
     <form id="brief-form" class="settings-form">
       <label><input type="checkbox" id="brief-enabled"> <span data-i18n="web_brief_enabled">Enabled</span></label>
-      <input type="time" id="brief-time" value="07:00">
-      <input type="text" id="brief-timezone" placeholder="Europe/Stockholm">
+      <input type="time" id="brief-time" value="07:00" aria-label="Brief time">
+      <input type="text" id="brief-timezone" placeholder="Europe/Stockholm" aria-label="Timezone">
       <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
     </form>
   </div>
@@ -38,8 +38,8 @@
         <option value="free_busy" data-i18n="web_calmode_freebusy">Free/busy only</option>
         <option value="none" data-i18n="web_calmode_none">None — remove calendar link</option>
       </select>
-      <input type="url" id="calendar-ical-url" placeholder="https://calendar.google.com/calendar/ical/…" hidden>
-      <input type="text" id="calendar-calendar-id" placeholder="your@calendar.id" hidden>
+      <input type="url" id="calendar-ical-url" placeholder="https://calendar.google.com/calendar/ical/…" hidden aria-label="Calendar iCal URL">
+      <input type="text" id="calendar-calendar-id" placeholder="your@calendar.id" hidden aria-label="Calendar ID">
       <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
     </form>
   </div>

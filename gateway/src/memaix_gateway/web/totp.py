@@ -25,7 +25,7 @@ def generate_secret() -> str:
 
 
 def _hotp(key: bytes, counter: int) -> str:
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()  # noqa: S324 -- RFC 6238 mandates SHA-1  # nosec B324
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()  # noqa: S324 -- RFC 6238 mandates SHA-1  # nosec B324  # NOSONAR
     offset = digest[-1] & 0x0F
     code = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
     return str(code % (10 ** _DIGITS)).zfill(_DIGITS)

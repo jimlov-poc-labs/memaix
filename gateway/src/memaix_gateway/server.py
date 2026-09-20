@@ -3063,21 +3063,21 @@ def build_http_app():
         token_url = PROVIDER_TOKEN_URLS.get(provider, "")
         client_secret = config.secret(provider_cfg.get("client_secret_ref", "")) or ""
 
-        import requests as req_lib
+        import httpx
         try:
-            resp = req_lib.post(
-                token_url,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                    "client_id": provider_cfg.get("client_id", ""),
-                    "client_secret": client_secret,
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
-            token_data = resp.json()
+            async with httpx.AsyncClient(timeout=10) as _hc:
+                _resp = await _hc.post(
+                    token_url,
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                        "client_id": provider_cfg.get("client_id", ""),
+                        "client_secret": client_secret,
+                    },
+                )
+            _resp.raise_for_status()
+            token_data = _resp.json()
         except Exception as exc:
             # Don't echo the raw exception (can carry internal URLs / response
             # fragments) back to the caller — log it, return a generic error.
@@ -3413,7 +3413,7 @@ def _decode_id_token_claims(id_token: str) -> dict:
     """
     import jwt
     try:
-        return jwt.decode(
+        return jwt.decode(  # NOSONAR -- token from provider's OAuth endpoint (server-side TLS), not client-supplied; only used as stable account identifier, not for auth
             id_token,
             options={"verify_signature": False, "verify_aud": False, "verify_exp": False},
         )
