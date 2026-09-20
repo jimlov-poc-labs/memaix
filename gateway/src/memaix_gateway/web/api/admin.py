@@ -48,7 +48,7 @@ def _audit_log():
     return AuditLog.for_path(db_path)
 
 
-async def api_admin_users(request: Request) -> JSONResponse:
+def api_admin_users(request: Request) -> JSONResponse:
     """GET /app/api/admin/users → [{id, admin, disabled, grants}] (no secrets)"""
     ok, err = _require_admin(request)
     if err:
@@ -66,7 +66,7 @@ async def api_admin_users(request: Request) -> JSONResponse:
     return JSONResponse(users)
 
 
-async def api_admin_projects(request: Request) -> JSONResponse:
+def api_admin_projects(request: Request) -> JSONResponse:
     """GET /app/api/admin/projects → [{name, allow_send, outbox, users, vault}]"""
     ok, err = _require_admin(request)
     if err:
@@ -87,7 +87,7 @@ async def api_admin_projects(request: Request) -> JSONResponse:
     return JSONResponse(projects)
 
 
-async def api_admin_audit(request: Request) -> JSONResponse:
+def api_admin_audit(request: Request) -> JSONResponse:
     """GET /app/api/admin/audit?user=&project=&tool=&ok=&since=&offset=&limit=
     → {entries, has_more}"""
     ok, err = _require_admin(request)
@@ -118,7 +118,7 @@ async def api_admin_audit(request: Request) -> JSONResponse:
     return JSONResponse({"entries": entries, "has_more": has_more})
 
 
-async def api_admin_system(request: Request) -> JSONResponse:
+def api_admin_system(request: Request) -> JSONResponse:
     """GET /app/api/admin/system → {checks: [{name, status, message}]}"""
     ok, err = _require_admin(request)
     if err:

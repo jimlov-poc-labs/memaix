@@ -72,7 +72,7 @@ def _has_key(model: dict) -> bool:
         return False
 
 
-async def api_admin_llm_get(request: Request) -> JSONResponse:
+def api_admin_llm_get(request: Request) -> JSONResponse:
     """GET /app/api/admin/llm — aktuellt AI-val, aldrig nyckeln."""
     ok, err = _require_admin_mfa(request)
     if err:

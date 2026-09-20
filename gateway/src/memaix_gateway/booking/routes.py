@@ -1120,14 +1120,14 @@ async def booking_cancel(request: Request) -> JSONResponse:
     return _json(request, {"ok": True})
 
 
-async def booking_options(request: Request) -> Response:
+def booking_options(request: Request) -> Response:
     return Response(status_code=204, headers=_cors_headers(request))
 
 
 _WIDGET_JS = Path(__file__).parent / "static" / "booking.js"
 
 
-async def booking_widget(request: Request) -> Response:
+def booking_widget(request: Request) -> Response:
     """GET /embed/booking.js — the booking UI, as one file anybody can
     <script src> from their own page.
 

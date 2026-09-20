@@ -29,7 +29,7 @@ def _timeline_store():
     return ActionsStore.for_path(db_path)
 
 
-async def api_timeline(request: Request) -> JSONResponse:
+def api_timeline(request: Request) -> JSONResponse:
     """GET /app/api/timeline?project=X&limit=50 → [actions, newest first]"""
     user = _require_user(request)
     if not user:
@@ -46,7 +46,7 @@ async def api_timeline(request: Request) -> JSONResponse:
     return JSONResponse(_timeline_store().list(projects, limit))
 
 
-async def api_timeline_undo(request: Request) -> JSONResponse:
+def api_timeline_undo(request: Request) -> JSONResponse:
     """POST /app/api/timeline/{id}/undo → undo result; 403/404/409/422 mapped."""
     user = _require_user(request)
     if not user:

@@ -22,7 +22,7 @@ def _notify_store():
     return _get_notify()
 
 
-async def api_brief_get(request: Request) -> JSONResponse:
+def api_brief_get(request: Request) -> JSONResponse:
     """GET /app/api/brief → {configured, prefs, next_run, last_run}"""
     user = _require_user(request)
     if not user:

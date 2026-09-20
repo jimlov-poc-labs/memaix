@@ -46,7 +46,7 @@ def _capabilities_for(provider: str) -> list[str]:
     return default_registry().capabilities_for_provider(provider)
 
 
-async def api_accounts_list(request: Request) -> JSONResponse:
+def api_accounts_list(request: Request) -> JSONResponse:
     """GET /app/api/accounts → [{provider, account, status, scopes, readonly?, project?}]
 
     account_list(...) (token store) returns everything the user has linked
@@ -86,7 +86,7 @@ async def api_accounts_list(request: Request) -> JSONResponse:
     return JSONResponse(oauth + imap)
 
 
-async def api_accounts_link(request: Request) -> JSONResponse:
+def api_accounts_link(request: Request) -> JSONResponse:
     """GET /app/api/accounts/link/{provider} → {url} (opened in a new window)"""
     user = _require_user(request)
     if not user:
@@ -99,7 +99,7 @@ async def api_accounts_link(request: Request) -> JSONResponse:
     return JSONResponse({"url": result.get("link_url", "")})
 
 
-async def api_accounts_unlink(request: Request) -> JSONResponse:
+def api_accounts_unlink(request: Request) -> JSONResponse:
     """DELETE /app/api/accounts/{provider}?account=X → {ok}"""
     user = _require_user(request)
     if not user:
@@ -191,7 +191,7 @@ async def api_accounts_scope_set(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
-async def api_calendar_mode_get(request: Request) -> JSONResponse:
+def api_calendar_mode_get(request: Request) -> JSONResponse:
     """GET /app/api/settings/calendar-mode?project=X → {active_mode, details, available_modes}"""
     user = _require_user(request)
     if not user:

@@ -48,7 +48,7 @@ def _forbidden() -> JSONResponse:
     return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
-async def api_outbox_list(request: Request) -> JSONResponse:
+def api_outbox_list(request: Request) -> JSONResponse:
     """GET /app/api/outbox?project=&status=pending → [actions this user may approve]"""
     user = _require_user(request)
     if not user:
@@ -63,7 +63,7 @@ async def api_outbox_list(request: Request) -> JSONResponse:
     return JSONResponse(actions)
 
 
-async def api_outbox_get(request: Request) -> JSONResponse:
+def api_outbox_get(request: Request) -> JSONResponse:
     """GET /app/api/outbox/{id} → action | 404 | 403 (may not approve → may not read)"""
     user = _require_user(request)
     if not user:
@@ -76,7 +76,7 @@ async def api_outbox_get(request: Request) -> JSONResponse:
     return JSONResponse(action)
 
 
-async def api_outbox_approve(request: Request) -> JSONResponse:
+def api_outbox_approve(request: Request) -> JSONResponse:
     """POST /app/api/outbox/{id}/approve → execute exactly once; 409 on race."""
     user = _require_user(request)
     if not user:

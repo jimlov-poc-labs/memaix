@@ -118,7 +118,7 @@ def _rate_limited(user: str) -> bool:
 # ------------------------------------------------------------------
 
 
-async def api_mfa_status(request: Request) -> JSONResponse:
+def api_mfa_status(request: Request) -> JSONResponse:
     """GET /app/api/admin/mfa → {enrolled, verified}"""
     user = _require_user(request)
     if not user:
@@ -131,7 +131,7 @@ async def api_mfa_status(request: Request) -> JSONResponse:
     )
 
 
-async def api_mfa_setup_start(request: Request) -> JSONResponse:
+def api_mfa_setup_start(request: Request) -> JSONResponse:
     """POST /app/api/admin/mfa/setup/start → {otpauth_uri, secret}
 
     Generates a pending secret and carries it in a signed short-TTL cookie so

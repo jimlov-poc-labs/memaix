@@ -366,6 +366,107 @@ def _get_notify():
     return _notify_store
 
 
+def _extract_email_body(payload: dict, max_chars: int = 800) -> str:
+    import base64
+    parts = payload.get("parts") or [payload]
+    for part in parts:
+        if part.get("mimeType") == "text/plain":
+            data = part.get("body", {}).get("data", "")
+            if data:
+                text = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+                return text[:max_chars]
+        sub = _extract_email_body(part, max_chars) if part.get("parts") else ""
+        if sub:
+            return sub
+    return ""
+
+
+def _fetch_gmail_from_account(token_data: dict, inbox_label: str, provider_cfg: dict, days: int, limit: int) -> list[dict]:
+    import googleapiclient.discovery
+    from google.oauth2.credentials import Credentials
+
+    creds = Credentials(
+        token=token_data.get("access_token"),
+        refresh_token=token_data.get("refresh_token"),
+        token_uri="https://oauth2.googleapis.com/token",  # nosec B106
+        client_id=provider_cfg.get("client_id", ""),
+        client_secret=config.secret(provider_cfg.get("client_secret_ref", "")) or "",
+    )
+    svc = googleapiclient.discovery.build("gmail", "v1", credentials=creds, cache_discovery=False)
+    resp = svc.users().messages().list(userId="me", q=f"newer_than:{days}d in:inbox", maxResults=limit).execute()
+    result = []
+    for ref in resp.get("messages", []):
+        msg = svc.users().messages().get(userId="me", id=ref["id"], format="full").execute()
+        payload = msg.get("payload", {})
+        headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
+        result.append({
+            "subject": headers.get("Subject", "(inget ämne)"),
+            "from": headers.get("From", ""),
+            "seen": "UNREAD" not in msg.get("labelIds", []),
+            "snippet": _extract_email_body(payload) or msg.get("snippet", ""),
+            "inbox": inbox_label,
+        })
+    return result
+
+
+def _gmail_or_imap_list(acl, u, project, folder, limit, *, days=3):
+    email_res = acl.resource(project, "email")
+    if not (isinstance(email_res, dict) and email_res.get("type") == "google"):
+        return t_email.email_list(acl, u, project, folder, limit)
+    store = _get_token_store()
+    google_accounts = [a for a in store.list_accounts(u) if a["provider"] == "google"]
+    if not google_accounts:
+        return []
+    provider_cfg = config.load().get("memaix", {}).get("oauth_providers", {}).get("google", {})
+    all_msgs: list[dict] = []
+    for acc in google_accounts:
+        token_data = store.load_one(u, "google", acc["account"])
+        if not token_data:
+            continue
+        try:
+            all_msgs.extend(_fetch_gmail_from_account(token_data, acc["account"], provider_cfg, days, limit))
+        except Exception:
+            logger.warning("Gmail fetch failed for account %s", acc["account"])
+    return all_msgs
+
+
+def _mail_triage(mails: list[dict]) -> list[dict]:
+    if not mails:
+        return mails
+    try:
+        from .llm import LLMClient
+        client = LLMClient.from_config(config.load())
+        lines = [
+            (
+                f"{i}. Från: {m.get('from', '')}\n"
+                f"   Ämne: {m.get('subject', '(inget ämne)')}\n"
+                f"   Förhandsgranskning: {m.get('snippet', '')}"
+            )
+            for i, m in enumerate(mails, 1)
+        ]
+        prompt = (
+            "Utvärdera dessa e-postmeddelanden och svara med en JSON-array.\n"
+            'För varje mail: {"priority": "Hög"|"Medel"|"Låg", "summary": "1-2 meningar på svenska"}\n'
+            "\n"
+            "Prioritet Hög: säkerhetslarm, kräver omedelbar åtgärd, ekonomiskt kritiskt\n"
+            "Prioritet Medel: kräver svar eller åtgärd men inte brådskande\n"
+            "Prioritet Låg: information, reklam, nyhetsbrev, automatiska bekräftelser\n"
+            "\n"
+            f"Mail:\n{chr(10).join(lines)}\n\n"
+            "Svara ENBART med JSON-array utan markdown-kodblock, inga andra ord."
+        )
+        import json as _json
+        reply = client.complete([{"role": "user", "content": prompt}], max_tokens=1500)
+        verdicts = _json.loads((reply.get("content") or "").strip())
+        for m, v in zip(mails, verdicts):
+            if isinstance(v, dict):
+                m["priority"] = v.get("priority", "")
+                m["summary"] = v.get("summary", "")
+        return mails
+    except Exception:
+        return mails
+
+
 def _brief_tools_for_user() -> dict:
     """Concrete tool functions the BriefBuilder uses to gather content —
     built here (not in notify/brief.py) so that module stays free of any
@@ -378,111 +479,6 @@ def _brief_tools_for_user() -> dict:
         return t_cal.calendar_list(
             acl, u, project, day_start.isoformat(), day_end.isoformat(), _dav=dav
         )
-
-    def _gmail_or_imap_list(acl, u, project, folder, limit, *, days=3):
-        email_res = acl.resource(project, "email")
-        if not (isinstance(email_res, dict) and email_res.get("type") == "google"):
-            return t_email.email_list(acl, u, project, folder, limit)
-        store = _get_token_store()
-        google_accounts = [a for a in store.list_accounts(u) if a["provider"] == "google"]
-        if not google_accounts:
-            return []
-
-        import googleapiclient.discovery
-        from google.oauth2.credentials import Credentials
-
-        provider_cfg = config.load().get("memaix", {}).get("oauth_providers", {}).get("google", {})
-
-        def _extract_body(payload: dict, max_chars: int = 800) -> str:
-            import base64
-            parts = payload.get("parts") or [payload]
-            for part in parts:
-                if part.get("mimeType") == "text/plain":
-                    data = part.get("body", {}).get("data", "")
-                    if data:
-                        text = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
-                        return text[:max_chars]
-                sub = _extract_body(part, max_chars) if part.get("parts") else ""
-                if sub:
-                    return sub
-            return ""
-
-        def _fetch_from_account(token_data: dict, inbox_label: str) -> list[dict]:
-            creds = Credentials(
-                token=token_data.get("access_token"),
-                refresh_token=token_data.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",  # nosec B106
-                client_id=provider_cfg.get("client_id", ""),
-                client_secret=config.secret(provider_cfg.get("client_secret_ref", "")) or "",
-            )
-            svc = googleapiclient.discovery.build("gmail", "v1", credentials=creds, cache_discovery=False)
-            q = f"newer_than:{days}d in:inbox"
-            resp = svc.users().messages().list(userId="me", q=q, maxResults=limit).execute()
-            result = []
-            for ref in resp.get("messages", []):
-                msg = svc.users().messages().get(userId="me", id=ref["id"], format="full").execute()
-                payload = msg.get("payload", {})
-                headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
-                body = _extract_body(payload) or msg.get("snippet", "")
-                result.append({
-                    "subject": headers.get("Subject", "(inget ämne)"),
-                    "from": headers.get("From", ""),
-                    "seen": "UNREAD" not in msg.get("labelIds", []),
-                    "snippet": body,
-                    "inbox": inbox_label,
-                })
-            return result
-
-        all_msgs: list[dict] = []
-        for acc in google_accounts:
-            token_data = store.load_one(u, "google", acc["account"])
-            if not token_data:
-                continue
-            try:
-                all_msgs.extend(_fetch_from_account(token_data, acc["account"]))
-            except Exception:
-                logger.warning("Gmail fetch failed for account %s", acc["account"])
-        return all_msgs
-
-    def _mail_triage(mails: list[dict]) -> list[dict]:
-        if not mails:
-            return mails
-        try:
-            from .llm import LLMClient
-            client = LLMClient.from_config(config.load())
-            lines = []
-            for i, m in enumerate(mails, 1):
-                lines.append(
-                    f"{i}. Från: {m.get('from', '')}\n"
-                    f"   Ämne: {m.get('subject', '(inget ämne)')}\n"
-                    f"   Förhandsgranskning: {m.get('snippet', '')}"
-                )
-            mail_text = "\n".join(lines)
-            prompt = (
-                "Utvärdera dessa e-postmeddelanden och svara med en JSON-array.\n"
-                'För varje mail: {"priority": "Hög"|"Medel"|"Låg", "summary": "1-2 meningar på svenska"}\n'
-                "\n"
-                "Prioritet Hög: säkerhetslarm, kräver omedelbar åtgärd, ekonomiskt kritiskt\n"
-                "Prioritet Medel: kräver svar eller åtgärd men inte brådskande\n"
-                "Prioritet Låg: information, reklam, nyhetsbrev, automatiska bekräftelser\n"
-                "\n"
-                "Mail:\n"
-                f"{mail_text}\n"
-                "\n"
-                "Svara ENBART med JSON-array utan markdown-kodblock, inga andra ord."
-            )
-            reply = client.complete(
-                [{"role": "user", "content": prompt}], max_tokens=1500
-            )
-            import json as _json
-            verdicts = _json.loads((reply.get("content") or "").strip())
-            for m, v in zip(mails, verdicts):
-                if isinstance(v, dict):
-                    m["priority"] = v.get("priority", "")
-                    m["summary"] = v.get("summary", "")
-            return mails
-        except Exception:
-            return mails
 
     return {
         "calendar_events": calendar_events,
@@ -1120,6 +1116,71 @@ def brief_send_now() -> dict:
 
 
 
+def _bd_calendar(acl, user, proj, fn, day_start, day_end) -> list[dict]:
+    if not fn or not acl.resource(proj, "calendar"):
+        return []
+    try:
+        return [
+            {"title": ev.get("title", ""), "start": ev.get("start", ""),
+             "end": ev.get("end", ""), "project": proj}
+            for ev in (fn(acl, user, proj, day_start, day_end) or [])
+        ]
+    except Exception:
+        return []
+
+
+def _bd_mail(acl, user, proj, email_fn, triage_fn, max_mail, mail_days) -> list[dict]:
+    if not email_fn or not (acl.resource(proj, "mailbox") or acl.resource(proj, "email")):
+        return []
+    try:
+        msgs = email_fn(acl, user, proj, "INBOX", max_mail, days=mail_days) or []
+        if triage_fn and msgs:
+            msgs = triage_fn(msgs) or msgs
+        result = []
+        for m in msgs[:max_mail]:
+            entry = {
+                "subject": m.get("subject", "(inget ämne)"),
+                "from": m.get("from", ""),
+                "seen": m.get("seen", False),
+                "project": proj,
+            }
+            if m.get("priority"):
+                entry["priority"] = m["priority"]
+            if m.get("summary"):
+                entry["summary"] = m["summary"]
+            result.append(entry)
+        return result
+    except Exception:
+        return []
+
+
+def _bd_backlog(acl, user, proj, fn, last_run_iso) -> list[dict]:
+    if not fn or not acl.resource(proj, "vault"):
+        return []
+    try:
+        items = fn(acl, user, proj) or []
+        changed = [i for i in items if str(i.get("updated_at", "")) > last_run_iso]
+        return [
+            {"id": i.get("id", "?"), "title": i.get("title", ""),
+             "status": i.get("status", ""), "updated_at": i.get("updated_at", ""),
+             "project": proj}
+            for i in changed[:10]
+        ]
+    except Exception:
+        return []
+
+
+def _bd_raid_open(acl, user, proj, fn) -> int:
+    if not fn or not acl.resource(proj, "vault"):
+        return 0
+    try:
+        raid = fn(acl, user, proj)
+        entries = raid.get("entries", []) if isinstance(raid, dict) else []
+        return sum(1 for e in entries if e.get("status") == "open")
+    except Exception:
+        return 0
+
+
 @mcp.tool()
 def brief_data(project: str | None = None, days_back: int = 1) -> dict:
     """Return the brief's underlying data as structured JSON (calendar, mail,
@@ -1153,11 +1214,11 @@ def brief_data(project: str | None = None, days_back: int = 1) -> dict:
         projects = prefs.get("projects") or acl.visible_projects(user)
 
     t = _brief_tools_for_user()
-    calendar_events_fn = t.get("calendar_events")
-    email_list_fn = t.get("email_list")
-    mail_triage_fn = t.get("mail_triage")
-    backlog_list_fn = t.get("backlog_list")
-    pm_raid_list_fn = t.get("pm_raid_list")
+    calendar_fn = t.get("calendar_events")
+    email_fn = t.get("email_list")
+    triage_fn = t.get("mail_triage")
+    backlog_fn = t.get("backlog_list")
+    raid_fn = t.get("pm_raid_list")
 
     calendar: list[dict] = []
     mail: list[dict] = []
@@ -1165,60 +1226,10 @@ def brief_data(project: str | None = None, days_back: int = 1) -> dict:
     raid_open = 0
 
     for proj in projects:
-        if calendar_events_fn and acl.resource(proj, "calendar"):
-            try:
-                for ev in (calendar_events_fn(acl, user, proj, day_start, day_end) or []):
-                    calendar.append({
-                        "title": ev.get("title", ""),
-                        "start": ev.get("start", ""),
-                        "end": ev.get("end", ""),
-                        "project": proj,
-                    })
-            except Exception:
-                pass
-
-        if email_list_fn and (acl.resource(proj, "mailbox") or acl.resource(proj, "email")):
-            try:
-                msgs = email_list_fn(acl, user, proj, "INBOX", max_mail, days=mail_days) or []
-                if mail_triage_fn and msgs:
-                    msgs = mail_triage_fn(msgs) or msgs
-                for m in msgs[:max_mail]:
-                    entry = {
-                        "subject": m.get("subject", "(inget ämne)"),
-                        "from": m.get("from", ""),
-                        "seen": m.get("seen", False),
-                        "project": proj,
-                    }
-                    if m.get("priority"):
-                        entry["priority"] = m["priority"]
-                    if m.get("summary"):
-                        entry["summary"] = m["summary"]
-                    mail.append(entry)
-            except Exception:
-                pass
-
-        if backlog_list_fn and acl.resource(proj, "vault"):
-            try:
-                items = backlog_list_fn(acl, user, proj) or []
-                changed = [i for i in items if str(i.get("updated_at", "")) > last_run_iso]
-                for i in changed[:10]:
-                    backlog_changes.append({
-                        "id": i.get("id", "?"),
-                        "title": i.get("title", ""),
-                        "status": i.get("status", ""),
-                        "updated_at": i.get("updated_at", ""),
-                        "project": proj,
-                    })
-            except Exception:
-                pass
-
-        if pm_raid_list_fn and acl.resource(proj, "vault"):
-            try:
-                raid = pm_raid_list_fn(acl, user, proj)
-                entries = raid.get("entries", []) if isinstance(raid, dict) else []
-                raid_open += sum(1 for e in entries if e.get("status") == "open")
-            except Exception:
-                pass
+        calendar += _bd_calendar(acl, user, proj, calendar_fn, day_start, day_end)
+        mail += _bd_mail(acl, user, proj, email_fn, triage_fn, max_mail, mail_days)
+        backlog_changes += _bd_backlog(acl, user, proj, backlog_fn, last_run_iso)
+        raid_open += _bd_raid_open(acl, user, proj, raid_fn)
 
     return {
         "date": local_now.strftime("%Y-%m-%d"),
@@ -1229,6 +1240,7 @@ def brief_data(project: str | None = None, days_back: int = 1) -> dict:
         "backlog_changes": backlog_changes,
         "raid_open": raid_open,
     }
+
 
 @mcp.prompt()
 def daily_brief() -> str:
@@ -2920,10 +2932,10 @@ def build_http_app():
     # Custom HTTP handlers
     # ------------------------------------------------------------------
 
-    async def health_handler(request: Request) -> JSONResponse:
+    def health_handler(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "service": "memaix"})
 
-    async def protected_resource_handler(request: Request) -> JSONResponse:
+    def protected_resource_handler(request: Request) -> JSONResponse:
         """RFC 9728 protected resource metadata.
 
         FastMCP auto-generates this from AuthSettings.resource_server_url, but
@@ -3004,7 +3016,7 @@ def build_http_app():
             logger.warning("DCR proxy error: %s", exc)
             return JSONResponse({"error": "server_error"}, status_code=500)
 
-    async def link_start(request: Request) -> "RedirectResponse | JSONResponse":
+    def link_start(request: Request) -> "RedirectResponse | JSONResponse":
         """Start OAuth flow for a provider."""
         provider = request.path_params["provider"]
         state = request.query_params.get("state", "")

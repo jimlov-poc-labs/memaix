@@ -30,7 +30,7 @@ def _project(request: Request) -> str:
     return request.query_params.get("project", "")
 
 
-async def api_memory_notes(request: Request) -> JSONResponse:
+def api_memory_notes(request: Request) -> JSONResponse:
     """GET /app/api/memory/notes?project=X → [{path, mtime}]"""
     user = _require_user(request)
     if not user:
@@ -44,7 +44,7 @@ async def api_memory_notes(request: Request) -> JSONResponse:
     return JSONResponse(notes)
 
 
-async def api_memory_note(request: Request) -> JSONResponse:
+def api_memory_note(request: Request) -> JSONResponse:
     """GET /app/api/memory/note?project=X&path=Y → {path, content}"""
     user = _require_user(request)
     if not user:
@@ -61,7 +61,7 @@ async def api_memory_note(request: Request) -> JSONResponse:
     return JSONResponse(note)
 
 
-async def api_memory_search(request: Request) -> JSONResponse:
+def api_memory_search(request: Request) -> JSONResponse:
     """GET /app/api/memory/search?project=X&q=Y → [{path, snippet}]"""
     user = _require_user(request)
     if not user:
@@ -76,7 +76,7 @@ async def api_memory_search(request: Request) -> JSONResponse:
     return JSONResponse(hits)
 
 
-async def api_memory_history(request: Request) -> JSONResponse:
+def api_memory_history(request: Request) -> JSONResponse:
     """GET /app/api/memory/history?project=X&path=Y → [{hash, author, date, message}]"""
     user = _require_user(request)
     if not user:
