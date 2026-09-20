@@ -100,6 +100,12 @@ def _microsoft_mail_factory(acl, project, user, resource_cfg, token):
     return GraphMailAdapter(token["access_token"])
 
 
+def _google_mail_factory(acl, project, user, resource_cfg, token):
+    from .adapters.mail_google import GmailAdapter
+
+    return GmailAdapter(token["access_token"])
+
+
 def _imap_user_factory(acl, project, user, resource_cfg, token):
     from .adapters.mail_imap_user import build_mailbox
 
@@ -146,10 +152,29 @@ def _notes_factory(acl, project, user, resource_cfg, token):
     return NotesAdapter(resource_cfg["url"], resource_cfg.get("user", ""), password or "")
 
 
+# What each per-user provider could already serve BEFORE project scoping
+# existed — a frozen historical snapshot, deliberately not derived from the
+# live registry. TokenStore.backfill_scopes_once replays it once so existing
+# accounts keep working, and freezing it is what keeps the opt-in promise:
+# 'google' maps to calendar only, so a Google account linked for its
+# calendar does not quietly become a mailbox the day mail_google.py is
+# registered. Do NOT add capabilities here when adding an adapter — a new
+# capability on an existing provider is exactly what users should opt into.
+LEGACY_PER_USER_CAPABILITIES: dict[str, list[str]] = {
+    "imap": ["mail"],
+    "microsoft": ["mail"],
+    "google": ["calendar"],
+    "ical_secret": ["calendar"],
+}
+
+
 def register_defaults(registry: ConnectorRegistry) -> None:
     registry.register(
         ConnectorSpec(type="imap", capability="mail", auth="shared", factory=_imap_factory),
         ConnectorSpec(type="microsoft", capability="mail", auth="per_user", factory=_microsoft_mail_factory),
+        ConnectorSpec(
+            type="google_mail", capability="mail", auth="per_user", provider="google", factory=_google_mail_factory,
+        ),
         ConnectorSpec(
             type="imap_user", capability="mail", auth="per_user", provider="imap", factory=_imap_user_factory,
         ),

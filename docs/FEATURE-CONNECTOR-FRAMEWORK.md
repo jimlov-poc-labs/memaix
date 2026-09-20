@@ -299,6 +299,43 @@ projektets delade brevlåda, aldrig en annan användares länkade konto
 att `TokenStore.list_accounts(user)` filtrerar på `memaix_user` snarare än
 att bara lita på verktygslagrets output.
 
+### Steg 6c — Gmail som per-user mailkälla
+
+✅ **Gmail API mail** — `connectors/adapters/mail_google.py`'s `GmailAdapter`, registrerad som
+`ConnectorSpec(type="google_mail", capability="mail", auth="per_user", provider="google")`.
+Samma översättningsjobb som Graph-adaptern, mot ett API som skiljer sig på andra punkter:
+etiketter (`INBOX`/`DRAFT`) istället för mappar, `seen` härlett ur frånvaron av `UNREAD` i
+`labelIds`, och en brödtext som ligger base64url-kodad nere i ett nästlat MIME-part-träd.
+`users.messages.list` returnerar bara id:n, så varje meddelande kostar ett extra anrop —
+därför sätter `limit` även `maxResults`, så att taket begränsar antalet hämtningar och inte
+bara den färdiga listan.
+
+Till skillnad från Graph-adaptern **tappas inte `In-Reply-To`**: `drafts.create` tar rå
+RFC-822, så hela meddelandet inklusive trådningsheadern går fram oförändrat.
+
+Notera `provider="google"` skilt från `type="google_mail"`. Provider är namnet i
+token-lagret, och ett länkat Google-konto är *ett* konto — samma OAuth-token bär både
+kalender och mail. Typen är det som pekas ut i acl.yaml. Att hålla isär dem är det som gör
+att samma konto kan delas till ett projekt för kalender men inte för mail (§8).
+
+Ett projekt behöver ingen `mailbox`-resurs alls för att använda Gmail: registrets
+per-user-svep hittar länkade konton via token-lagret. Därför läser `tools/email.py`
+avsändaradressen via `_inbox_address` (tom om resursen saknas) istället för det strikta
+`_mailbox_cfg` — acl.yaml-resursen bar två orelaterade saker, inloggningsuppgifter och en
+läsbar adress, och bara den första är obligatorisk. Saknas adressen utelämnas `From`-headern
+helt (inte satt till tom sträng), och Gmail stämplar det autentiserade kontot självt.
+
+**Scope-backfill, viktigt:** `LEGACY_PER_USER_CAPABILITIES` i `catalog.py` är en *fryst*
+historisk ögonblicksbild, inte något som härleds ur registret. `google` står där med enbart
+`["calendar"]`. Om den listan istället räknades fram ur registret skulle registreringen av
+den här adaptern retroaktivt ha delat ut mail-åtkomst till varje projekt som redan hade ett
+länkat Google-konto för kalender — precis det opt-in:et i §8 lovar att inte göra. Lägg
+därför aldrig till en capability där när du lägger till en adapter.
+
+**Test:** `test_mail_google_adapter.py` (mockad HTTP mot adaptern isolerat) +
+`test_mail_google_server.py` (scope-grinden, token-uppdatering och ett Gmail-only-projekt
+end-to-end).
+
 ### Steg 7 — Config + docs
 Bekräfta att `acl.example.yaml`-resursformatet (BACKENDS.md §Config) räcker; lägg
 ev. `auth: per_user`-flagga per resurs. Registrera doket i `docs/INDEX.md` (gjort);

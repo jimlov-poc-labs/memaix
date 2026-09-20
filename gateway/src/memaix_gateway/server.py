@@ -147,14 +147,15 @@ def _get_token_store():
             key = key_ref.encode() if isinstance(key_ref, str) else key_ref
         db_path = Path(os.environ.get("MEMAIX_TOKEN_DB", "/tmp/memaix-tokens.db"))
         _token_store = TokenStore.for_path(db_path, key)
-        # Accounts linked before project scoping existed keep working: they
-        # get a wildcard grant for every capability, once. Anything linked
-        # afterwards starts scoped to nothing until the user says otherwise.
-        # Safe to call from every worker — the schema_meta marker makes it
-        # a no-op after the first.
-        from .connectors.registry import default_registry
+        # Accounts linked before project scoping existed keep working: each
+        # gets a wildcard grant for the capabilities its provider already
+        # served, once. Anything linked afterwards — and any capability a
+        # provider gains later — starts scoped to nothing until the user
+        # says otherwise. Safe to call from every worker: the schema_meta
+        # marker makes it a no-op after the first.
+        from .connectors.catalog import LEGACY_PER_USER_CAPABILITIES
 
-        _token_store.backfill_scopes_once(default_registry().capabilities())
+        _token_store.backfill_scopes_once(LEGACY_PER_USER_CAPABILITIES)
     return _token_store
 
 
@@ -2167,6 +2168,7 @@ def _mail_backend(project: str, user: str):
     from .connectors.registry import ConnectorAuthRequired, default_registry
 
     _ensure_fresh_microsoft_mail_token(user)
+    _ensure_fresh_google_mail_token(user)
     acl = _get_acl()
     token_store = _get_token_store()
     registry = default_registry()
@@ -2702,6 +2704,37 @@ def _ensure_fresh_microsoft_mail_token(user: str) -> None:
     if isinstance(expires_at, (int, float)) and expires_at - 60 < time.time():
         if not _refresh_microsoft_token(config.load(), store, user, account, token_data):
             store.mark_needs_relink(user, "microsoft", account)
+
+
+def _ensure_fresh_google_mail_token(user: str) -> None:
+    """Refresh expiring google access_tokens before the registry loads them.
+
+    Mirrors _ensure_fresh_microsoft_mail_token: registry.get()'s per_user
+    branch only loads what is stored, it never refreshes. Unlike the
+    microsoft version this loops over every linked google account rather
+    than just the first — multi-account is the whole point of this feature,
+    and a stale token on account #2 would fail the merged fetch while
+    account #1 looked fine.
+
+    A no-op when the user has no google account linked.
+    """
+    import time
+
+    store = _get_token_store()
+    cfg = None
+    for account in [a for a in store.list_accounts(user) if a["provider"] == "google"]:
+        token_data = store.load_one(user, "google", account["account"])
+        if not token_data:
+            continue
+        expires_at = token_data.get("expires_at") or (
+            token_data.get("created_at", 0) + token_data.get("expires_in", 3600)
+        )
+        if not isinstance(expires_at, (int, float)) or expires_at - 60 >= time.time():
+            continue
+        if cfg is None:
+            cfg = config.load()
+        if not _refresh_google_token(cfg, store, user, account["account"], token_data):
+            store.mark_needs_relink(user, "google", account["account"])
 
 
 def _resolve_calendar_dav(project: str, user: str, *, write: bool = False):
