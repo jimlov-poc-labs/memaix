@@ -170,6 +170,40 @@ class ConnectorRegistry:
         resource (a user-added public link, not acl.yaml)."""
         return self._specs.get((capability, type_))
 
+    def _adapters_for_per_user_spec(
+        self, spec, token_store, user, capability, project, acl, resource_cfg
+    ) -> list[tuple[str, object]]:
+        """One (label, adapter) per scoped account for a per_user spec."""
+        provider = spec.provider or spec.type
+        results = []
+        for account in self._scoped_accounts(token_store, user, provider, capability, project):
+            token = token_store.load_one(user, provider, account["account"])
+            if token is None:
+                continue
+            label = f"{spec.type}:{account['account']}"
+            results.append((label, spec.factory(acl, project, user, resource_cfg, token)))
+        return results
+
+    def _adapter_for_extra_source(
+        self, extra_cfg, base_type, i, token_store, user, capability, project, acl
+    ) -> "tuple[str, object] | None":
+        """Resolve one entry from resource_cfg['sources'], or None to skip."""
+        extra_type = extra_cfg.get("type", base_type)
+        spec = self._specs.get((capability, extra_type))
+        if spec is None:
+            return None
+        token = None
+        if spec.auth == "per_user":
+            provider = spec.provider or spec.type
+            match = next(iter(self._scoped_accounts(token_store, user, provider, capability, project)), None)
+            if match is None:
+                return None
+            token = token_store.load_one(user, provider, match["account"])
+            if token is None:
+                return None
+        label = extra_cfg.get("label") or f"{extra_type}:{i}"
+        return label, spec.factory(acl, project, user, extra_cfg, token)
+
     def get_all(self, acl, token_store, project: str, capability: str, user: str) -> list[tuple[str, object]]:
         """Resolve EVERY source configured for this capability, not just one
         (get()'s single-adapter shape). Added for memaix-src card 4daa20e2
@@ -210,39 +244,16 @@ class ConnectorRegistry:
 
             if base_spec is not None:
                 if base_spec.auth == "per_user":
-                    provider = base_spec.provider or base_spec.type
-                    accounts = self._scoped_accounts(
-                        token_store, user, provider, capability, project
+                    results += self._adapters_for_per_user_spec(
+                        base_spec, token_store, user, capability, project, acl, resource_cfg
                     )
-                    for account in accounts:
-                        token = token_store.load_one(user, provider, account["account"])
-                        if token is None:
-                            continue
-                        label = f"{base_spec.type}:{account['account']}"
-                        results.append((label, base_spec.factory(acl, project, user, resource_cfg, token)))
                 else:
-                    label = f"{base_spec.type}:{project}"
-                    results.append((label, base_spec.factory(acl, project, user, resource_cfg, None)))
+                    results.append((f"{base_spec.type}:{project}", base_spec.factory(acl, project, user, resource_cfg, None)))
 
             for i, extra_cfg in enumerate(resource_cfg.get("sources") or []):
-                extra_type = extra_cfg.get("type", base_type)
-                spec = self._specs.get((capability, extra_type))
-                if spec is None:
-                    continue
-                token = None
-                if spec.auth == "per_user":
-                    provider = spec.provider or spec.type
-                    accounts = self._scoped_accounts(
-                        token_store, user, provider, capability, project
-                    )
-                    match = next(iter(accounts), None)
-                    if match is None:
-                        continue
-                    token = token_store.load_one(user, provider, match["account"])
-                    if token is None:
-                        continue
-                label = extra_cfg.get("label") or f"{extra_type}:{i}"
-                results.append((label, spec.factory(acl, project, user, extra_cfg, token)))
+                pair = self._adapter_for_extra_source(extra_cfg, base_type, i, token_store, user, capability, project, acl)
+                if pair is not None:
+                    results.append(pair)
 
         # Per-user sweep: pick up any linked per-user accounts not already
         # covered by the base type or extra sources above.  This makes Google
@@ -250,20 +261,12 @@ class ConnectorRegistry:
         # without requiring a matching `type:` in acl.yaml — the token_store
         # is the source of truth for "which accounts has this user linked?"
         for (cap, type_), spec in self._specs.items():
-            if cap != capability or type_ in handled_types:
-                continue
-            if spec.auth != "per_user":
+            if cap != capability or type_ in handled_types or spec.auth != "per_user":
                 continue
             handled_types.add(type_)
-            provider = spec.provider or spec.type
-            for account in self._scoped_accounts(
-                token_store, user, provider, capability, project
-            ):
-                token = token_store.load_one(user, provider, account["account"])
-                if token is None:
-                    continue
-                label = f"{type_}:{account['account']}"
-                results.append((label, spec.factory(acl, project, user, resource_cfg or {}, token)))
+            results += self._adapters_for_per_user_spec(
+                spec, token_store, user, capability, project, acl, resource_cfg or {}
+            )
 
         return results
 
