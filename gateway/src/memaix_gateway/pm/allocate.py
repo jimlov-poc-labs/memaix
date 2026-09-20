@@ -86,6 +86,19 @@ def _simulate_placement(
     return start_date or ready_date, day - timedelta(days=1)
 
 
+def _best_resource(eligible, ready_date, estimate, availability_by_resource, ledger):
+    """Return (resource, end_date, start_date, updated_ledger) for the resource
+    that finishes the task earliest. eligible is guaranteed non-empty."""
+    best = None
+    for r in eligible:
+        trial_ledger = dict(ledger)
+        start, end = _simulate_placement(r, ready_date, estimate, availability_by_resource[r["id"]], trial_ledger)
+        if best is None or end < best[1]:
+            best = (r, end, start, trial_ledger)
+    assert best is not None  # noqa: S101
+    return best
+
+
 def allocate(store, scenario_id: int, *, project_start: date | None = None) -> dict:
     """Recompute a scenario's plan from scratch: critical path + resource
     assignment. Idempotent — replaces any existing allocation/schedule rows
@@ -165,14 +178,7 @@ def allocate(store, scenario_id: int, *, project_start: date | None = None) -> d
                 warnings.append(f"task {task_id} ({task['title']!r}): no eligible resource for required skill — unallocated")
                 finish_date[task_id] = ready_date
             else:
-                best = None
-                for r in eligible:
-                    trial_ledger = dict(ledger)
-                    start, end = _simulate_placement(r, ready_date, estimate, availability_by_resource[r["id"]], trial_ledger)
-                    if best is None or end < best[1]:
-                        best = (r, end, start, trial_ledger)
-                assert best is not None  # eligible is non-empty, so the loop ran at least once
-                r, end, start, trial_ledger = best
+                r, end, start, trial_ledger = _best_resource(eligible, ready_date, estimate, availability_by_resource, ledger)
                 ledger.update(trial_ledger)
                 finish_date[task_id] = end
                 allocations.append(
