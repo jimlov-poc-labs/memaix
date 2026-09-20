@@ -27,6 +27,21 @@ from memaix_gateway.search.store import EmbeddingStore
 from memaix_gateway.timeline.store import ActionsStore
 
 
+def _link_gmail(token_store, account: str, user: str = "alice") -> None:
+    """A linked Google account as it actually looks once stored.
+
+    The absolute `expires_at` is the point: without it the freshness check
+    reads the token as expired on every request and tries to refresh it,
+    which in these tests fails (there is no Google) and flags the account
+    needs_relink — so the mailbox under test would vanish for reasons that
+    have nothing to do with what the test is asserting.
+    """
+    token_store.store(user, "google", account, {
+        "access_token": "tok", "refresh_token": "r1",
+        "expires_at": time.time() + 3600,
+    })
+
+
 @pytest.fixture()
 def token_store(tmp_path):
     return TokenStore.for_path(tmp_path / "tokens.db", Fernet.generate_key())
@@ -116,7 +131,7 @@ def test_linked_but_unshared_google_account_is_not_a_mail_source(wired, monkeypa
     per-user sweep in registry.get_all picks up every linked account of a
     per_user provider), which is exactly what makes the raise meaningful."""
     _, token_store = wired
-    token_store.store("alice", "google", "a@gmail.com", {"access_token": "tok"})
+    _link_gmail(token_store, "a@gmail.com")
     monkeypatch.setattr("requests.request", _fake_gmail("Should not appear"))
 
     with pytest.raises(ValueError, match="no mail configured"):
@@ -125,7 +140,7 @@ def test_linked_but_unshared_google_account_is_not_a_mail_source(wired, monkeypa
 
 def test_shared_google_account_appears_in_email_list(wired, monkeypatch):
     _, token_store = wired
-    token_store.store("alice", "google", "a@gmail.com", {"access_token": "tok"})
+    _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
     monkeypatch.setattr("requests.request", _fake_gmail("From Gmail"))
 
@@ -136,7 +151,7 @@ def test_shared_google_account_appears_in_email_list(wired, monkeypatch):
 
 def test_sharing_with_one_project_does_not_leak_into_another(wired, monkeypatch):
     _, token_store = wired
-    token_store.store("alice", "google", "a@gmail.com", {"access_token": "tok"})
+    _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
     monkeypatch.setattr("requests.request", _fake_gmail("From Gmail"))
 
@@ -149,7 +164,7 @@ def test_calendar_scope_alone_does_not_expose_the_mailbox(wired, monkeypatch):
     """The per-capability promise: sharing a Google calendar must not hand
     over the Gmail account behind it."""
     _, token_store = wired
-    token_store.store("alice", "google", "a@gmail.com", {"access_token": "tok"})
+    _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "calendar", ["proj"])
     monkeypatch.setattr("requests.request", _fake_gmail("Should not appear"))
 
@@ -167,7 +182,7 @@ def test_gmail_only_project_reports_an_empty_inbox_label(wired, monkeypatch):
     one here, so it degrades to absent rather than taking the whole call
     down — the account's own address already labels the source."""
     _, token_store = wired
-    token_store.store("alice", "google", "a@gmail.com", {"access_token": "tok"})
+    _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
     monkeypatch.setattr("requests.request", _fake_gmail("From Gmail"))
 
@@ -181,7 +196,7 @@ def test_gmail_only_project_can_create_a_draft(wired, monkeypatch):
     account — the acl.yaml address this used to require was never the right
     sender for a linked account anyway."""
     _, token_store = wired
-    token_store.store("alice", "google", "a@gmail.com", {"access_token": "tok"})
+    _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
     created: list = []
 
@@ -268,3 +283,39 @@ def test_failed_refresh_marks_the_account_for_relink(wired, monkeypatch):
 
     (account,) = [a for a in token_store.list_accounts("alice") if a["provider"] == "google"]
     assert account["status"] == "needs_relink"
+
+
+# ------------------------------------------------------------------
+# Absolute expiry — the root cause behind "every call refreshes"
+# ------------------------------------------------------------------
+
+
+def test_relative_expires_in_is_converted_to_an_absolute_instant():
+    """An OAuth response dates itself relatively, which stops being true
+    the moment it's written to disk."""
+    before = time.time()
+
+    stamped = server._stamp_expiry({"access_token": "t", "expires_in": 3599})
+
+    assert before + 3599 <= stamped["expires_at"] <= time.time() + 3599
+
+
+def test_a_provider_that_omits_expires_in_gets_no_fabricated_deadline():
+    assert "expires_at" not in server._stamp_expiry({"access_token": "t"})
+
+
+def test_a_just_refreshed_token_is_not_refreshed_again(wired, monkeypatch):
+    """The regression this fix exists for. `expires_in` alone made the
+    freshness check compute epoch+3599 — a 1970 timestamp — so every single
+    request re-refreshed, and a revoked refresh_token turned into a hard
+    outage instead of a stale-but-working token."""
+    _, token_store = wired
+    token_store.store("alice", "google", "a@gmail.com", server._stamp_expiry({
+        "access_token": "fresh", "refresh_token": "r1", "expires_in": 3599,
+    }))
+    calls = []
+    monkeypatch.setattr("requests.post", lambda *a, **kw: calls.append(1))
+
+    server._ensure_fresh_google_mail_token("alice")
+
+    assert calls == []

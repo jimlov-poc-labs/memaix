@@ -83,11 +83,29 @@ class ConnectorRegistry:
         whole surface without touching a single tool. Shared acl.yaml
         resources deliberately bypass it — those belong to the project, not
         to the user, and were never the user's to scope.
+
+        Accounts flagged `needs_relink` are dropped here too. That flag is
+        set when a refresh has already been tried and failed (see server.py's
+        _ensure_fresh_*_mail_token), so the credential is known-dead, not
+        merely suspect — handing it to a factory buys a guaranteed 401 at
+        request time instead of a clear answer now.
+
+        It matters most in get_all(), where sources are merged: one revoked
+        Google token would otherwise take down the listing for every healthy
+        mailbox alongside it, turning one account's expiry into a total mail
+        outage. In get() the effect is a better error — ConnectorAuthRequired
+        ("re-link this account"), which the UI already knows how to act on,
+        rather than a bare upstream 401.
+
+        Dropping is not hiding: the flag itself is the durable record, and
+        the settings page renders it as 🟡 "behöver kopplas om" next to the
+        account.
         """
         return [
             a
             for a in token_store.list_accounts(user)
             if a["provider"] == provider
+            and a.get("status") != "needs_relink"
             and token_store.is_allowed(user, provider, a["account"], capability, project)
         ]
 
