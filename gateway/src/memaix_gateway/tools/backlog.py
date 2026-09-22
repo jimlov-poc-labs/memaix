@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ------------------------------------------------------------------
 
+_BACKLOG_ID_KIND = "backlog id"
+
 VALID_STATUSES: frozenset[str] = frozenset(
     {"inbox", "triaged", "evaluated", "approved", "rejected", "in-dev", "done", "todo"}
 )
@@ -166,7 +168,7 @@ def backlog_list(
 def backlog_get(acl: Acl, user_id: str, project: str, id: str) -> dict:
     """Fetch a single backlog item.  Raises FileNotFoundError if absent."""
     acl.enforce(user_id, project, "reader")
-    validate_id(id, kind="backlog id")
+    validate_id(id, kind=_BACKLOG_ID_KIND)
     bl_dir = _backlog_dir(acl, project)
     path = bl_dir / f"{id}.md"
     if not path.exists():
@@ -186,7 +188,7 @@ def backlog_score(
 ) -> dict:
     """Update scoring fields.  Returns {id, version, commit} or conflict dict."""
     acl.enforce(user_id, project, "collaborator")
-    validate_id(id, kind="backlog id")
+    validate_id(id, kind=_BACKLOG_ID_KIND)
     bl_dir = _backlog_dir(acl, project)
     lock = _get_lock(str(bl_dir.parent.resolve()))
     path = bl_dir / f"{id}.md"
@@ -218,7 +220,7 @@ def backlog_comment(
 ) -> dict:
     """Append a comment to an item's body.  Returns {ok, commit} or conflict dict."""
     acl.enforce(user_id, project, "collaborator")
-    validate_id(id, kind="backlog id")
+    validate_id(id, kind=_BACKLOG_ID_KIND)
     bl_dir = _backlog_dir(acl, project)
     lock = _get_lock(str(bl_dir.parent.resolve()))
     path = bl_dir / f"{id}.md"
@@ -248,7 +250,7 @@ def backlog_set_status(
 ) -> dict:
     """Transition status.  Requires owner.  Returns {id, status, commit} or conflict dict."""
     acl.enforce(user_id, project, "owner")
-    validate_id(id, kind="backlog id")
+    validate_id(id, kind=_BACKLOG_ID_KIND)
     if status not in VALID_STATUSES:
         raise ValueError(
             f"invalid status {status!r}; valid values: {sorted(VALID_STATUSES)}"
@@ -284,7 +286,7 @@ def backlog_assign(
     FEATURE-AGENT-TEAM fas 1. The assignee must be a user that exists in the
     project's ACL (or empty) — you can't hand work to a stranger."""
     acl.enforce(user_id, project, "owner")
-    validate_id(id, kind="backlog id")
+    validate_id(id, kind=_BACKLOG_ID_KIND)
     assignee = (assignee or "").strip() or None
     if assignee is not None and assignee not in acl.users:
         raise ValueError(f"unknown assignee: {assignee!r} (not a user in acl.yaml)")

@@ -63,6 +63,10 @@ logger = logging.getLogger(__name__)
 #   contacts:   null  -> "expected array, received null"
 # Det gick obemärkt förbi tills någon försökte ansluta med en strikt klient.
 _DCR_URI_FALT = ("client_uri", "policy_uri", "tos_uri", "logo_uri", "jwks_uri")
+_GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"  # nosec B105 -- endpoint URL, not a secret
+_DEFAULT_PUBLIC_URL = "http://localhost:8080"
+_DEFAULT_ISSUER = "https://mcp.example.com"
+_CALENDAR_SETUP_HINT = "Kör calendar_setup för att välja åtkomstläge"
 
 
 def _stada_dcr_svar(data: object) -> object:
@@ -389,7 +393,7 @@ def _fetch_gmail_from_account(token_data: dict, inbox_label: str, provider_cfg: 
     creds = Credentials(
         token=token_data.get("access_token"),
         refresh_token=token_data.get("refresh_token"),
-        token_uri="https://oauth2.googleapis.com/token",  # nosec B106
+        token_uri=_GOOGLE_TOKEN_URI,  # nosec B106
         client_id=provider_cfg.get("client_id", ""),
         client_secret=config.secret(provider_cfg.get("client_secret_ref", "")) or "",
     )
@@ -761,7 +765,7 @@ def account_link(provider: str) -> dict:
     """Get an OAuth link URL to connect your account."""
     user = _user()
     cfg = config.load()
-    public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", "http://localhost:8080")
+    public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", _DEFAULT_PUBLIC_URL)
     return t_account.account_link(_get_acl(), user, provider, public_url)
 
 
@@ -2304,7 +2308,7 @@ def calendar_list(project: str, start: str, end: str) -> list | dict:
         dav = _resolve_calendar_dav(project, user)
         return _audited(user, project, "calendar_list", t_cal.calendar_list, _get_acl(), user, project, start, end, _dav=dav)
     except CalendarAuthRequired as e:
-        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": "Kör calendar_setup för att välja åtkomstläge"}
+        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": _CALENDAR_SETUP_HINT}
 
 
 @mcp.tool()
@@ -2322,7 +2326,7 @@ def calendar_find_free(
             _get_acl(), user, project, duration_min, within_start, within_end, _dav=dav,
         )
     except CalendarAuthRequired as e:
-        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": "Kör calendar_setup för att välja åtkomstläge"}
+        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": _CALENDAR_SETUP_HINT}
 
 
 @mcp.tool()
@@ -2608,7 +2612,7 @@ def calendar_create(
             idempotency_key=idempotency_key,
         )
     except CalendarAuthRequired as e:
-        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": "Kör calendar_setup för att välja åtkomstläge"}
+        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": _CALENDAR_SETUP_HINT}
 
 
 @mcp.tool()
@@ -2632,7 +2636,7 @@ def calendar_update(project: str, id: str, idempotency_key: str | None = None, *
             _get_acl(), user, project, id, _dav=dav, idempotency_key=idempotency_key, **fields,
         )
     except CalendarAuthRequired as e:
-        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": "Kör calendar_setup för att välja åtkomstläge"}
+        return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": _CALENDAR_SETUP_HINT}
 
 
 def _stamp_expiry(token_data: dict) -> dict:
@@ -2673,7 +2677,7 @@ def _refresh_google_token(cfg: dict, store, user: str, account: str, token_data:
     client_secret = config.secret(provider_cfg.get("client_secret_ref", "")) or ""
     try:
         resp = req_lib.post(
-            "https://oauth2.googleapis.com/token",
+            _GOOGLE_TOKEN_URI,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
@@ -2977,10 +2981,10 @@ def build_http_app():
         except Exception:
             # Fallback: return minimal metadata so discovery doesn't hard-fail
             cfg = config.load()
-            issuer = cfg.get("memaix", {}).get("auth", {}).get("issuer", "https://mcp.example.com")
+            issuer = cfg.get("memaix", {}).get("auth", {}).get("issuer", _DEFAULT_ISSUER)
             metadata = {"issuer": issuer}
 
-        issuer = metadata.get("issuer", "https://mcp.example.com").rstrip("/")
+        issuer = metadata.get("issuer", _DEFAULT_ISSUER).rstrip("/")
         metadata["registration_endpoint"] = f"{issuer}/oauth2/register"
         return JSONResponse(metadata)
 
@@ -2999,7 +3003,7 @@ def build_http_app():
             body = {}
 
         cfg = config.load()
-        issuer = cfg.get("memaix", {}).get("auth", {}).get("issuer", "https://mcp.example.com").rstrip("/")
+        issuer = cfg.get("memaix", {}).get("auth", {}).get("issuer", _DEFAULT_ISSUER).rstrip("/")
         resource_urls = [f"{issuer}/", issuer]
         existing = body.get("audience") or []
         body["audience"] = list({*existing, *resource_urls})
@@ -3032,7 +3036,7 @@ def build_http_app():
         cfg = config.load()
         provider_cfg = cfg.get("memaix", {}).get("oauth_providers", {}).get(provider, {})
         client_id = provider_cfg.get("client_id", "")
-        public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", "http://localhost:8080")
+        public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", _DEFAULT_PUBLIC_URL)
         redirect_uri = f"{public_url.rstrip('/')}/link/{provider}/callback"
 
         from urllib.parse import urlencode
@@ -3066,11 +3070,11 @@ def build_http_app():
         user_id = pending["user_id"]
         cfg = config.load()
         provider_cfg = cfg.get("memaix", {}).get("oauth_providers", {}).get(provider, {})
-        public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", "http://localhost:8080")
+        public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", _DEFAULT_PUBLIC_URL)
         redirect_uri = f"{public_url.rstrip('/')}/link/{provider}/callback"
 
         PROVIDER_TOKEN_URLS = {
-            "google": "https://oauth2.googleapis.com/token",
+            "google": _GOOGLE_TOKEN_URI,
             "microsoft": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         }
         token_url = PROVIDER_TOKEN_URLS.get(provider, "")

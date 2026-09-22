@@ -36,6 +36,7 @@ _HTML_CACHE: dict[str, str] = {}
 # Pages the generic /app/{page} route may serve. An allowlist (rather than
 # "whatever exists on disk") keeps the URL space intentional.
 _KNOWN_PAGES = {"home", "board", "settings", "memory", "outbox", "admin", "search"}
+_NO_CACHE = "no-cache, no-store, must-revalidate"
 
 _STATIC_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -175,7 +176,7 @@ class BrowserRootRedirect:
 def app_index(request: Request) -> HTMLResponse:
     return HTMLResponse(
         _html_with_locale("home", _locale(request)),
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        headers={"Cache-Control": _NO_CACHE},
     )
 
 
@@ -191,7 +192,7 @@ def app_login(request: Request) -> HTMLResponse:
     inject = f"<script>window.I18N={json.dumps(strings, ensure_ascii=False)};</script>"
     raw = _read_page("login")
     html = _version_assets(raw.replace("<!--MEMAIX_I18N-->", inject, 1))
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return HTMLResponse(html, headers={"Cache-Control": _NO_CACHE})
 
 
 def app_page(request: Request) -> Response:
@@ -202,7 +203,7 @@ def app_page(request: Request) -> Response:
         html = _html_with_locale(page, _locale(request))
     except FileNotFoundError:
         return JSONResponse({"error": "not_found"}, status_code=404)
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return HTMLResponse(html, headers={"Cache-Control": _NO_CACHE})
 
 
 _PRIVACY_HTML = """<!DOCTYPE html>
@@ -267,7 +268,7 @@ def app_board_frame(request: Request) -> HTMLResponse:
     """
     html = _board_html_with_locale(_locale(request))
     html = html.replace("</head>", _BOARD_DARK_STYLE + "</head>", 1)
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return HTMLResponse(html, headers={"Cache-Control": _NO_CACHE})
 
 
 def app_static(request: Request) -> Response:

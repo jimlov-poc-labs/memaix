@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 DependencyType = Literal["FS", "SS", "FF", "SF"]
 ScenarioKind = Literal["baseline", "committed", "whatif"]
+_EMPTY_MSG = "must not be empty"
 
 
 class ResourceInput(BaseModel):
@@ -40,7 +41,7 @@ class ResourceInput(BaseModel):
     @classmethod
     def _non_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("must not be empty")
+            raise ValueError(_EMPTY_MSG)
         return v
 
     @field_validator("cost_per_hour")
@@ -95,7 +96,7 @@ class MilestoneInput(BaseModel):
     @classmethod
     def _non_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("must not be empty")
+            raise ValueError(_EMPTY_MSG)
         return v
 
     @field_validator("target_date")
@@ -121,7 +122,7 @@ class TaskInput(BaseModel):
     @classmethod
     def _non_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("must not be empty")
+            raise ValueError(_EMPTY_MSG)
         return v
 
     @field_validator("estimate_hours")
@@ -186,5 +187,5 @@ class ScenarioInput(BaseModel):
     @classmethod
     def _non_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("must not be empty")
+            raise ValueError(_EMPTY_MSG)
         return v

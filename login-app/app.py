@@ -52,6 +52,7 @@ _SHARED_HASH = os.environ.get("MEMAIX_LOGIN_PASSWORD_HASH", "")
 # Per-user hashes from acl.yaml (users.<id>.password_hash). Loaded at startup.
 _ACL_PATH = os.environ.get("MEMAIX_ACL_CONFIG", "/app/config/acl.yaml")
 _PER_USER_HASHES: dict[str, str] = auth.load_per_user_hashes(_ACL_PATH)
+_LOGIN_TEMPLATE = "login.html"
 
 app = FastAPI(title="Memaix login")
 templates = Jinja2Templates(directory="/app/templates")
@@ -132,7 +133,7 @@ async def login_get(request: Request, login_challenge: str = ""):
 
     t, locale = _t_for_request(request)
     return templates.TemplateResponse(
-        request, "login.html",
+        request, _LOGIN_TEMPLATE,
         {"challenge": login_challenge, "error": "", "t": t, "locale": locale},
     )
 
@@ -147,13 +148,13 @@ async def login_post(
     t, locale = _t_for_request(request)
     if not auth.login_rate_limiter.check(username, limit=5, window_s=600):
         return templates.TemplateResponse(
-            request, "login.html",
+            request, _LOGIN_TEMPLATE,
             {"challenge": login_challenge, "error": t("login_error_credentials"), "t": t, "locale": locale},
             status_code=429,
         )
     if username not in ALLOWED_USERS or not _verify_password(username, password):
         return templates.TemplateResponse(
-            request, "login.html",
+            request, _LOGIN_TEMPLATE,
             {"challenge": login_challenge, "error": t("login_error_credentials"), "t": t, "locale": locale},
             status_code=401,
         )

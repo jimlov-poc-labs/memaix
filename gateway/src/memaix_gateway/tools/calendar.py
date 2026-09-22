@@ -29,6 +29,9 @@ from datetime import datetime, timedelta
 from .. import config
 from ..acl import Acl
 
+_ICAL_READ_ONLY = "iCal feed is read-only — use calendar_setup mode=oauth for write access"
+_FREEBUSY_READ_ONLY = "FreeBusy mode is read-only — use calendar_setup mode=oauth for write access"
+
 
 class CalendarAuthRequired(Exception):
     """Raised when the user has no linked calendar account for this project."""
@@ -299,13 +302,13 @@ class _ICalAdapter:
     find_events = list_events
 
     def create_event(self, *args, **kwargs):
-        raise NotImplementedError("iCal feed is read-only — use calendar_setup mode=oauth for write access")
+        raise NotImplementedError(_ICAL_READ_ONLY)
 
     def update_event(self, *args, **kwargs):
-        raise NotImplementedError("iCal feed is read-only — use calendar_setup mode=oauth for write access")
+        raise NotImplementedError(_ICAL_READ_ONLY)
 
     def delete_event(self, *args, **kwargs):
-        raise NotImplementedError("iCal feed is read-only — use calendar_setup mode=oauth for write access")
+        raise NotImplementedError(_ICAL_READ_ONLY)
 
 
 # ------------------------------------------------------------------
@@ -353,13 +356,13 @@ class _FreeBusyAdapter:
     find_events = list_events
 
     def create_event(self, *args, **kwargs):
-        raise NotImplementedError("FreeBusy mode is read-only — use calendar_setup mode=oauth for write access")
+        raise NotImplementedError(_FREEBUSY_READ_ONLY)
 
     def update_event(self, *args, **kwargs):
-        raise NotImplementedError("FreeBusy mode is read-only — use calendar_setup mode=oauth for write access")
+        raise NotImplementedError(_FREEBUSY_READ_ONLY)
 
     def delete_event(self, *args, **kwargs):
-        raise NotImplementedError("FreeBusy mode is read-only — use calendar_setup mode=oauth for write access")
+        raise NotImplementedError(_FREEBUSY_READ_ONLY)
 
 
 # ------------------------------------------------------------------
