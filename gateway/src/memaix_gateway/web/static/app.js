@@ -104,7 +104,7 @@ function mdView(el, markdown) {
     }
     if (line.trim() === '```') { flushPara(); flushList(); codeBlock = []; continue; }
 
-    const h = line.match(/^(#{1,3})\s+([^\n]*)$/);
+    const h = line.match(/^(#{1,3})\s+([^\n]+)/);
     if (h) {
       flushPara(); flushList();
       const el2 = document.createElement(`h${h[1].length}`);
@@ -112,7 +112,7 @@ function mdView(el, markdown) {
     }
     if (/^---+\s*$/.test(line)) { flushPara(); flushList(); el.append(document.createElement('hr')); continue; }
 
-    const li = line.match(/^\s*(?:[-*]|\d+\.)\s+([^\n]*)$/);
+    const li = line.match(/^\s*(?:[-*]|\d+\.)\s+([^\n]+)/);
     if (li) {
       flushPara();
       if (!list) list = document.createElement(/^\s*\d+\./.test(line) ? 'ol' : 'ul');
