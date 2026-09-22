@@ -38,6 +38,7 @@ _ALLOWED_USERS: set[str] = set(
 _PASSWORD_HASH = os.environ.get("MEMAIX_LOGIN_PASSWORD_HASH", "")
 _COOKIE_NAME = "memaix_board"
 _COOKIE_TTL_DAYS = 1
+_BAD_REQUEST = "bad request"
 
 
 _DEFAULT_SECRET = "dev-secret-change-me"  # nosec B105 -- sentinel we REFUSE in HTTP mode, not a credential
@@ -172,7 +173,7 @@ async def board_login(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "bad request"}, status_code=400)
+        return JSONResponse({"error": _BAD_REQUEST}, status_code=400)
 
     username = body.get("username", "").strip()
     password = body.get("password", "")
@@ -351,7 +352,7 @@ async def api_item_patch(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "bad request"}, status_code=400)
+        return JSONResponse({"error": _BAD_REQUEST}, status_code=400)
 
     project = body.get("project", "")
     new_status = body.get("status", "")
@@ -463,7 +464,7 @@ async def api_outbox_decide(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "bad request"}, status_code=400)
+        return JSONResponse({"error": _BAD_REQUEST}, status_code=400)
 
     decision = body.get("decision", "")
     if decision not in ("approve", "reject"):

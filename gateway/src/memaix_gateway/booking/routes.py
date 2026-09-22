@@ -107,6 +107,7 @@ _MAX_DURATION_MIN = 240
 _MIN_GRANULARITY_MIN = 5
 _MAX_WINDOW_DAYS = 90
 _MAX_PURPOSE_LEN = 500
+_ICS_FILENAME = "moete.ics"
 
 # Omsluter TOCTOU-omkollen + calendar_create per värd-användare. I dagens
 # drift (uvicorn utan workers=, se server.py) gör detta inget praktiskt
@@ -836,7 +837,7 @@ def _send_confirmation_emails(
                 title, name, visitor_email, _format_dt(start, visitor_tz), purpose, manage_url,
                 meeting_detail_line,
             ),
-            attachment_filename="moete.ics", attachment_content=ics_bytes,
+            attachment_filename=_ICS_FILENAME, attachment_content=ics_bytes,
             _confirmed=True,
         )
 
@@ -849,7 +850,7 @@ def _send_confirmation_emails(
                     title, name, visitor_email, _format_dt(start, link.get("host_timezone")), purpose, manage_url,
                     meeting_detail_line,
                 ),
-                attachment_filename="moete.ics", attachment_content=ics_bytes,
+                attachment_filename=_ICS_FILENAME, attachment_content=ics_bytes,
                 _confirmed=True,
             )
     except Exception:
@@ -873,7 +874,7 @@ def _send_reschedule_emails(acl, project: str, link: dict, title: str, event: di
             acl, host_user, project, visitor_email,
             f"Ombokat: {title}",
             _reschedule_body(title, _format_dt(start, None), manage_url, meeting_detail_line),
-            attachment_filename="moete.ics", attachment_content=ics_bytes,
+            attachment_filename=_ICS_FILENAME, attachment_content=ics_bytes,
             _confirmed=True,
         )
         host_email = link.get("host_email")
@@ -882,7 +883,7 @@ def _send_reschedule_emails(acl, project: str, link: dict, title: str, event: di
                 acl, host_user, project, host_email,
                 f"Ombokat: {title}",
                 _reschedule_body(title, _format_dt(start, link.get("host_timezone")), manage_url, meeting_detail_line),
-                attachment_filename="moete.ics", attachment_content=ics_bytes,
+                attachment_filename=_ICS_FILENAME, attachment_content=ics_bytes,
                 _confirmed=True,
             )
     except Exception:
@@ -947,7 +948,7 @@ def _send_reminder_email(
             acl, host_user, project, visitor_email,
             f"Påminnelse: {title}",
             _reminder_body(title, when, offset_min, manage_url, meeting_detail_line),
-            attachment_filename="moete.ics", attachment_content=ics_bytes,
+            attachment_filename=_ICS_FILENAME, attachment_content=ics_bytes,
             _confirmed=True,
         )
         host_email = link.get("host_email")
@@ -959,7 +960,7 @@ def _send_reminder_email(
                     title, _format_dt(meeting_start, link.get("host_timezone")), offset_min, manage_url,
                     meeting_detail_line,
                 ),
-                attachment_filename="moete.ics", attachment_content=ics_bytes,
+                attachment_filename=_ICS_FILENAME, attachment_content=ics_bytes,
                 _confirmed=True,
             )
     except Exception:

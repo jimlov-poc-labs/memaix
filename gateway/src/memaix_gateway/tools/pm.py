@@ -15,6 +15,8 @@ from . import backlog as t_backlog
 from . import memory as t_memory
 
 RAID_TYPES = ("Risk", "Assumption", "Issue", "Dependency")
+_PLAYBOOK_FILE = "playbook.md"
+_RAID_FILE = "raid.md"
 
 
 # ------------------------------------------------------------------
@@ -135,7 +137,7 @@ def pm_set_methodology(
 ) -> dict:
     acl.enforce(user_id, project, "owner")
     vault = _vault(acl, project)
-    playbook = vault / "playbook.md"
+    playbook = vault / _PLAYBOOK_FILE
 
     text = _read(playbook) or "# Playbook\n"
     meta, body = _split_fm(text)
@@ -144,10 +146,10 @@ def pm_set_methodology(
     meta["capacity"] = capacity or {}
     _write(playbook, _join_fm(meta, body))
 
-    committed = _git_commit(vault, ["playbook.md"], f"pm: set methodology={methodology}")
+    committed = _git_commit(vault, [_PLAYBOOK_FILE], f"pm: set methodology={methodology}")
     return {
         "ok": True,
-        "playbook": "playbook.md",
+        "playbook": _PLAYBOOK_FILE,
         "methodology": methodology,
         "sprint_length_days": int(sprint_length_days),
         "capacity": capacity or {},
@@ -172,10 +174,10 @@ def pm_status_report(
         if s in counts:
             counts[s] += 1
 
-    pb_meta, _ = _split_fm(_read(vault / "playbook.md") or "")
+    pb_meta, _ = _split_fm(_read(vault / _PLAYBOOK_FILE) or "")
     methodology = pb_meta.get("methodology", "")
 
-    raid_text = _read(vault / "pm" / "raid.md") or ""
+    raid_text = _read(vault / "pm" / _RAID_FILE) or ""
     open_raids = sum(1 for e in _parse_raid(raid_text) if e.get("status") == "open")
 
     notes_text = ""
@@ -262,7 +264,7 @@ def pm_plan_sprint(
         validate_id(_iid, kind="backlog id")
     vault = _vault(acl, project)
 
-    pb_meta, _ = _split_fm(_read(vault / "playbook.md") or "")
+    pb_meta, _ = _split_fm(_read(vault / _PLAYBOOK_FILE) or "")
     capacity_map = pb_meta.get("capacity") or {}
     capacity_points: int | None = sum(int(v) for v in capacity_map.values()) if capacity_map else None
     sprint_length = int(pb_meta.get("sprint_length_days", 14))
@@ -427,7 +429,7 @@ def pm_raid_add(
         return {"ok": False, "error": f"raid_type must be one of {RAID_TYPES}"}
 
     vault = _vault(acl, project)
-    raid_path = vault / "pm" / "raid.md"
+    raid_path = vault / "pm" / _RAID_FILE
     text = _read(raid_path) or "# RAID Log\n"
 
     existing = re.findall(r"RAID-(\d+)", text)
@@ -458,7 +460,7 @@ def pm_raid_list(
     acl.enforce(user_id, project, "reader")
     vault = _vault(acl, project)
 
-    text = _read(vault / "pm" / "raid.md")
+    text = _read(vault / "pm" / _RAID_FILE)
     if text is None:
         return {"ok": True, "entries": [], "count": 0}
 
