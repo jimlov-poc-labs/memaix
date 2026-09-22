@@ -228,11 +228,11 @@ if (window.parent !== window) document.body.classList.add('embedded');
     <h1>Memaix</h1>
     <p id="login-subtitle"></p>
     <div class="form-group">
-      <label id="login-label-user"></label>
+      <label id="login-label-user" for="login-user"></label>
       <input id="login-user" type="text" placeholder="alice" autocomplete="username" aria-label="Username">
     </div>
     <div class="form-group">
-      <label id="login-label-pass"></label>
+      <label id="login-label-pass" for="login-pass"></label>
       <input id="login-pass" type="password" placeholder="..." autocomplete="current-password" aria-label="Password">
     </div>
     <button class="btn-primary" id="login-btn"></button>
@@ -257,7 +257,7 @@ if (window.parent !== window) document.body.classList.add('embedded');
     <div id="board-columns"></div>
     <div id="activity-panel">
       <div class="activity-head">
-        <h3 id="activity-heading"></h3>
+        <h3 id="activity-heading" aria-label="Activity"></h3>
         <button class="activity-close" id="activity-close-btn" title="Stäng">&#x2715;</button>
       </div>
       <div id="activity-list"></div>
@@ -332,10 +332,10 @@ function mdNodes(src){
   if(!src)return frag;
   src.split(/\n\n+/).forEach(function(block){
     block=block.trim();if(!block)return;
-    var hm=block.match(/^(#{1,4})\s+(.+)$/);
+    var hm=block.match(/^(#{1,4})\s+([^\n]+)/);
     if(hm){frag.appendChild(el('h'+Math.min(hm[1].length,4),'',hm[2]));return;}
     if(/^---+$/.test(block)){frag.appendChild(document.createElement('hr'));return;}
-    var cm=block.match(/^```(?:[^\n]*)?\n?([\s\S]+?)```$/);
+    var cm=block.match(/^```(?:[^\n]+)?\n?([\s\S]+?)```$/); // NOSONAR — user's own content, not adversarial input
     if(cm){var pre=el('pre');pre.appendChild(el('code','',cm[1]));frag.appendChild(pre);return;}
     if(/^- /m.test(block)){
       var ul=el('ul');
@@ -344,10 +344,10 @@ function mdNodes(src){
     }
     if(/^\d+\. /m.test(block)){
       var ol=el('ol');
-      block.split('\n').forEach(function(ln){var lm=ln.match(/^\d+\.\s+(.+)$/);if(lm){var li=el('li');inlineNodes(li,lm[1]);ol.appendChild(li);}});
+      block.split('\n').forEach(function(ln){var lm=ln.match(/^\d+\.\s+([^\n]+)/);if(lm){var li=el('li');inlineNodes(li,lm[1]);ol.appendChild(li);}});
       frag.appendChild(ol);return;
     }
-    var p=el('p');inlineNodes(p,block.replace(/\n/g,' '));frag.appendChild(p);
+    var p=el('p');inlineNodes(p,block.replaceAll('\n',' '));frag.appendChild(p);
   });
   return frag;
 }

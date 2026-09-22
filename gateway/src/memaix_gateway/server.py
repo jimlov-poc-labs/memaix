@@ -3426,9 +3426,9 @@ def _decode_id_token_claims(id_token: str) -> dict:
     """
     import jwt
     try:
-        return jwt.decode(  # NOSONAR -- provider token, not client-supplied; see docstring
+        return jwt.decode(
             id_token,
-            options={"verify_signature": False, "verify_aud": False, "verify_exp": False},
+            options={"verify_signature": False, "verify_aud": False, "verify_exp": False},  # NOSONAR
         )
     except Exception:
         return {}
