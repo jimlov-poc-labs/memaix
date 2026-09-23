@@ -31,18 +31,16 @@ Bärande principer (se [ARCHITECTURE.md](ARCHITECTURE.md)):
 
 Enda förkunskapen är **Docker + Compose v2**. Allt annat är containeriserat.
 
-**Snabbast (en rad):**
+Repot är privat än så länge, så det finns ingen publik adress för `curl … | sh` — den
+fastställs när repot publiceras. I dag: klona, läs, kör.
 ```bash
-curl -fsSL https://get.memaix.example/install.sh | sh
-```
-**Rekommenderat — ladda ner, läs, kör** (du kör kod du inte läst annars):
-```bash
-curl -fsSL https://get.memaix.example/install.sh -o install.sh
+git clone https://github.com/jimlov-poc-labs/memaix.git
+cd memaix
 less install.sh
-sh install.sh
+./install.sh
 ```
 
-Installern är orkestrering runt tre kommandon du också kan köra själv från `gateway/`:
+Installern är orkestrering runt tre kommandon du också kan köra själv från repots rot:
 
 | Kommando | Gör |
 |---|---|
