@@ -104,6 +104,28 @@ services:
       POSTGRES_DB: hydra
     volumes:
       - hydra-db:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: initdb:s tillfälliga server lyssnar bara på unix-socket,
+      # så TCP-kontrollen blir inte grön förrän den riktiga servern är uppe.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U hydra -d hydra"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    profiles: ["hydra"]
+
+  # Hydras schema. Utan det här steget dör `serve` vid varje start på en ny
+  # installation med "Unable to locate the table" och startar om i en loop —
+  # hittat av installer-e2e. Driften hade migrerats för hand en gång; ingen
+  # ny installation hade fungerat. Migreringen är idempotent: redan tillämpade
+  # steg hoppas över, så befintliga instanser påverkas inte.
+  hydra-migrate:
+    image: oryd/hydra:v2.2
+    command: migrate sql -e --yes
+    environment:
+      DSN: postgres://hydra:${HYDRA_DB_PASSWORD}@postgres:5432/hydra?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
     profiles: ["hydra"]
 
   hydra:
@@ -134,7 +156,9 @@ services:
     ports:
       - "127.0.0.1:4444:4444"   # public API
       - "127.0.0.1:4445:4445"   # admin API
-    depends_on: [postgres]
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
     profiles: ["hydra"]
 
   # Valfritt: Nextcloud som backend för kalender (CalDAV) + filer (WebDAV).
