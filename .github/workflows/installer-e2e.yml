@@ -1,0 +1,80 @@
+# Installer-E2E: kör install.sh oövervakat på en ren Linux-runner, precis som en
+# ny användare från en klon, och kräver att `make doctor` blir grön.
+#
+# Täcker: install.sh (förkontroll, klon-detektering), bootstrap.py --init --yes
+# (trial-profil), config- och hemlighetsgenerering, vault-seed, `make up`
+# (bygger gateway + login-app, reser hydra-profilen: gateway, login-app, caddy,
+# postgres, hydra, ntfy), `make doctor` (config, gateway /health, Hydra
+# discovery), omkörning, samt hemlighetshygien: .env 600, inga hemligheter i
+# loggen, inget genererat som git ser.
+#
+# Täcker INTE: interaktiv wizard och webb-wizarden (setup.sh/setup.ps1),
+# selfhost/managed-spåren (riktig domän, Cloudflare-tunnel, TLS), inloggning
+# och OAuth-flödet genom Hydra/login-app, Nextcloud-provisionering,
+# `curl | sh` från publik URL (finns inte än — repot är privat), macOS/Windows.
+name: installer-e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  install-trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ingen setup-python: installern ska klara runnerns system-python3, som
+      # en ny användares maskin.
+      - name: Installera oövervakat (trial)
+        env:
+          MEMAIX_PROFILE: trial
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          ./install.sh --yes 2>&1 | tee "$RUNNER_TEMP/install.log"
+          echo "Installationen tog $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Omkörning är säker (hoppar över wizarden, doctor fortfarande grön)
+        run: |
+          set -o pipefail
+          ./install.sh --yes 2>&1 | tee -a "$RUNNER_TEMP/install.log"
+
+      - name: Hemlighetshygien
+        run: |
+          set -eu
+          perm=$(stat -c %a .env)
+          [ "$perm" = "600" ] || { echo "::error::.env har rättigheter $perm, inte 600"; exit 1; }
+          perm=$(stat -c %a config/initial-admin-password)
+          [ "$perm" = "600" ] || { echo "::error::initial-admin-password har $perm, inte 600"; exit 1; }
+          # Inget hemligt värde får synas i installationsloggen.
+          leaked=0
+          while IFS='=' read -r key val; do
+            case "$key" in ''|\#*|*_URL) continue ;; esac
+            [ "${#val}" -ge 12 ] || continue
+            if grep -qF -- "$val" "$RUNNER_TEMP/install.log"; then
+              echo "::error::$key syns i klartext i installationsloggen"; leaked=1
+            fi
+          done < .env
+          pw=$(cat config/initial-admin-password)
+          if grep -qF -- "$pw" "$RUNNER_TEMP/install.log"; then
+            echo "::error::adminlösenordet syns i loggen"; leaked=1
+          fi
+          [ "$leaked" = 0 ]
+          # Allt installern genererat ska vara gitignorerat.
+          dirty=$(git status --porcelain --untracked-files=all)
+          if [ -n "$dirty" ]; then
+            echo "::error::installationen lämnade filer som git ser:"; echo "$dirty"; exit 1
+          fi
+
+      - name: Diagnostik vid fel
+        if: failure()
+        run: |
+          docker compose --profile hydra ps -a || true
+          docker compose --profile hydra logs --no-color --tail 200 || true
+
+      - name: Riv ned
+        if: always()
+        run: docker compose --profile hydra --profile tunnel --profile nextcloud down -v --remove-orphans || true

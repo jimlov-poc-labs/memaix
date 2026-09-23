@@ -5,6 +5,9 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 Lägen:
   --init          Interaktiv wizard: genererar all config + hemligheter (front-dörren)
+  --init --yes    Oövervakad: svaren från miljön (MEMAIX_PROFILE, MEMAIX_DOMAIN,
+                  MEMAIX_ADMIN_USER, MEMAIX_ADMIN_PASSWORD, MEMAIX_PROJECT …)
+  --doctor [--wait N]  Hälsokontroll; väntar först upp till N s på gatewayen
   --trial         Tier 0: lokal stdio-MCP, inget tunnel/OAuth/domän
   --tunnel        Tier 1: startar stacken med Cloudflare-tunnel
   --no-nextcloud  Hoppar över Nextcloud-provisionering
@@ -63,7 +66,9 @@ def env_set(key: str, value: str) -> None:
             out.append(line)
     if not found:
         out.append(f"{key}={value}")
-    ENV.write_text("\n".join(out) + "\n")
+    import setup_engine as engine
+
+    engine.write_secret_file(ENV, "\n".join(out) + "\n")
 
 
 def _fernet_key() -> str:
@@ -247,8 +252,6 @@ def run_wizard() -> None:
         print("Avbrutet.")
         sys.exit(0)
 
-    # ── Skriv config (setup_engine — samma motor som webb-wizarden) ──────────
-    print("\nGenererar config och hemligheter …")
     import setup_engine as engine
 
     answers = {
@@ -267,6 +270,18 @@ def run_wizard() -> None:
         "llm_endpoint": llm_endpoint,
         "llm_api_key": llm_api_key,
     }
+    apply_answers(answers)
+
+
+def apply_answers(answers: dict, *, open_browser: bool = True) -> None:
+    """Skriv config, seeda vaults, res stacken (icke-trial). Delas av den
+    interaktiva wizarden och --init --yes."""
+    import setup_engine as engine
+
+    track = answers["track"]
+    tunnel_provider = answers["tunnel_provider"]
+    project_name = answers["project_name"]
+    print("\nGenererar config och hemligheter …")
     errors = engine.validate(answers)
     if errors:
         for e in errors:
@@ -291,14 +306,14 @@ def run_wizard() -> None:
         profiles = ["--profile", "hydra"]
         if tunnel_provider in ("cloudflare", "cloudflare-quick"):
             profiles += ["--profile", "tunnel"]
-        sh("docker", "compose", *profiles, "up", "-d", cwd=str(ROOT))
+        sh("docker", "compose", *profiles, "up", "-d", "--build", cwd=str(ROOT))
         print("  ✓ Stacken uppe.")
         if tunnel_provider == "cloudflare-quick":
             print("  Hitta quick-tunnel-URL:en i loggarna:")
             print("  docker compose logs cloudflared | grep trycloudflare")
 
     # Generera och öppna setup-sidan
-    _generate_setup_page(public_url, admin_user)
+    _generate_setup_page(engine.public_url(answers), answers["admin_user"], open_browser)
 
     print()
     hr()
@@ -308,7 +323,57 @@ def run_wizard() -> None:
     print()
 
 
-def _generate_setup_page(public_url: str, admin_user: str) -> None:
+_PROFILE_TRACKS = {
+    "trial": 1,
+    "selfhost": 2, "self-host": 2, "solo": 2, "team": 2,
+    "managed": 3, "customer": 3,
+}
+
+
+def run_unattended() -> None:
+    """--init --yes: samma motor som wizarden, svaren från miljön.
+
+    Inget lösenord i miljön → ett slumpat skrivs till en 600-fil under
+    config/ (gitignorerad). Det skrivs aldrig ut; bara sökvägen gör det.
+    """
+    import setup_engine as engine
+
+    profile = os.environ.get("MEMAIX_PROFILE", "trial").strip().lower()
+    if profile not in _PROFILE_TRACKS:
+        sys.exit(f"Okänd MEMAIX_PROFILE '{profile}' — välj trial, selfhost eller managed.")
+    track = _PROFILE_TRACKS[profile]
+    tunnel_token = os.environ.get("MEMAIX_TUNNEL_TOKEN", "")
+
+    answers = {
+        **engine.defaults(),
+        "track": track,
+        "name": os.environ.get("MEMAIX_NAME", "Memaix"),
+        "support_email": os.environ.get("MEMAIX_SUPPORT_EMAIL", "support@example.com"),
+        "domain": os.environ.get("MEMAIX_DOMAIN", "") if track != 1 else "",
+        "tunnel_provider": "cloudflare" if tunnel_token and track != 1 else "none",
+        "tunnel_token": tunnel_token if track != 1 else "",
+        "admin_user": os.environ.get("MEMAIX_ADMIN_USER", "admin"),
+        "project_name": os.environ.get("MEMAIX_PROJECT", "shared"),
+    }
+
+    password = os.environ.get("MEMAIX_ADMIN_PASSWORD", "")
+    generated_pw_file = None
+    if not password:
+        password = secrets.token_urlsafe(18)
+        CONFIG.mkdir(exist_ok=True)
+        generated_pw_file = CONFIG / "initial-admin-password"
+        engine.write_secret_file(generated_pw_file, password + "\n")
+    answers["password"] = password
+
+    print(f"  Profil: {profile} (spår {track}) · admin: {answers['admin_user']} "
+          f"· projekt: {answers['project_name']}")
+    apply_answers(answers, open_browser=False)
+    if generated_pw_file:
+        print(f"  Adminlösenordet slumpades och ligger i {generated_pw_file.relative_to(ROOT)}"
+              " (chmod 600). Byt det efter första inloggningen.")
+
+
+def _generate_setup_page(public_url: str, admin_user: str, open_browser: bool = True) -> None:
     """Generera setup-complete.html och öppna i webbläsaren."""
     import importlib.util, webbrowser
     output = ROOT / "setup-complete.html"
@@ -317,6 +382,8 @@ def _generate_setup_page(public_url: str, admin_user: str) -> None:
     spec.loader.exec_module(mod)
     mod.generate(public_url, admin_user, str(output))
     print(f"\n  ✓ Instruktioner sparade: {output.name}")
+    if not open_browser:
+        return
     try:
         webbrowser.open(output.as_uri())
         print("  Sidan öppnas i din webbläsare.")
@@ -349,10 +416,9 @@ _DB_DEFAULTS = {
 def ensure_secrets() -> None:
     if not ENV.exists():
         example = ROOT / ".env.example"
-        if example.exists():
-            ENV.write_text(example.read_text())
-        else:
-            ENV.write_text("")
+        import setup_engine as engine
+
+        engine.write_secret_file(ENV, example.read_text() if example.exists() else "")
     if not env_get("HYDRA_DB_PASSWORD"):
         env_set("HYDRA_DB_PASSWORD", secrets.token_hex(32))
     if not env_get("HYDRA_SYSTEM_SECRET"):
@@ -431,9 +497,45 @@ def wait_for_nextcloud(timeout: int = 300) -> None:
     sys.exit("Nextcloud blev inte klar i tid.")
 
 
-def run_doctor() -> None:
+def _wait_for_gateway(seconds: int) -> None:
+    """Vänta tills gatewayen svarar, högst `seconds`. Direkt efter `make up`
+    bygger/startar containrarna fortfarande. Detta är bara väntan — själva
+    kontrollerna nedan körs oförändrade och avgör utfallet."""
+    if seconds <= 0:
+        return
+    print(f"Väntar upp till {seconds} s på att gatewayen ska svara …")
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen("http://localhost:8080/health", timeout=3)
+            return
+        except Exception:
+            time.sleep(3)
+
+
+def _ensure_yaml() -> None:
+    try:
+        import yaml  # noqa: F401
+        return
+    except ImportError:
+        pass
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit("PyYAML saknas och kunde inte installeras med pip. Installera det "
+                 "(t.ex. 'apt install python3-yaml' eller 'pip install pyyaml') och kör igen.")
+    import site, importlib
+    importlib.invalidate_caches()
+    user_site = site.getusersitepackages()
+    if user_site not in sys.path:
+        sys.path.append(user_site)
+
+
+def run_doctor(wait: int = 0) -> None:
     """Enkel hälsokontroll — körs av 'make doctor'."""
     import json, urllib.error
+    _ensure_yaml()
+    _wait_for_gateway(wait)
     ok = True
 
     def check(label: str, ok_: bool, hint: str = "") -> None:
@@ -519,15 +621,19 @@ def main() -> None:
     args = sys.argv[1:]
 
     if "--init" in args:
-        try:
-            import yaml  # noqa: F401
-        except ImportError:
-            subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"], check=True)
-        run_wizard()
+        # Wizarden och setup_engine är ren stdlib — ingen PyYAML behövs här.
+        if "--yes" in args or "-y" in args:
+            run_unattended()
+        else:
+            run_wizard()
         return
 
     if "--doctor" in args:
-        run_doctor()
+        wait = 0
+        if "--wait" in args:
+            i = args.index("--wait")
+            wait = int(args[i + 1]) if i + 1 < len(args) and args[i + 1].isdigit() else 120
+        run_doctor(wait)
         return
 
     # Legacy install-läge

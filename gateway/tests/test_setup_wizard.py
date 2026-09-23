@@ -209,3 +209,62 @@ def test_validate_llm():
         llm_provider="google", llm_model="gemini-2.5-pro", llm_api_key="k"))
     assert not engine.validate(_answers(
         llm_provider="vllm", llm_model="m", llm_endpoint="https://gpu.moln.se:8000"))
+
+
+# ───────────────────────────── installer ───────────────────────────────────
+
+
+def test_env_is_600_even_when_it_existed_open(tmp_path):
+    """.env ska aldrig ha umask-rättigheter, inte heller om en äldre fil
+    låg kvar med 644 — den stramas åt innan hemligheterna skrivs."""
+    env = tmp_path / ".env"
+    env.write_text("OLD=1\n")
+    env.chmod(0o644)
+    engine.write_config(_answers(), tmp_path)
+    assert (env.stat().st_mode & 0o777) == 0o600
+
+
+def test_write_config_compose_profiles_and_mount_dirs(tmp_path):
+    engine.write_config(_answers(), tmp_path)
+    env = (tmp_path / ".env").read_text()
+    assert "COMPOSE_PROFILES=hydra\n" in env
+    for d in ("data", "data/login-app", "vaults"):
+        assert (tmp_path / d).is_dir()
+
+    engine.write_config(
+        _answers(track=2, domain="mcp.acme.se", tunnel_provider="cloudflare"), tmp_path
+    )
+    assert "COMPOSE_PROFILES=hydra,tunnel\n" in (tmp_path / ".env").read_text()
+
+
+def test_unattended_init_generates_password_file(tmp_path, monkeypatch, capsys):
+    import bootstrap
+
+    for d in ("vault-template",):
+        (tmp_path / d).mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "setup_page.py").write_text(
+        (SCRIPTS / "setup_page.py").read_text()
+    )
+    monkeypatch.setattr(bootstrap, "ROOT", tmp_path)
+    monkeypatch.setattr(bootstrap, "CONFIG", tmp_path / "config")
+    monkeypatch.setenv("MEMAIX_PROFILE", "trial")
+    monkeypatch.delenv("MEMAIX_ADMIN_PASSWORD", raising=False)
+
+    bootstrap.run_unattended()
+
+    pw_file = tmp_path / "config" / "initial-admin-password"
+    assert (pw_file.stat().st_mode & 0o777) == 0o600
+    password = pw_file.read_text().strip()
+    assert len(password) >= 20
+    assert password not in capsys.readouterr().out
+    acl = yaml.safe_load((tmp_path / "config" / "acl.yaml").read_text())
+    assert acl["users"]["admin"]["admin"] is True
+
+
+def test_unattended_rejects_unknown_profile(monkeypatch):
+    import bootstrap
+
+    monkeypatch.setenv("MEMAIX_PROFILE", "bogus")
+    with pytest.raises(SystemExit):
+        bootstrap.run_unattended()

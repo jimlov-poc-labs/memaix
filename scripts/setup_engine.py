@@ -45,6 +45,33 @@ def fernet_key() -> str:
     return base64.urlsafe_b64encode(os.urandom(32)).decode()
 
 
+def write_secret_file(path: Path, content: str) -> None:
+    """Skriv en fil som aldrig är läsbar för andra, inte ens ett ögonblick.
+
+    write_text() + chmod() lämnar ett fönster där filen har umask-rättigheter
+    (typiskt 644). Här skapas den med 600 direkt, och en befintlig fil
+    stramas åt innan innehållet skrivs.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        os.write(fd, content.encode())
+    finally:
+        os.close(fd)
+    if not hasattr(os, "fchmod"):  # Windows
+        path.chmod(0o600)
+
+
+def compose_profiles(a: dict) -> str:
+    """Compose-profiler för spåret. Hydra-profilen bär gateway + OAuth-stacken
+    och behövs i alla spår (gatewayen kör HTTP och doctor kräver Hydra)."""
+    profiles = ["hydra"]
+    if a.get("tunnel_provider") in ("cloudflare", "cloudflare-quick"):
+        profiles.append("tunnel")
+    return ",".join(profiles)
+
+
 def defaults() -> dict:
     return {
         "track": TRACK_TRIAL,
@@ -188,11 +215,21 @@ def write_config(a: dict, root: Path) -> dict:
         f"NEXTCLOUD_ADMIN_PASSWORD={secrets.token_hex(16)}",
         "NEXTCLOUD_PUBLIC_HOST=",
     ]
+    # Compose läser .env för variabelsubstitution: vilka profiler `make up`
+    # ska resa, och vilket uid gatewayen kör som mot bind-mountarna (samma
+    # ägare som skrev vaults/ och data/ här, annars vägrar git — se compose).
+    env_lines.append(f"COMPOSE_PROFILES={compose_profiles(a)}")
+    if hasattr(os, "getuid"):
+        env_lines.append(f"MEMAIX_UID={os.getuid()}")
+        env_lines.append(f"MEMAIX_GID={os.getgid()}")
     if a.get("llm_api_key"):
         env_lines.append(f"LLM_API_KEY={a['llm_api_key']}")
-    env_path = root / ".env"
-    env_path.write_text("\n".join(env_lines) + "\n")
-    env_path.chmod(0o600)
+    write_secret_file(root / ".env", "\n".join(env_lines) + "\n")
+
+    # Skapa bind-mount-katalogerna själva. Saknas de skapar Docker dem som
+    # root, och gatewayen (som kör som MEMAIX_UID) kan då inte skriva /data.
+    for d in ("data", "data/login-app", "vaults"):
+        (root / d).mkdir(parents=True, exist_ok=True)
 
     return {
         "track": a["track"],
