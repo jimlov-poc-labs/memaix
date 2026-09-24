@@ -17,6 +17,13 @@ _imap duck type (must implement):
     as imap_tools.MailMessage does); email_create_draft reads Message-ID and
     References from it to thread a reply.
   folder.set(name: str)
+    — every adapter must accept "ALL" (= the whole mailbox) itself:
+    MultiMailBackend passes the same name to every source, so a name only
+    some adapters understand fails on the others (2026-09-24: "ALL" on
+    Gmail/Graph but not IMAP; see connectors/adapters/mail_imap_all.py).
+    Optional attribute `source_errors` ([{source, error}]) after fetch
+    reports parts that failed; email_list/email_search append it as a
+    warning row.
   folder.list() -> [FolderInfo(name, delim, flags)]   (optional; real IMAP
     only — used to find the SPECIAL-USE \\Drafts folder)
   append(message: bytes, folder='INBOX', dt=None, flag_set=None)
@@ -102,13 +109,39 @@ def _inbox_of(m, mb, fallback: str) -> str:
 def _make_mailbox(acl: Acl, project: str):
     from imap_tools import MailBox
 
+    from ..connectors.adapters.mail_imap_all import wrap
+
     cfg = _mailbox_cfg(acl, project)
     password = config.secret(cfg.get("password_ref"))
     if password is None:
         raise ValueError(f"no password configured for mailbox (project {project!r})")
     mb = MailBox(cfg["host"])
     mb.login(cfg["user"], password)
-    return mb
+    # A real IMAP server has no "ALL" folder; the wrapper makes
+    # folder="ALL" mean every folder, as it does on Gmail and Graph.
+    return wrap(mb)
+
+
+def _with_source_errors(rows: list[dict], mb) -> list[dict]:
+    """Append a warning row if part of the mailbox could not be read.
+
+    A backend that fans out (MultiMailBackend over several sources,
+    AllFoldersMailBox over several folders) no longer fails the whole call
+    when one part fails; it returns what it could and lists the rest in
+    `source_errors`. Returning the hits without saying so would pass a
+    partial result off as complete, so the caller gets a final row:
+    {"warning": ..., "source_errors": [{"source", "error"}, ...]}.
+    """
+    errors = getattr(mb, "source_errors", None)
+    if not isinstance(errors, list) or not errors:
+        return rows
+    return rows + [{
+        "warning": (
+            f"Ofullständigt resultat: {len(errors)} källa/källor kunde inte läsas (se source_errors). "
+            "Träffarna kommer bara från de källor som svarade."
+        ),
+        "source_errors": errors,
+    }]
 
 
 def _imap_quote(value: str) -> str:
@@ -157,13 +190,14 @@ def email_list(
     *,
     _imap=None,
 ) -> list[dict]:
-    """List recent messages.  Returns [{id, subject, from, date, seen, inbox}]."""
+    """List recent messages.  Returns [{id, subject, from, date, seen, inbox}],
+    plus a final {warning, source_errors} row if a source could not be read."""
     acl.enforce(user_id, project, "collaborator")
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
     mb.folder.set(folder)
     msgs = list(mb.fetch("ALL", mark_seen=False, limit=limit))
     fallback = _inbox_address(acl, project)
-    return [_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs]
+    return _with_source_errors([_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs], mb)
 
 
 def email_read(
@@ -210,7 +244,10 @@ def email_search(
     query languages (connectors/adapters/mail_criteria.py) and refuse
     anything they can't translate rather than returning unfiltered mail.
 
-    Returns [{id, subject, from, date, seen, inbox}].
+    Returns [{id, subject, from, date, seen, inbox}]. When several sources
+    (or, with folder="ALL", several IMAP folders) are searched and some
+    fail, the others' hits are still returned, followed by one
+    {warning, source_errors} row naming what failed.
 
     Args:
         query:     Text to match (omit for header-only searches). IMAP matches
@@ -221,7 +258,9 @@ def email_search(
         until:     ISO date string YYYY-MM-DD — only messages before this date.
         from_addr: Sender address or domain to filter on (e.g. "anthropic.com").
         folder:    Mailbox folder to search (default "INBOX"; "ALL" searches
-                   all mail, archived included, on Gmail and Graph sources).
+                   all mail, archived included: every folder except trash
+                   and junk on an IMAP source, no label/folder filter on
+                   Gmail and Graph).
     """
     acl.enforce(user_id, project, "collaborator")
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
@@ -240,7 +279,7 @@ def email_search(
 
     msgs = list(mb.fetch(criteria, mark_seen=False, limit=limit))
     fallback = _inbox_address(acl, project)
-    return [_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs]
+    return _with_source_errors([_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs], mb)
 
 
 # Logical name for the drafts folder. The REST adapters (Gmail API, Graph)

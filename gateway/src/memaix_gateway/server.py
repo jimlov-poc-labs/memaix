@@ -2267,7 +2267,11 @@ def email_search(
                    (so since=2026-09-01, until=2026-10-01 is all of September).
         from_addr: Sender address or domain, e.g. "anthropic.com" or "noreply@loopia.se".
         folder:    Mailbox folder (default "INBOX"). "ALL" searches all mail,
-                   archived included, on Gmail and Microsoft sources.
+                   archived included (on an IMAP mailbox: every folder
+                   except trash and junk).
+
+    If one mail source (or IMAP folder) fails, the rest are still searched;
+    the result then ends with a {warning, source_errors} row naming it.
     """
     return _tool_call(
         "email_search", project,
