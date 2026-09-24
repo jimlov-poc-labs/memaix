@@ -22,7 +22,52 @@ still resolves `_mailbox_cfg`/SMTP config directly in tools/email.py.
 
 from __future__ import annotations
 
+import datetime
+from email.utils import parsedate_to_datetime
 from typing import Iterable, Protocol, cast
+
+_EPOCH = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def source_address(label: str) -> str:
+    """The mailbox address a source label names, or "" if it names none.
+
+    Per-user sources are labelled "{type}:{account}" by registry.get_all
+    ("google_mail:jimmy@jimlov.se"); the account IS the inbox address. A
+    shared acl.yaml source is "{type}:{project}" and has no address of its
+    own here — tools/email.py falls back to the acl.yaml mailbox user.
+    """
+    _, _, account = label.partition(":")
+    return account if "@" in account else ""
+
+
+def _as_aware(dt: datetime.datetime) -> datetime.datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+
+
+def message_time(m) -> datetime.datetime:
+    """Best-effort timestamp of a fetched message, for ordering a merge.
+
+    imap_tools messages carry a parsed `.date`; the REST adapters only have
+    `date_str` — an RFC 2822 Date header (Gmail), ISO 8601 (Graph) or epoch
+    milliseconds (Gmail's internalDate fallback). Unparseable sorts last.
+    """
+    date = getattr(m, "date", None)
+    if isinstance(date, datetime.datetime) and date.year > 1900:
+        return _as_aware(date)
+    raw = str(getattr(m, "date_str", "") or "").strip()
+    if not raw:
+        return _EPOCH
+    if raw.isdigit():
+        return datetime.datetime.fromtimestamp(int(raw) / 1000, tz=datetime.timezone.utc)
+    try:
+        return _as_aware(parsedate_to_datetime(raw))
+    except (TypeError, ValueError, IndexError):
+        pass
+    try:
+        return _as_aware(datetime.datetime.fromisoformat(raw))
+    except ValueError:
+        return _EPOCH
 
 
 class _MailSource(Protocol):
@@ -87,8 +132,13 @@ class MultiMailBackend:
         return _MultiMailFolderProxy(self)
 
     def _labeled(self, label: str, msgs):
+        address = source_address(label)
         for m in msgs:
             m.uid = f"{label}{self._SEP}{m.uid}"
+            if address:
+                # Which inbox this came from — per source, not the project's
+                # acl.yaml mailbox stamped on everything (tools/email.py).
+                m.inbox = address
             yield m
 
     def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None):
@@ -110,14 +160,16 @@ class MultiMailBackend:
                     return list(self._labeled(label, result))
             return []
 
-        # ALL / BODY "..." / date-range criteria — fan out to every source and
-        # merge. `limit` is applied per-source AND to the merged result so a
-        # single noisy mailbox can't crowd out the others while still
-        # respecting the caller's overall cap.
+        # Search/list criteria — fan out to every source and merge. Each
+        # source returns up to `limit`, and the merge is ordered newest first
+        # BEFORE it is cut to `limit`: concatenating and slicing would let
+        # whichever source came first fill the whole result and crowd every
+        # other mailbox's matches out, however much newer they were.
         merged = []
         for label, adapter in self._sources:
             result = list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
             merged.extend(self._labeled(label, result))
+        merged.sort(key=message_time, reverse=True)
         if limit:
             merged = merged[:limit]
         return merged

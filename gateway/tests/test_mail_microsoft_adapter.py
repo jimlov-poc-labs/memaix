@@ -97,22 +97,103 @@ def test_fetch_by_uid(adapter):
     assert msgs[0].uid == "m1"
 
 
-def test_fetch_body_search(adapter):
-    msgs = adapter.fetch('BODY "this is the body"')
+def _params(http) -> dict:
+    return [r[2].get("params") or {} for r in http.requests if r[0] == "GET"][0]
+
+
+def test_fetch_text_search(adapter):
+    msgs = adapter.fetch('TEXT "this is the body"')
     assert len(msgs) == 1
     # ConsistencyLevel header required by Graph for $search
     method, url, kwargs = [r for r in adapter._http.requests if "$search" in (r[2].get("params") or {})][0]
     assert kwargs["headers"]["ConsistencyLevel"] == "eventual"
 
 
-def test_fetch_body_search_unescapes_imap_quoting(adapter):
-    # tools/email.py's _imap_quote would have escaped a literal backslash/quote;
-    # the adapter must undo that before handing the term to Graph.
+def test_fetch_text_search_unescapes_imap_quoting(adapter, http):
+    # tools/email.py's _imap_quote escapes a literal backslash/quote; the
+    # criteria parser must undo that before the term reaches Graph.
     from memaix_gateway.tools.email import _imap_quote
 
-    escaped = _imap_quote('this is the body')
-    msgs = adapter.fetch(f'BODY "{escaped}"')
-    assert len(msgs) == 1
+    adapter.fetch(f'TEXT "{_imap_quote("a back\\\\slash")}"')
+    assert _params(http)["$search"] == '"a back\\\\slash"'
+
+
+def test_sender_and_dates_become_one_kql_search(adapter, http):
+    """Graph refuses $search combined with $filter on messages, so a sender
+    or text criterion carries the dates inside the KQL."""
+    adapter.fetch('SINCE 01-Sep-2026 BEFORE 01-Oct-2026 FROM "anthropic.com" TEXT "faktura"')
+    params = _params(http)
+    assert params["$search"] == '"from:anthropic.com received>=2026-09-01 received<2026-10-01 faktura"'
+    assert "$filter" not in params
+
+
+def test_dates_alone_become_a_filter_newest_first(adapter, http):
+    adapter.fetch("SINCE 01-Sep-2026 BEFORE 01-Oct-2026")
+    params = _params(http)
+    assert params["$filter"] == (
+        "receivedDateTime ge 2026-09-01T00:00:00Z and receivedDateTime lt 2026-10-01T00:00:00Z"
+    )
+    assert params["$orderby"] == "receivedDateTime desc"
+    assert "$search" not in params
+
+
+def test_list_selects_no_body(adapter, http):
+    adapter.fetch("ALL")
+    assert "body" not in _params(http)["$select"].split(",")
+
+
+def test_untranslatable_criteria_raise(adapter, http):
+    from memaix_gateway.connectors.adapters.mail_criteria import UnsupportedCriteria
+
+    with pytest.raises(UnsupportedCriteria):
+        adapter.fetch('BODY "x"')
+    assert http.requests == []
+
+
+def test_limit_follows_next_link(http):
+    pages = {
+        None: {"value": [{"id": "a"}, {"id": "b"}], "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/next?p=2"},
+        "2": {"value": [{"id": "c"}, {"id": "d"}]},
+    }
+
+    class _Paged:
+        requests: list = []
+
+        def request(self, method, url, **kwargs):
+            self.requests.append((method, url, kwargs))
+            return _FakeResponse(pages["2" if url.endswith("p=2") else None])
+
+    adapter = GraphMailAdapter("tok", _http=_Paged())
+    assert [m.uid for m in adapter.fetch("ALL", limit=3)] == ["a", "b", "c"]
+
+
+def test_folder_all_uses_every_folder(adapter, http):
+    real = http.request
+
+    def _all_messages(method, url, **kwargs):
+        if url.endswith("/me/messages"):
+            http.requests.append((method, url, kwargs))
+            return _FakeResponse({"value": http.inbox})
+        return real(method, url, **kwargs)
+
+    http.request = _all_messages
+    adapter.folder.set("ALL")
+    assert [m.uid for m in adapter.fetch("SINCE 01-Sep-2026")] == ["m1"]
+    assert http.requests[0][1].endswith("/me/messages")
+
+
+def test_forbidden_mark_read_does_not_fail_the_read(adapter, http):
+    real = http.request
+
+    def _no_patch(method, url, **kwargs):
+        if method == "PATCH":
+            return _FakeResponse({"error": "forbidden"}, status_code=403)
+        return real(method, url, **kwargs)
+
+    http.request = _no_patch
+    (msg,) = adapter.fetch("UID m1", mark_seen=True)
+    assert msg.text == "hi there, this is the body"
+    assert msg.seen is False
 
 
 def test_fetch_mark_seen_patches_unread_messages(adapter, http):

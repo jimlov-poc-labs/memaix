@@ -226,9 +226,18 @@ verkligen bara kräver en ny adapter + registrering.
 Graphs REST-API (JSON, mapp-id:n, `$search`/`$filter`) ser inget ut som IMAP, men
 `connectors/base.py`'s `MailBackend` (och `tools/email.py`'s faktiska `_imap`-användning)
 speglar imap_tools exakt: `.folder.set(namn)`, `.fetch(criteria, mark_seen=, limit=)` med
-kriteriesträngarna `"ALL"` / `f"UID {id}"` / `f'BODY "{query}"'`, samt `.append(msg_bytes,
-flags, folder=)`. Adaptern översätter: en liten parser för de tre kriteriesträngarna
-`tools/email.py` någonsin skickar, en `.folder`-proxy som mappar mappnamn mot Graphs
+IMAP-kriterier (`ALL`, `UID <id>` och valfri kombination av `SINCE`/`BEFORE`/`FROM`/`TEXT`),
+samt `.append(msg_bytes, folder=, flag_set=)`. Adaptern översätter: den delade parsern
+`connectors/adapters/mail_criteria.py` (som Gmail-adaptern också använder) läser exakt det
+`tools/email.py` skickar och **vägrar** allt annat med `UnsupportedCriteria` — tidigare föll
+okända kriterier till "ALL" och `email_search` gav de senaste N mejlen ofiltrerat (backlog
+f70020ba). Graph får `$search` (KQL, med datumen som `received>=`/`received<`) när avsändare
+eller text finns, annars `$filter` på `receivedDateTime`; Gmail får `q` (`from:`/`after:`/
+`before:`/fritext). Båda bläddrar (`@odata.nextLink` resp. `pageToken`) upp till `limit`, och
+listning hämtar aldrig brödtext — bara `email_read` gör det. `email_read` markerar inte som
+läst om inte `mark_seen=True` begärs, och även då får ett misslyckat modify/PATCH aldrig fälla
+läsningen (ett länkat Gmail-konto med `gmail.readonly` får 403 på modify). En `.folder`-proxy
+som mappar mappnamn mot Graphs
 välkända mapp-id:n, och ett meddelande-omslag som exponerar samma attribut
 (`uid`/`subject`/`from_`/`date_str`/`seen`/`to`/`cc`/`text`/`html`) som imap_tools-meddelanden
 har. v1-omfång: läsning (list/read/search) + append-till-Drafts — allt `tools/email.py`

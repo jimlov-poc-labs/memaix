@@ -2198,10 +2198,19 @@ def _mail_backend(project: str, user: str):
         # case, so re-derive it via get() for an identical error message.
         registry.get(acl, token_store, project, "mail", user)
         raise ConnectorAuthRequired("mail", "unknown")  # pragma: no cover - get() above always raises first
-    if len(sources) == 1:
-        return sources[0][1]
+    from .connectors.adapters.mail_multi import MultiMailBackend, source_address
 
-    from .connectors.adapters.mail_multi import MultiMailBackend
+    if len(sources) == 1:
+        label, adapter = sources[0]
+        address = source_address(label)
+        if address:
+            # A linked account is its own inbox; tools/email.py labels its
+            # messages with this rather than the acl.yaml mailbox address.
+            try:
+                setattr(adapter, "inbox_address", address)
+            except AttributeError:
+                pass  # an adapter that refuses attributes just keeps the fallback
+        return adapter
 
     return MultiMailBackend(sources)
 
@@ -2224,9 +2233,15 @@ def email_list(project: str, folder: str = "INBOX", limit: int = 20) -> list:
 
 
 @mcp.tool()
-def email_read(project: str, id: str) -> dict:
-    """Read a message by UID."""
-    return _tool_call("email_read", project, _with_mail_backend(t_email.email_read), id)
+def email_read(project: str, id: str, mark_seen: bool = False) -> dict:
+    """Read a message by id (as returned by email_list/email_search).
+
+    Reading does not change the message. Pass mark_seen=True to also mark it
+    read; that is best-effort (a read-only linked account cannot) and never
+    makes the read itself fail."""
+    return _tool_call(
+        "email_read", project, _with_mail_backend(t_email.email_read), id, mark_seen=mark_seen,
+    )
 
 
 @mcp.tool()
@@ -2243,12 +2258,16 @@ def email_search(
 
     Args:
         project:   Memaix project whose mailbox to search.
-        query:     Body/subject text to match. Omit to search by date/sender only.
+        query:     Text to match. Omit to search by date/sender only. On a
+                   Gmail source this is a Gmail search, so operators such as
+                   has:attachment or subject:faktura work.
         limit:     Max messages to return (default 50).
         since:     ISO date YYYY-MM-DD — only messages on or after this date.
-        until:     ISO date YYYY-MM-DD — only messages before this date.
+        until:     ISO date YYYY-MM-DD — only messages before this date
+                   (so since=2026-09-01, until=2026-10-01 is all of September).
         from_addr: Sender address or domain, e.g. "anthropic.com" or "noreply@loopia.se".
-        folder:    Mailbox folder (default "INBOX").
+        folder:    Mailbox folder (default "INBOX"). "ALL" searches all mail,
+                   archived included, on Gmail and Microsoft sources.
     """
     return _tool_call(
         "email_search", project,

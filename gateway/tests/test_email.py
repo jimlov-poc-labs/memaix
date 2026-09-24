@@ -65,8 +65,8 @@ class _MockMailbox:
         if criteria and str(criteria).startswith("UID "):
             uid = str(criteria).split(None, 1)[1].strip()
             msgs = [m for m in msgs if str(m.uid) == uid]
-        # Crude body search: BODY "term"
-        elif criteria and 'BODY "' in str(criteria):
+        # Crude text search: TEXT "term" (what email_search sends)
+        elif criteria and 'TEXT "' in str(criteria):
             term = str(criteria).split('"')[1].lower()
             msgs = [m for m in msgs if term in (m.text or "").lower() or term in m.subject.lower()]
         if limit is not None:
