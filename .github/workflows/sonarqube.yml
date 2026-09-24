@@ -18,13 +18,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: gateway/pyproject.toml
 
       - name: Install deps and run tests with coverage
         run: |
           pip install -e "gateway/[dev]"
           pytest gateway/tests/ --cov=gateway/src/memaix_gateway --cov-report=xml:coverage.xml
 
-      - uses: SonarSource/sonarqube-scan-action@v5
+      # The scanner's JRE and analyzer plugins land in ~/.sonar/cache. The
+      # scanner verifies each against the server's checksum and downloads it
+      # again on mismatch, so a restored cache only saves the transfer.
+      - name: Cache SonarQube scanner downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: sonar-${{ runner.os }}-${{ hashFiles('**/sonar-project.properties') }}
+          restore-keys: sonar-${{ runner.os }}-
+
+      - uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonar.jimlov.se
