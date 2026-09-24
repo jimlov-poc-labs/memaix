@@ -16,10 +16,12 @@ so each linked mailbox is its own row/token).
 shared-IMAP case. This module is only ever reached through the registry's
 `imap_user` connector spec (catalog.py), never imported by tools/email.py.
 
-The object returned is a real `imap_tools.MailBox` (not a wrapper), so it
-satisfies `tools/email.py`'s `_imap` duck type (`.folder.set`, `.fetch`,
-`.append`, `.logout`, and message objects with `.flags`) exactly — no
-translation layer needed, unlike the Microsoft Graph adapter.
+The object returned is a real `imap_tools.MailBox` behind a thin
+pass-through (`mail_imap_all.AllFoldersMailBox`, which only adds
+`folder="ALL"` = every folder), so it satisfies `tools/email.py`'s `_imap`
+duck type (`.folder.set`, `.fetch`, `.append`, `.logout`, and message
+objects with `.flags`) exactly — no translation layer needed, unlike the
+Microsoft Graph adapter.
 """
 
 from __future__ import annotations
@@ -41,7 +43,9 @@ def build_mailbox(token: dict):
     if not host or not user or not password:
         raise ValueError("imap token missing required field(s): host, user, password")
 
+    from .mail_imap_all import wrap
+
     port = token.get("port")
     mb = MailBox(host, port=int(port)) if port else MailBox(host)
     mb.login(user, password)
-    return mb
+    return wrap(mb)

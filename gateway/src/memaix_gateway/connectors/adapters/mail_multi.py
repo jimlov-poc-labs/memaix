@@ -92,9 +92,16 @@ class _MultiMailFolderProxy:
         self._backend = backend
 
     def set(self, name: str) -> None:
+        """Select `name` on every source. A source that refuses it (an IMAP
+        server without that folder) is remembered, not raised: the next
+        fetch reports it and searches the sources that accepted it."""
         self._backend._folder = name
-        for _, adapter in self._backend._sources:
-            adapter.folder.set(name)
+        self._backend._set_errors = {}
+        for label, adapter in self._backend._sources:
+            try:
+                adapter.folder.set(name)
+            except Exception as exc:  # noqa: BLE001 - reported by the next fetch, see MultiMailBackend.fetch
+                self._backend._set_errors[label] = exc
 
 
 class MultiMailBackend:
@@ -108,9 +115,13 @@ class MultiMailBackend:
     fetch back to the one source that owns it. "|" (not ":") is the
     separator on purpose: source labels are `"{type}:{account_email}"`
     (registry.get_all's convention, e.g. "imap_user:alice@work.com") and
-    already contain colons, so splitting on the LAST "|" (never appears in
-    a label or a real IMAP UID) is unambiguous where splitting on ":" would
-    not be.
+    already contain colons, so splitting on the FIRST "|" (never appears in
+    a label) is unambiguous where splitting on ":" would not be. What
+    follows it is the source's own id, which may itself contain "|"
+    (AllFoldersMailBox's "{folder}|{uid}" in folder="ALL" mode).
+
+    A source that fails (refuses the folder, errors on fetch) does not fail
+    the merged search; see `fetch` and `source_errors`.
     """
 
     _SEP = "|"
@@ -126,6 +137,10 @@ class MultiMailBackend:
             (label, cast(_MailSource, adapter)) for label, adapter in sources
         ]
         self._folder = "INBOX"
+        # Per-source failures: folder.set's are held until the next fetch,
+        # which reports them (with its own) in source_errors.
+        self._set_errors: dict[str, Exception] = {}
+        self.source_errors: list[dict] = []
 
     @property
     def folder(self) -> _MultiMailFolderProxy:
@@ -142,6 +157,7 @@ class MultiMailBackend:
             yield m
 
     def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None):
+        self.source_errors = []
         if criteria.startswith("UID "):
             wanted = criteria[len("UID "):]
             if self._SEP not in wanted:
@@ -153,7 +169,9 @@ class MultiMailBackend:
                     if result:
                         return list(self._labeled(label, result))
                 return []
-            label, _, real_uid = wanted.rpartition(self._SEP)
+            # The FIRST "|": a label never contains one, but the source's own
+            # id may (AllFoldersMailBox ids are "{folder}|{uid}").
+            label, _, real_uid = wanted.partition(self._SEP)
             for src_label, adapter in self._sources:
                 if src_label == label:
                     result = list(adapter.fetch(f"UID {real_uid}", mark_seen=mark_seen))
@@ -165,10 +183,32 @@ class MultiMailBackend:
         # BEFORE it is cut to `limit`: concatenating and slicing would let
         # whichever source came first fill the whole result and crowd every
         # other mailbox's matches out, however much newer they were.
+        #
+        # One failing source does not fail the others: its error goes into
+        # `source_errors` (tools/email.py turns that into a warning next to
+        # the hits). Only when EVERY source failed is the first error raised.
         merged = []
+        errors: list[dict] = []
+        first_exc: Exception | None = None
+        failed = 0
         for label, adapter in self._sources:
-            result = list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
+            try:
+                set_exc = self._set_errors.get(label)
+                if set_exc is not None:
+                    raise set_exc
+                result = list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
+            except Exception as exc:  # noqa: BLE001 - reported in source_errors, raised if nothing worked
+                first_exc = first_exc or exc
+                failed += 1
+                errors.append({"source": label, "error": str(exc) or type(exc).__name__})
+                continue
+            # A source may itself be partial (AllFoldersMailBox: one folder failed).
+            for err in getattr(adapter, "source_errors", None) or []:
+                errors.append({"source": f"{label} {err.get('source', '')}".strip(), "error": err.get("error", "")})
             merged.extend(self._labeled(label, result))
+        if first_exc is not None and failed == len(self._sources):
+            raise first_exc
+        self.source_errors = errors
         merged.sort(key=message_time, reverse=True)
         if limit:
             merged = merged[:limit]
