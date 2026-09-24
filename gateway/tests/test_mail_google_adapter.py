@@ -237,7 +237,7 @@ def test_append_creates_a_draft_from_raw_mime():
     msg["To"] = "someone@example.com"
     msg.set_content("draft body")
 
-    GmailAdapter("tok", _http=http).append(msg.as_bytes(), "\\Draft", folder="Drafts")
+    GmailAdapter("tok", _http=http).append(msg.as_bytes(), folder="Drafts", flag_set=("\\Draft",))
 
     (created,) = http.drafts_created
     raw = created["message"]["raw"]
@@ -255,11 +255,57 @@ def test_append_preserves_in_reply_to_threading():
     msg["In-Reply-To"] = "<parent@example.com>"
     msg.set_content("reply")
 
-    GmailAdapter("tok", _http=http).append(msg.as_bytes(), "\\Draft", folder="Drafts")
+    GmailAdapter("tok", _http=http).append(msg.as_bytes(), folder="Drafts", flag_set=("\\Draft",))
 
     raw = http.drafts_created[0]["message"]["raw"]
     decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
     assert "In-Reply-To: <parent@example.com>" in decoded
+
+
+def test_append_pins_reply_draft_to_the_originals_thread():
+    """drafts.create only threads a draft when given threadId — headers
+    alone are not enough over the API."""
+
+    class _ThreadHttp(_FakeHttp):
+        def request(self, method, url, **kwargs):
+            params = kwargs.get("params") or {}
+            if method == "GET" and url.endswith("/messages") and str(params.get("q", "")).startswith("rfc822msgid:"):
+                self.requests.append((method, url, kwargs))
+                assert params["q"] == "rfc822msgid:parent@example.com"
+                return _FakeResponse({"messages": [{"id": "m1", "threadId": "t-77"}]})
+            return super().request(method, url, **kwargs)
+
+    http = _ThreadHttp()
+    msg = EmailMessage()
+    msg["Subject"] = "Re: thread"
+    msg["In-Reply-To"] = "<parent@example.com>"
+    msg.set_content("reply")
+
+    GmailAdapter("tok", _http=http).append(msg.as_bytes(), folder="Drafts", flag_set=("\\Draft",))
+
+    assert http.drafts_created[0]["message"]["threadId"] == "t-77"
+
+
+def test_append_without_reply_does_not_look_up_a_thread():
+    http = _FakeHttp()
+    msg = EmailMessage()
+    msg["Subject"] = "New"
+    msg.set_content("x")
+
+    GmailAdapter("tok", _http=http).append(msg.as_bytes(), folder="Drafts")
+
+    assert [r[0] for r in http.requests] == ["POST"]
+    assert "threadId" not in http.drafts_created[0]["message"]
+
+
+def test_fetched_message_exposes_imap_tools_style_headers():
+    m = _message("m9", "Hi", "b")
+    m["payload"]["headers"].append({"name": "Message-ID", "value": "<m9@example.com>"})
+    http = _FakeHttp(messages=[m])
+
+    fetched = GmailAdapter("tok", _http=http).fetch("UID m9")[0]
+
+    assert fetched.headers["message-id"] == ("<m9@example.com>",)
 
 
 def test_logout_is_a_noop():

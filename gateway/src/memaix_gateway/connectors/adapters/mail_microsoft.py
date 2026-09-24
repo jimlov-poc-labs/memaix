@@ -7,7 +7,7 @@ Graph's REST API (JSON, folder IDs, $search/$filter) doesn't look anything
 like IMAP, but connectors/base.py's MailBackend — and tools/email.py's
 actual `_imap` usage — mirror imap_tools' MailBox exactly: `.folder.set(name)`,
 `.fetch(criteria, mark_seen=, limit=)` with criteria strings "ALL" /
-f"UID {id}" / f'BODY "{query}"', and `.append(msg_bytes, flags, folder=)`.
+f"UID {id}" / f'BODY "{query}"', and `.append(message, folder=, flag_set=)`.
 Rather than redesigning that (forbidden — every other mail path must keep
 working unchanged), this adapter translates: a tiny parser for the exact
 three criteria strings tools/email.py ever sends, a `.folder` proxy mapping
@@ -47,6 +47,10 @@ class _GraphMessage:
         self.from_ = (data.get("from") or {}).get("emailAddress", {}).get("address", "")
         self.date_str = data.get("receivedDateTime") or data.get("sentDateTime") or ""
         self.seen = bool(data.get("isRead"))
+        # Same shape as imap_tools' MailMessage.headers, so email_create_draft
+        # can read the original's Message-ID when threading a reply.
+        internet_id = data.get("internetMessageId")
+        self.headers = {"message-id": (internet_id,)} if internet_id else {}
         self.to = [r["emailAddress"]["address"] for r in data.get("toRecipients", [])]
         self.cc = [r["emailAddress"]["address"] for r in data.get("ccRecipients", [])]
         body = data.get("body") or {}
@@ -129,11 +133,13 @@ class GraphMailAdapter:
                     m["isRead"] = True
         return [_GraphMessage(m) for m in messages]
 
-    def append(self, msg_bytes: bytes, flags: str, *, folder: str) -> None:
+    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None) -> None:
         """Graph has no raw-MIME append; parse the message tools/email.py
         built and re-create it as a Graph draft — a faithful translation of
-        the subject/to/cc/body fields email_create_draft actually sets."""
-        parsed: Message = message_from_bytes(msg_bytes)
+        the subject/to/cc/body fields email_create_draft actually sets.
+        Signature mirrors imap_tools.MailBox.append; `folder`, `dt` and
+        `flag_set` are ignored (this only ever creates drafts)."""
+        parsed: Message = message_from_bytes(message)
 
         def _addrs(header: str) -> list[dict]:
             raw = parsed.get(header, "")

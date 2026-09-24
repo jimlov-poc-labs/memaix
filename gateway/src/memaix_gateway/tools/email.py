@@ -10,8 +10,17 @@ _imap duck type (must implement):
     where msg has: uid, subject, from_, to, cc, date_str, text, html, and
     either flags (imap_tools.MailMessage) or seen (other connectors, e.g.
     the Microsoft Graph adapter) — _msg_to_dict checks for flags first.
+    Messages may also expose `headers` (lowercase name -> tuple of values,
+    as imap_tools.MailMessage does); email_create_draft reads Message-ID and
+    References from it to thread a reply.
   folder.set(name: str)
-  append(msg_bytes: bytes, flags: str, *, folder: str)
+  folder.list() -> [FolderInfo(name, delim, flags)]   (optional; real IMAP
+    only — used to find the SPECIAL-USE \\Drafts folder)
+  append(message: bytes, folder='INBOX', dt=None, flag_set=None)
+    — exactly imap_tools.MailBox.append's signature. Always call it with
+    `folder=` and `flag_set=` as keywords: the second positional slot is
+    `folder`, so `append(msg, "\\Draft", folder=...)` raises
+    "got multiple values for argument 'folder'" against a real MailBox.
   logout()
 
 _smtp duck type:
@@ -202,6 +211,77 @@ def email_search(
     return [_msg_to_dict(m) for m in msgs]
 
 
+# Logical name for the drafts folder. The REST adapters (Gmail API, Graph)
+# map it to their own drafts label/folder; a real IMAP mailbox gets it
+# replaced by resolve_drafts_folder() with the server's actual folder name.
+DRAFTS = "Drafts"
+_DRAFT_FLAG = "\\Draft"
+
+# Used only when the server does not advertise SPECIAL-USE (RFC 6154).
+# Gmail/Workspace IMAP localises the name ("[Gmail]/Utkast" for a Swedish
+# account) but always flags it \Drafts, so the flag lookup is what normally
+# wins; this list is the fallback for older servers.
+_DRAFTS_FALLBACK_NAMES = (
+    "[Gmail]/Drafts", "[Google Mail]/Drafts", "Drafts", "INBOX.Drafts", "INBOX/Drafts",
+    "Draft", "Utkast", "[Gmail]/Utkast", "[Google Mail]/Utkast",
+)
+
+
+def resolve_drafts_folder(mb) -> str:
+    """The name of `mb`'s drafts folder.
+
+    Prefers the folder flagged with SPECIAL-USE `\\Drafts`, then a known
+    name, then the logical DRAFTS. Adapters without `folder.list()` (the
+    Gmail API / Graph adapters, MultiMailBackend) get DRAFTS and translate it
+    themselves.
+    """
+    lister = getattr(getattr(mb, "folder", None), "list", None)
+    if not callable(lister):
+        return DRAFTS
+    folders = list(lister())
+    for f in folders:
+        if any(str(flag).lower() == "\\drafts" for flag in (getattr(f, "flags", None) or ())):
+            return f.name
+    by_lower = {f.name.lower(): f.name for f in folders}
+    for candidate in _DRAFTS_FALLBACK_NAMES:
+        if candidate.lower() in by_lower:
+            return by_lower[candidate.lower()]
+    return DRAFTS
+
+
+def _header(m, name: str) -> str:
+    """First value of header `name` on a fetched message, whitespace-unfolded."""
+    values = (getattr(m, "headers", None) or {}).get(name.lower()) or ()
+    if isinstance(values, str):
+        values = (values,)
+    return " ".join(values[0].split()) if values else ""
+
+
+def _resolve_reply_headers(mb, in_reply_to: str) -> tuple[str, str]:
+    """Return (In-Reply-To, References) for a reply to `in_reply_to`.
+
+    `in_reply_to` is either an RFC 5322 Message-ID ("<abc@host>", brackets
+    optional) or a Memaix message id as returned by email_list/email_search
+    (an IMAP UID, a Gmail/Graph message id, or "source-label|id" when the
+    project has several mail sources). A Memaix id is looked up so the draft
+    carries the original's real Message-ID — writing the Memaix id itself
+    into the header would thread nothing.
+    """
+    value = in_reply_to.strip()
+    if "|" not in value and "@" in value:
+        msg_id = value if value.startswith("<") else f"<{value.strip('<>')}>"
+        return msg_id, msg_id
+
+    msgs = list(mb.fetch(f"UID {value}", mark_seen=False))
+    if not msgs:
+        raise FileNotFoundError(f"in_reply_to: message not found: {value!r}")
+    msg_id = _header(msgs[0], "Message-ID")
+    if not msg_id:
+        raise ValueError(f"in_reply_to: message {value!r} has no Message-ID header, cannot thread a reply")
+    references = _header(msgs[0], "References")
+    return msg_id, f"{references} {msg_id}".strip()
+
+
 def email_create_draft(
     acl: Acl,
     user_id: str,
@@ -214,7 +294,11 @@ def email_create_draft(
     *,
     _imap=None,
 ) -> dict:
-    """IMAP APPEND to Drafts folder.  Returns {status, subject}."""
+    """IMAP APPEND to the Drafts folder with the \\Draft flag.
+
+    `in_reply_to` (optional) threads the draft as a reply: a Memaix message
+    id or a Message-ID, see _resolve_reply_headers. Returns {status, subject}.
+    """
     acl.enforce(user_id, project, "collaborator")
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
 
@@ -231,9 +315,11 @@ def email_create_draft(
     if cc:
         msg["Cc"] = cc
     if in_reply_to:
-        msg["In-Reply-To"] = in_reply_to
+        reply_to_id, references = _resolve_reply_headers(mb, in_reply_to)
+        msg["In-Reply-To"] = reply_to_id
+        msg["References"] = references
     msg.set_content(body)
-    mb.append(msg.as_bytes(), "\\Draft", folder="Drafts")
+    mb.append(msg.as_bytes(), folder=resolve_drafts_folder(mb), flag_set=(_DRAFT_FLAG,))
     return {"status": "draft_created", "subject": subject}
 
 

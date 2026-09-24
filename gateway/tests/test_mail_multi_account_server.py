@@ -73,8 +73,8 @@ class _FakeMailbox:
         msgs = [self._copy(m) for m in self._msgs]
         return msgs[:limit] if limit else msgs
 
-    def append(self, msg_bytes, flags, *, folder):
-        self.appended.append((msg_bytes, flags, folder))
+    def append(self, message, folder="INBOX", dt=None, flag_set=None):
+        self.appended.append((message, flag_set, folder))
 
     def logout(self):
         pass

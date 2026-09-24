@@ -34,7 +34,7 @@ class _MailSource(Protocol):
     @property
     def folder(self) -> "_FolderSetter": ...
     def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None) -> Iterable: ...
-    def append(self, msg_bytes: bytes, flags: str, *, folder: str) -> None: ...
+    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None): ...
     def logout(self) -> None: ...
 
 
@@ -122,14 +122,23 @@ class MultiMailBackend:
             merged = merged[:limit]
         return merged
 
-    def append(self, msg_bytes: bytes, flags: str, *, folder: str) -> None:
+    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None):
         """Drafts are appended to the FIRST source only (matches today's
         single-mailbox semantics: email_create_draft has always saved to
         exactly one mailbox's Drafts folder — with multiple sources now
         possible, "the first/primary one" is the least-surprising default
-        until a project explicitly needs to choose)."""
+        until a project explicitly needs to choose).
+
+        This backend has no `folder.list()`, so email_create_draft hands it
+        the logical "Drafts"; it is resolved against the source that
+        actually receives the message (e.g. "[Gmail]/Drafts" on Gmail IMAP).
+        """
+        from ...tools.email import DRAFTS, resolve_drafts_folder
+
         label, adapter = self._sources[0]
-        adapter.append(msg_bytes, flags, folder=folder)
+        if folder == DRAFTS:
+            folder = resolve_drafts_folder(adapter)
+        return adapter.append(message, folder=folder, dt=dt, flag_set=flag_set)
 
     def logout(self) -> None:
         for _, adapter in self._sources:

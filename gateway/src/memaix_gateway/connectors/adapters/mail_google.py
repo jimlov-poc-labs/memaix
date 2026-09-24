@@ -4,7 +4,7 @@
 Same translation job as mail_microsoft.py, third foreign shape: tools/
 email.py speaks imap_tools (`.folder.set(name)`, `.fetch(criteria, ...)`
 with the three criteria strings "ALL" / f"UID {id}" / f'BODY "{query}"',
-`.append(msg_bytes, flags, folder=)`), and this adapter translates that to
+`.append(message, folder=, flag_set=)`), and this adapter translates that to
 Gmail's REST API rather than changing the caller. Every other mail path
 keeps working unchanged.
 
@@ -72,6 +72,9 @@ class _GmailMessage:
             h.get("name", "").lower(): h.get("value", "")
             for h in payload.get("headers") or []
         }
+        # Same shape as imap_tools' MailMessage.headers, so email_create_draft
+        # can read Message-ID/References when threading a reply.
+        self.headers = {name: (value,) for name, value in headers.items()}
         self.subject = headers.get("subject", "")
         self.from_ = headers.get("from", "")
         # Prefer the Date header so the value matches what other mail
@@ -168,16 +171,33 @@ class GmailAdapter:
                     m["labelIds"] = [lbl for lbl in m["labelIds"] if lbl != "UNREAD"]
         return [_GmailMessage(m) for m in messages]
 
-    def append(self, msg_bytes: bytes, flags: str, *, folder: str) -> None:
+    def _thread_id_for(self, message_id: str) -> str | None:
+        """Gmail thread id of the message with RFC 822 Message-ID
+        `message_id`, or None if this mailbox doesn't have it."""
+        params = {"q": f"rfc822msgid:{message_id.strip().strip('<>')}", "maxResults": 1}
+        found = self._request("GET", "/messages", params=params).json().get("messages") or []
+        return found[0].get("threadId") if found else None
+
+    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None) -> None:
         """Create a Gmail draft from the raw MIME tools/email.py built.
 
-        Unlike Graph, Gmail accepts raw RFC-822, so the message survives
-        intact — including the In-Reply-To header the Graph adapter has to
-        drop. `flags` and `folder` are ignored: drafts.create always files
+        Signature mirrors imap_tools.MailBox.append. Unlike Graph, Gmail
+        accepts raw RFC-822, so the message survives intact — including the
+        In-Reply-To/References headers the Graph adapter has to drop. For a
+        reply the draft is also pinned to the original's threadId: the API
+        (unlike IMAP APPEND) only threads a draft when told the thread.
+        `folder`, `dt` and `flag_set` are ignored: drafts.create always files
         into DRAFT, which is the only folder email_create_draft targets.
         """
-        raw = base64.urlsafe_b64encode(msg_bytes).decode().rstrip("=")
-        self._request("POST", "/drafts", json={"message": {"raw": raw}})
+        from email.parser import BytesHeaderParser
+
+        body: dict[str, object] = {"raw": base64.urlsafe_b64encode(message).decode().rstrip("=")}
+        in_reply_to = BytesHeaderParser().parsebytes(message).get("In-Reply-To")
+        if in_reply_to:
+            thread_id = self._thread_id_for(str(in_reply_to))
+            if thread_id:
+                body["threadId"] = thread_id
+        self._request("POST", "/drafts", json={"message": body})
 
     def logout(self) -> None:
         pass  # stateless REST — nothing to close

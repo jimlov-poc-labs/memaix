@@ -19,7 +19,7 @@ class _FakeMail:
     def fetch(self, criteria="ALL", *, mark_seen=False, limit=None):
         return []
 
-    def append(self, msg_bytes, flags, *, folder):
+    def append(self, message, folder="INBOX", dt=None, flag_set=None):
         pass
 
     def logout(self):
