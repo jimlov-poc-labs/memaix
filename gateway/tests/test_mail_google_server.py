@@ -80,18 +80,33 @@ def _b64(text: str) -> str:
 
 
 class _FakeResponse:
-    def __init__(self, data):
+    def __init__(self, data, status_code: int = 200):
         self._data = data
+        self.status_code = status_code
+        self.headers: dict = {}
 
     def json(self):
         return self._data
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _patch_http(monkeypatch, handler) -> None:
+    """Point the real GmailAdapter's HTTP at `handler(method, url, **kw)`.
+
+    The adapter keeps one requests.Session per connection (keep-alive for
+    the per-message gets); the module-level requests.request is patched too
+    so nothing here can ever reach the real Google."""
+    monkeypatch.setattr(
+        "requests.Session.request", lambda self, method, url, **kw: handler(method, url, **kw),
+    )
+    monkeypatch.setattr("requests.request", handler)
 
 
 def _fake_gmail(subject: str):
-    """Patch requests.request so the real GmailAdapter talks to a fake API."""
+    """A handler for _patch_http: a one-message Gmail."""
 
     def _request(method, url, **kwargs):
         if url.endswith("/messages"):
@@ -132,7 +147,7 @@ def test_linked_but_unshared_google_account_is_not_a_mail_source(wired, monkeypa
     per_user provider), which is exactly what makes the raise meaningful."""
     _, token_store = wired
     _link_gmail(token_store, "a@gmail.com")
-    monkeypatch.setattr("requests.request", _fake_gmail("Should not appear"))
+    _patch_http(monkeypatch, _fake_gmail("Should not appear"))
 
     with pytest.raises(ValueError, match="no mail configured"):
         server.email_list("proj")
@@ -142,7 +157,7 @@ def test_shared_google_account_appears_in_email_list(wired, monkeypatch):
     _, token_store = wired
     _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
-    monkeypatch.setattr("requests.request", _fake_gmail("From Gmail"))
+    _patch_http(monkeypatch, _fake_gmail("From Gmail"))
 
     result = server.email_list("proj")
 
@@ -153,7 +168,7 @@ def test_sharing_with_one_project_does_not_leak_into_another(wired, monkeypatch)
     _, token_store = wired
     _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
-    monkeypatch.setattr("requests.request", _fake_gmail("From Gmail"))
+    _patch_http(monkeypatch, _fake_gmail("From Gmail"))
 
     assert [m["subject"] for m in server.email_list("proj")] == ["From Gmail"]
     with pytest.raises(ValueError, match="no mail configured"):
@@ -166,7 +181,7 @@ def test_calendar_scope_alone_does_not_expose_the_mailbox(wired, monkeypatch):
     _, token_store = wired
     _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "calendar", ["proj"])
-    monkeypatch.setattr("requests.request", _fake_gmail("Should not appear"))
+    _patch_http(monkeypatch, _fake_gmail("Should not appear"))
 
     with pytest.raises(ValueError, match="no mail configured"):
         server.email_list("proj")
@@ -177,18 +192,18 @@ def test_calendar_scope_alone_does_not_expose_the_mailbox(wired, monkeypatch):
 # ------------------------------------------------------------------
 
 
-def test_gmail_only_project_reports_an_empty_inbox_label(wired, monkeypatch):
-    """`inbox` names the acl.yaml mailbox a message arrived in. There isn't
-    one here, so it degrades to absent rather than taking the whole call
-    down — the account's own address already labels the source."""
+def test_gmail_only_project_labels_messages_with_the_linked_account(wired, monkeypatch):
+    """`inbox` names the mailbox a message arrived in. For a linked account
+    that is the account itself — there is no acl.yaml mailbox to borrow an
+    address from, and borrowing one would be wrong anyway (51b1651c)."""
     _, token_store = wired
     _link_gmail(token_store, "a@gmail.com")
     token_store.set_scopes("alice", "google", "a@gmail.com", "mail", ["proj"])
-    monkeypatch.setattr("requests.request", _fake_gmail("From Gmail"))
+    _patch_http(monkeypatch, _fake_gmail("From Gmail"))
 
     (msg,) = server.email_list("proj")
 
-    assert "inbox" not in msg
+    assert msg["inbox"] == "a@gmail.com"
 
 
 def test_gmail_only_project_can_create_a_draft(wired, monkeypatch):
@@ -206,7 +221,7 @@ def test_gmail_only_project_can_create_a_draft(wired, monkeypatch):
             return _FakeResponse({"id": "d1"})
         raise AssertionError(f"unexpected request: {method} {url}")
 
-    monkeypatch.setattr("requests.request", _request)
+    _patch_http(monkeypatch, _request)
 
     result = server.email_create_draft("proj", "them@example.com", "Hi", "body")
 
@@ -215,6 +230,133 @@ def test_gmail_only_project_can_create_a_draft(wired, monkeypatch):
     decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
     assert "To: them@example.com" in decoded
     assert "From:" not in decoded
+
+
+# ------------------------------------------------------------------
+# email_search / email_read end to end: tool -> registry -> GmailAdapter
+# ------------------------------------------------------------------
+
+
+class _Gmail:
+    """A fake Gmail API that evaluates `q` the way Gmail does for the
+    operators the adapter emits (from:, after:, before:, free words), so a
+    test proves the filter reached Gmail — not merely that some request was
+    made. Newest first, like messages.list."""
+
+    def __init__(self, messages):
+        # (id, sender, iso date, subject, body)
+        self.messages = sorted(messages, key=lambda m: m[2], reverse=True)
+        self.requests: list = []
+
+    @staticmethod
+    def _matches(msg, q: str) -> bool:
+        import shlex
+
+        _, sender, day, subject, body = msg
+        for term in shlex.split(q):
+            op, _, value = term.partition(":")
+            if op == "from" and value:
+                ok = value.lower() in sender.lower()
+            elif op == "after" and value:
+                ok = day >= value.replace("/", "-")
+            elif op == "before" and value:
+                ok = day < value.replace("/", "-")
+            else:
+                ok = term.lower() in f"{subject} {body}".lower()
+            if not ok:
+                return False
+        return True
+
+    def _resource(self, msg, fmt: str) -> dict:
+        mid, sender, day, subject, body = msg
+        payload: dict = {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Subject", "value": subject},
+                {"name": "From", "value": sender},
+                {"name": "Date", "value": f"{day}T09:00:00+02:00"},
+            ],
+        }
+        if fmt == "full":
+            payload["body"] = {"data": _b64(body)}
+        return {"id": mid, "labelIds": ["INBOX", "UNREAD"], "payload": payload}
+
+    def __call__(self, method, url, **kwargs):
+        self.requests.append((method, url, kwargs))
+        params = kwargs.get("params") or {}
+        if url.endswith("/modify"):
+            return _FakeResponse({"error": {"code": 403, "errors": [{"reason": "insufficientPermissions"}]}}, 403)
+        if method == "GET" and url.endswith("/messages"):
+            hits = [m for m in self.messages if self._matches(m, params.get("q", ""))]
+            return _FakeResponse({"messages": [{"id": m[0]} for m in hits[: params["maxResults"]]]})
+        if method == "GET" and "/messages/" in url:
+            mid = url.rsplit("/", 1)[-1]
+            msg = next(m for m in self.messages if m[0] == mid)
+            return _FakeResponse(self._resource(msg, params.get("format", "full")))
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+
+_MAILBOX = [
+    ("new1", "news@example.com", "2026-09-23", "Newsletter", "weekly news"),
+    ("new2", "shop@example.com", "2026-09-22", "Receipt", "your order"),
+    ("sep1", "noreply@loopia.se", "2026-09-15", "Faktura 123", "loopia faktura"),
+    ("sep2", "billing@anthropic.com", "2026-09-02", "Invoice", "anthropic invoice"),
+    ("aug1", "noreply@loopia.se", "2026-08-30", "Faktura 99", "loopia faktura"),
+    ("oct1", "noreply@loopia.se", "2026-10-01", "Faktura 124", "loopia faktura"),
+]
+
+
+@pytest.fixture()
+def gmail(wired, monkeypatch):
+    _, token_store = wired
+    _link_gmail(token_store, "jimmy@jimlov.se")
+    token_store.set_scopes("alice", "google", "jimmy@jimlov.se", "mail", ["proj"])
+    fake = _Gmail(_MAILBOX)
+    _patch_http(monkeypatch, fake)
+    return fake
+
+
+def test_email_search_date_range_is_filtered_by_gmail(gmail):
+    """f70020ba: SINCE/BEFORE used to fall into the adapter's `else: ALL`
+    branch, so "all of September" returned the newest N messages instead."""
+    result = server.email_search("proj", since="2026-09-01", until="2026-10-01", limit=50)
+
+    assert [m["id"] for m in result] == ["new1", "new2", "sep1", "sep2"]
+    (list_call,) = [kw["params"] for m, url, kw in gmail.requests if url.endswith("/messages")]
+    assert list_call["q"] == "after:2026/09/01 before:2026/10/01"
+
+
+def test_email_search_sender_and_text_are_filtered_by_gmail(gmail):
+    result = server.email_search(
+        "proj", "faktura", since="2026-09-01", until="2026-10-01", from_addr="loopia.se",
+    )
+
+    assert [(m["id"], m["subject"]) for m in result] == [("sep1", "Faktura 123")]
+    assert result[0]["inbox"] == "jimmy@jimlov.se"
+
+
+def test_email_search_does_not_download_bodies(gmail):
+    server.email_search("proj", since="2026-09-01", until="2026-10-01")
+    gets = [kw["params"] for m, url, kw in gmail.requests if "/messages/" in url]
+    assert gets and all(p["format"] == "metadata" for p in gets)
+
+
+def test_email_read_has_no_side_effects_by_default(gmail):
+    result = server.email_read("proj", "sep1")
+
+    assert result["body"] == "loopia faktura"
+    assert not [r for r in gmail.requests if r[0] == "POST"]
+
+
+def test_email_read_survives_a_forbidden_mark_seen(gmail):
+    """2026-09-23/24 in production: 403 on POST .../modify failed the read.
+    Asked for explicitly, the modify is still attempted — and its 403 is
+    swallowed, not returned as the read's result."""
+    result = server.email_read("proj", "sep1", mark_seen=True)
+
+    assert result["body"] == "loopia faktura"
+    assert result["seen"] is False
+    assert [r[1] for r in gmail.requests if r[0] == "POST"][0].endswith("/sep1/modify")
 
 
 # ------------------------------------------------------------------

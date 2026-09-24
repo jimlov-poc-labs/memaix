@@ -48,7 +48,7 @@ class _FakeMailbox:
         if criteria.startswith("UID "):
             uid = criteria.split(" ", 1)[1]
             return [m for m in self._msgs if m.uid == uid]
-        if criteria.startswith("BODY "):
+        if criteria.startswith("TEXT "):
             needle = criteria.split('"')[1]
             return [m for m in self._msgs if needle in m.text]
         return list(self._msgs)[:limit] if limit else list(self._msgs)

@@ -7,6 +7,9 @@ smtplib.SMTP connection is created from project config.
 
 _imap duck type (must implement):
   fetch(criteria='ALL', *, mark_seen=False, limit=None) -> Iterable[msg]
+    criteria is an IMAP search string: "ALL", "UID <id>", or any mix of
+    SINCE/BEFORE/FROM/TEXT. Adapters that are not IMAP parse it with
+    connectors/adapters/mail_criteria.py and raise on anything else.
     where msg has: uid, subject, from_, to, cc, date_str, text, html, and
     either flags (imap_tools.MailMessage) or seen (other connectors, e.g.
     the Microsoft Graph adapter) — _msg_to_dict checks for flags first.
@@ -83,6 +86,19 @@ def _inbox_address(acl: Acl, project: str) -> str:
     return (acl.resource(project, "mailbox") or {}).get("user", "")
 
 
+def _inbox_of(m, mb, fallback: str) -> str:
+    """Which inbox message `m` came from.
+
+    A message fetched through MultiMailBackend carries its own source's
+    address (`m.inbox`); a single linked-account backend carries it on the
+    adapter (`mb.inbox_address`, set by server._mail_backend). Only a shared
+    acl.yaml mailbox falls back to the acl.yaml address — stamping that on
+    every message regardless of source is what made a Gmail message look as
+    if it had arrived in the project's IMAP inbox.
+    """
+    return getattr(m, "inbox", None) or getattr(mb, "inbox_address", None) or fallback
+
+
 def _make_mailbox(acl: Acl, project: str):
     from imap_tools import MailBox
 
@@ -146,8 +162,8 @@ def email_list(
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
     mb.folder.set(folder)
     msgs = list(mb.fetch("ALL", mark_seen=False, limit=limit))
-    inbox = _inbox_address(acl, project)
-    return [_msg_to_dict(m, inbox=inbox) for m in msgs]
+    fallback = _inbox_address(acl, project)
+    return [_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs]
 
 
 def email_read(
@@ -156,15 +172,22 @@ def email_read(
     project: str,
     id: str,
     *,
+    mark_seen: bool = False,
     _imap=None,
 ) -> dict:
-    """Fetch a single message by UID.  Returns full message dict."""
+    """Fetch a single message by UID.  Returns full message dict.
+
+    Reading has no side effects unless `mark_seen=True` asks for one. Even
+    then it is best-effort on the linked-account adapters: a Gmail account
+    with only gmail.readonly cannot remove UNREAD, and that 403 used to fail
+    the whole read.
+    """
     acl.enforce(user_id, project, "collaborator")
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
-    msgs = list(mb.fetch(f"UID {id}", mark_seen=True))
+    msgs = list(mb.fetch(f"UID {id}", mark_seen=mark_seen))
     if not msgs:
         raise FileNotFoundError(f"message not found: {id!r}")
-    return _msg_to_dict(msgs[0], full=True)
+    return _msg_to_dict(msgs[0], full=True, inbox=_inbox_of(msgs[0], mb, _inbox_address(acl, project)))
 
 
 def email_search(
@@ -180,17 +203,25 @@ def email_search(
     folder: str = "INBOX",
     _imap=None,
 ) -> list[dict]:
-    """IMAP search with optional date range and sender filter.
+    """Mail search with optional date range and sender filter.
 
-    Returns [{id, subject, from, date}].
+    Builds IMAP criteria (SINCE/BEFORE/FROM/TEXT). A real IMAP server gets
+    them verbatim; the Gmail and Graph adapters translate them to their own
+    query languages (connectors/adapters/mail_criteria.py) and refuse
+    anything they can't translate rather than returning unfiltered mail.
+
+    Returns [{id, subject, from, date, seen, inbox}].
 
     Args:
-        query:     Body/subject substring to match (omit for header-only searches).
+        query:     Text to match (omit for header-only searches). IMAP matches
+                   it as a substring; Gmail as a Gmail search, so operators
+                   like has:attachment work there.
         limit:     Max messages to return (default 50).
         since:     ISO date string YYYY-MM-DD — only messages on or after this date.
         until:     ISO date string YYYY-MM-DD — only messages before this date.
         from_addr: Sender address or domain to filter on (e.g. "anthropic.com").
-        folder:    Mailbox folder to search (default "INBOX").
+        folder:    Mailbox folder to search (default "INBOX"; "ALL" searches
+                   all mail, archived included, on Gmail and Graph sources).
     """
     acl.enforce(user_id, project, "collaborator")
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
@@ -208,7 +239,8 @@ def email_search(
     criteria = " ".join(parts) if parts else "ALL"
 
     msgs = list(mb.fetch(criteria, mark_seen=False, limit=limit))
-    return [_msg_to_dict(m) for m in msgs]
+    fallback = _inbox_address(acl, project)
+    return [_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs]
 
 
 # Logical name for the drafts folder. The REST adapters (Gmail API, Graph)

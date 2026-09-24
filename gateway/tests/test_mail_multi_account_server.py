@@ -67,7 +67,7 @@ class _FakeMailbox:
         if criteria.startswith("UID "):
             uid = criteria.split(" ", 1)[1]
             return [self._copy(m) for m in self._msgs if m.uid == uid]
-        if criteria.startswith("BODY "):
+        if criteria.startswith("TEXT "):
             needle = criteria.split('"')[1]
             return [self._copy(m) for m in self._msgs if needle in m.text]
         msgs = [self._copy(m) for m in self._msgs]
@@ -301,3 +301,60 @@ def test_email_create_draft_with_multi_source_appends_to_first_source_only(wired
     server.email_create_draft("proj", "to@x.com", "Subj", "body")
     total_appends = len(shared.appended) + len(personal.appended)
     assert total_appends == 1
+
+
+# ------------------------------------------------------------------
+# Per-source inbox and merge order
+# ------------------------------------------------------------------
+
+
+def test_email_list_stamps_inbox_per_source(wired, monkeypatch):
+    """51b1651c: the acl.yaml mailbox address used to be stamped on every
+    message, including the ones that came from a linked account."""
+    acl, token_store = wired
+    shared = _FakeMailbox([_Msg("1", "Shared msg")])
+    personal = _FakeMailbox([_Msg("1", "Personal msg")])
+    _register_imap_user_and_shared(monkeypatch, shared, {"imap.a.example.com": personal})
+    token_store.store("alice", "imap", "alice@a.example.com", {
+        "host": "imap.a.example.com", "user": "alice", "password": "pw",
+    })
+
+    inboxes = {m["subject"]: m["inbox"] for m in server.email_list("proj")}
+
+    assert inboxes == {"Shared msg": "shared@example.com", "Personal msg": "alice@a.example.com"}
+
+
+class _DatedSource:
+    """A source whose messages carry real dates, newest first, the way
+    Gmail (RFC 2822 Date header) or Graph (ISO 8601) hand them back."""
+
+    def __init__(self, prefix, dates):
+        self.folder = _FakeFolder()
+        self._rows = [(f"{prefix}{i}", d) for i, d in enumerate(dates)]
+
+    def fetch(self, criteria="ALL", *, mark_seen=False, limit=None):
+        out = []
+        for uid, date in self._rows[:limit] if limit else self._rows:
+            m = _Msg(uid, f"subject {uid}")
+            m.date_str = date
+            out.append(m)
+        return out
+
+
+def test_merge_is_ordered_by_date_before_the_limit_cuts_it():
+    """Concatenate-then-slice let the first source fill the whole result:
+    with limit=3 the old code returned three stale shared-mailbox messages
+    and none of the newer linked-account ones."""
+    from memaix_gateway.connectors.adapters.mail_multi import MultiMailBackend
+
+    stale = _DatedSource("old", [
+        "Mon, 01 Sep 2026 08:00:00 +0200", "Sun, 31 Aug 2026 08:00:00 +0200", "Sat, 30 Aug 2026 08:00:00 +0200",
+    ])
+    fresh = _DatedSource("new", ["2026-09-23T10:00:00Z", "2026-09-20T10:00:00Z"])
+
+    merged = MultiMailBackend([("imap:proj", stale), ("google_mail:jimmy@jimlov.se", fresh)]).fetch(
+        "SINCE 01-Aug-2026", limit=3,
+    )
+
+    assert [m.uid.rpartition("|")[2] for m in merged] == ["new0", "new1", "old0"]
+    assert [getattr(m, "inbox", None) for m in merged] == ["jimmy@jimlov.se", "jimmy@jimlov.se", None]

@@ -6,11 +6,12 @@ that new integrations don't require touching tools/email.py).
 Graph's REST API (JSON, folder IDs, $search/$filter) doesn't look anything
 like IMAP, but connectors/base.py's MailBackend — and tools/email.py's
 actual `_imap` usage — mirror imap_tools' MailBox exactly: `.folder.set(name)`,
-`.fetch(criteria, mark_seen=, limit=)` with criteria strings "ALL" /
-f"UID {id}" / f'BODY "{query}"', and `.append(message, folder=, flag_set=)`.
-Rather than redesigning that (forbidden — every other mail path must keep
-working unchanged), this adapter translates: a tiny parser for the exact
-three criteria strings tools/email.py ever sends, a `.folder` proxy mapping
+`.fetch(criteria, mark_seen=, limit=)` with IMAP search criteria, and
+`.append(message, folder=, flag_set=)`. Rather than redesigning that
+(forbidden — every other mail path must keep working unchanged), this
+adapter translates: mail_criteria.py parses the criteria tools/email.py
+sends (ALL/UID/SINCE/BEFORE/FROM/TEXT) and `_graph_query` turns them into
+$search/$filter, a `.folder` proxy mapping
 folder names to Graph's well-known folder ids, and a message wrapper
 exposing the same attributes (`uid`/`subject`/`from_`/`date_str`/`seen`/
 `to`/`cc`/`text`/`html`) imap_tools messages have.
@@ -25,16 +26,26 @@ documented gap, not a silent one.
 
 from __future__ import annotations
 
+import logging
 from email import message_from_bytes
 from email.message import Message
 
+from .mail_criteria import Criteria, parse
+
+logger = logging.getLogger(__name__)
+
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
-# tools/email.py only ever passes "INBOX" or "Drafts" — map to Graph's
-# well-known folder names; anything else is passed through as-is (Graph
+# Map folder names to Graph's well-known folder names; "all" means every
+# folder (/me/messages). Anything else is passed through as-is (Graph
 # accepts a folder's display name in some contexts, but well-known ids are
 # the only case actually exercised today).
-_WELL_KNOWN_FOLDERS = {"inbox": "inbox", "drafts": "drafts"}
+_WELL_KNOWN_FOLDERS = {"inbox": "inbox", "drafts": "drafts", "sent": "sentitems", "all": "all"}
+
+_MAX_PAGE = 1000  # Graph's $top ceiling for messages
+
+# A list/search row needs no body; skipping it keeps big result sets cheap.
+_LIST_SELECT = "id,subject,from,receivedDateTime,sentDateTime,isRead,toRecipients,ccRecipients,internetMessageId"
 
 
 class _GraphMessage:
@@ -61,10 +72,40 @@ class _GraphMessage:
             self.html, self.text = "", content
 
 
-def _imap_unquote(value: str) -> str:
-    """Reverse tools/email.py's `_imap_quote` escaping to recover the raw
-    search term before handing it to Graph's $search."""
-    return value.replace('\\"', '"').replace("\\\\", "\\")
+def _kql_term(value: str) -> str:
+    # The whole $search value is one double-quoted string; an embedded quote
+    # would end it early, so drop them rather than attempt escaping.
+    return value.replace('"', "")
+
+
+def _graph_query(c: Criteria) -> tuple[dict[str, str | int], dict[str, str]]:
+    """(params, extra headers) for parsed IMAP criteria.
+
+    Graph can't combine $search with $filter on messages, so: any sender or
+    text criterion makes it a KQL $search (which also expresses the dates as
+    `received>=`/`received<`); dates alone stay a $filter on
+    receivedDateTime, newest first. SINCE is inclusive and BEFORE exclusive
+    in both, matching IMAP.
+    """
+    if c.from_ or c.text:
+        terms: list[str] = []
+        if c.from_:
+            terms.append(f"from:{_kql_term(c.from_)}")
+        if c.since:
+            terms.append(f"received>={c.since.isoformat()}")
+        if c.before:
+            terms.append(f"received<{c.before.isoformat()}")
+        if c.text:
+            terms.append(_kql_term(c.text))
+        return {"$search": '"{}"'.format(" ".join(terms))}, {"ConsistencyLevel": "eventual"}
+    clauses: list[str] = []
+    if c.since:
+        clauses.append(f"receivedDateTime ge {c.since.isoformat()}T00:00:00Z")
+    if c.before:
+        clauses.append(f"receivedDateTime lt {c.before.isoformat()}T00:00:00Z")
+    if not clauses:
+        return {}, {}
+    return {"$filter": " and ".join(clauses), "$orderby": "receivedDateTime desc"}, {}
 
 
 class _FolderProxy:
@@ -107,31 +148,52 @@ class GraphMailAdapter:
         resp.raise_for_status()
         return resp
 
-    def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None):
-        if criteria.startswith("UID "):
-            data = self._request("GET", f"/me/messages/{criteria[len('UID '):]}").json()
-            messages = [data]
-        elif criteria.startswith('BODY "') and criteria.endswith('"'):
-            query = _imap_unquote(criteria[len('BODY "'):-1])
-            search_params: dict[str, str | int] = {"$search": f'"{query}"'}
-            if limit:
-                search_params["$top"] = limit
-            data = self._request(
-                "GET", f"/me/mailFolders/{self._folder}/messages",
-                params=search_params, headers={"ConsistencyLevel": "eventual"},
-            ).json()
-            messages = data.get("value", [])
-        else:  # "ALL"
-            list_params: dict[str, int] = {"$top": limit} if limit else {}
-            data = self._request("GET", f"/me/mailFolders/{self._folder}/messages", params=list_params).json()
-            messages = data.get("value", [])
+    def _messages_path(self) -> str:
+        # "all" searches every folder (Graph's /me/messages), like Gmail's
+        # no-label query; anything else is one folder.
+        if self._folder == "all":
+            return "/me/messages"
+        return f"/me/mailFolders/{self._folder}/messages"
 
+    def _list(self, parsed: Criteria, limit: int | None) -> list[dict]:
+        """Up to `limit` messages matching `parsed`, following @odata.nextLink."""
+        want = limit if limit else 10
+        params, headers = _graph_query(parsed)
+        params["$top"] = min(want, _MAX_PAGE)
+        params["$select"] = _LIST_SELECT
+        messages: list[dict] = []
+        data = self._request("GET", self._messages_path(), params=params, headers=headers).json()
+        while True:
+            messages += data.get("value", [])
+            next_link = data.get("@odata.nextLink")
+            if len(messages) >= want or not next_link or not next_link.startswith(_GRAPH_BASE):
+                break
+            # nextLink is absolute and already carries every query parameter.
+            data = self._request("GET", next_link[len(_GRAPH_BASE):], headers=dict(headers)).json()
+        return messages[:want]
+
+    def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None):
+        parsed = parse(criteria)
+        if parsed.uid is not None:
+            messages = [self._request("GET", f"/me/messages/{parsed.uid}").json()]
+        else:
+            messages = self._list(parsed, limit)
         if mark_seen:
             for m in messages:
-                if not m.get("isRead"):
-                    self._request("PATCH", f"/me/messages/{m['id']}", json={"isRead": True})
-                    m["isRead"] = True
+                self._mark_read(m)
         return [_GraphMessage(m) for m in messages]
+
+    def _mark_read(self, m: dict) -> None:
+        """Best-effort, like the Gmail adapter: a read never fails because
+        flagging the message read did (Mail.Read alone may not write)."""
+        if m.get("isRead"):
+            return
+        try:
+            self._request("PATCH", f"/me/messages/{m['id']}", json={"isRead": True})
+        except Exception as exc:  # noqa: BLE001 - a read must never fail on its side effect
+            logger.warning("Graph: could not mark message read (%s)", type(exc).__name__)
+            return
+        m["isRead"] = True
 
     def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None) -> None:
         """Graph has no raw-MIME append; parse the message tools/email.py
