@@ -141,7 +141,7 @@ def test_append_translates_mime_message_to_graph_draft(adapter, http):
     msg["Subject"] = "Draft subject"
     msg.set_content("draft body text")
 
-    adapter.append(msg.as_bytes(), "\\Draft", folder="Drafts")
+    adapter.append(msg.as_bytes(), folder="Drafts", flag_set=("\\Draft",))
 
     assert len(http.drafts_created) == 1
     draft = http.drafts_created[0]
@@ -153,3 +153,13 @@ def test_append_translates_mime_message_to_graph_draft(adapter, http):
 
 def test_logout_is_a_noop(adapter):
     assert adapter.logout() is None
+
+
+def test_fetched_message_exposes_internet_message_id_as_header(adapter, http):
+    """email_create_draft's in_reply_to lookup reads Message-ID off the
+    fetched original; Graph returns it as internetMessageId."""
+    http.inbox[0]["internetMessageId"] = "<m1@example.com>"
+
+    fetched = adapter.fetch("UID m1")[0]
+
+    assert fetched.headers == {"message-id": ("<m1@example.com>",)}

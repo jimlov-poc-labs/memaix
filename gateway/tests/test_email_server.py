@@ -53,8 +53,8 @@ class _FakeMailbox:
             return [m for m in self._msgs if needle in m.text]
         return list(self._msgs)[:limit] if limit else list(self._msgs)
 
-    def append(self, msg_bytes, flags, *, folder):
-        self.appended.append((msg_bytes, flags, folder))
+    def append(self, message, folder="INBOX", dt=None, flag_set=None):
+        self.appended.append((message, flag_set, folder))
 
 
 @pytest.fixture()
@@ -109,6 +109,36 @@ def test_email_create_draft_routes_through_connector_registry(wired):
     result = server.email_create_draft("proj", "to@x.com", "Subj", "body")
     assert result["status"] == "draft_created"
     assert len(backend.appended) == 1
+
+
+def test_email_create_draft_idempotency_key_survives_a_failed_append(wired, tmp_path, monkeypatch):
+    """A failed append is not cached, so a retry with the same key really
+    retries; once it lands, a further retry returns the cached result
+    without a second draft."""
+    from memaix_gateway.safety.idempotency import IdempotencyStore
+
+    monkeypatch.setattr(server, "_idempotency_store", IdempotencyStore.for_path(tmp_path / "idem.db"))
+    _, _, backend = wired
+    real_append = backend.append
+    calls = {"n": 0}
+
+    def flaky_append(message, folder="INBOX", dt=None, flag_set=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("imap timeout")
+        return real_append(message, folder=folder, dt=dt, flag_set=flag_set)
+
+    backend.append = flaky_append
+
+    with pytest.raises(TimeoutError):
+        server.email_create_draft("proj", "to@x.com", "Subj", "body", idempotency_key="k1")
+    first = server.email_create_draft("proj", "to@x.com", "Subj", "body", idempotency_key="k1")
+    again = server.email_create_draft("proj", "to@x.com", "Subj", "body", idempotency_key="k1")
+
+    assert first == again == {"status": "draft_created", "subject": "Subj"}
+    assert len(backend.appended) == 1
+    _, flag_set, folder = backend.appended[0]
+    assert (folder, flag_set) == ("Drafts", ("\\Draft",))
 
 
 def test_email_read_missing_message_raises(wired):

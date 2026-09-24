@@ -73,8 +73,9 @@ class _MockMailbox:
             msgs = msgs[:limit]
         return iter(msgs)
 
-    def append(self, msg_bytes: bytes, flags: str, *, folder: str = "Drafts") -> None:
-        self._drafts.append(msg_bytes)
+    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None):
+        # Same signature as imap_tools.MailBox.append.
+        self._drafts.append(message)
 
     def logout(self) -> None:
         pass

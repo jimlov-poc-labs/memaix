@@ -2268,7 +2268,16 @@ def email_create_draft(
     in_reply_to: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict:
-    """Save a draft to the mailbox Drafts folder.
+    """Save a draft to the mailbox Drafts folder (flagged \\Draft).
+
+    in_reply_to: make the draft a reply in an existing thread. Pass either
+    the `id` of a message as returned by email_list/email_search/email_read
+    (e.g. "123", or "google_mail:me@example.com|18f2c..." when the project
+    has several mail sources) — the original's real Message-ID is looked up
+    — or an RFC 5322 Message-ID such as "<abc@mail.example.com>". The draft
+    gets In-Reply-To and References headers; keep the subject ("Re: ...")
+    for mail clients to show it in the same conversation. Fails if the
+    message can't be found rather than saving an unthreaded draft.
 
     Pass idempotency_key (same value on retry) to avoid creating a second
     draft if the call is retried after e.g. a network timeout."""
