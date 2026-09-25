@@ -2289,9 +2289,18 @@ def email_create_draft(
     body: str,
     cc: str | None = None,
     in_reply_to: str | None = None,
+    account: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict:
-    """Save a draft to the mailbox Drafts folder (flagged \\Draft).
+    """Save a draft in one of the project's mailboxes (IMAP Drafts folder, or
+    a Gmail/Outlook draft for a linked account). Nothing is sent.
+
+    account: which mailbox gets the draft, when the project has several —
+    the address shown in the `inbox` field of email_list/email_search, e.g.
+    "jimmy@jimlov.se" for a linked Gmail account. Omit it to use the
+    project's own mailbox (as before). An unknown account fails and lists
+    the valid ones. A draft in a linked account gets that account's own
+    From address.
 
     in_reply_to: make the draft a reply in an existing thread. Pass either
     the `id` of a message as returned by email_list/email_search/email_read
@@ -2300,13 +2309,17 @@ def email_create_draft(
     — or an RFC 5322 Message-ID such as "<abc@mail.example.com>". The draft
     gets In-Reply-To and References headers; keep the subject ("Re: ...")
     for mail clients to show it in the same conversation. Fails if the
-    message can't be found rather than saving an unthreaded draft.
+    message can't be found rather than saving an unthreaded draft. Without
+    `account`, a reply to an id from a specific source is saved in that
+    source's mailbox, next to the thread.
+
+    Returns {status, subject, account}: `account` is where the draft landed.
 
     Pass idempotency_key (same value on retry) to avoid creating a second
     draft if the call is retried after e.g. a network timeout."""
     return _tool_call(
         "email_create_draft", project, _with_mail_backend(t_email.email_create_draft),
-        to, subject, body, cc, in_reply_to, idempotency_key=idempotency_key,
+        to, subject, body, cc, in_reply_to, account, idempotency_key=idempotency_key,
     )
 
 

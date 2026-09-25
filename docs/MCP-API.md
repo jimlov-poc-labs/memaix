@@ -33,7 +33,7 @@ gatewayen implementerar (se `BUILD.md` för bygg-ordning). PM-modulens verktyg d
 | `email_list` | `project, folder="INBOX", limit=20` | `[{id, from, subject, date, snippet, unread}]` | collaborator |
 | `email_read` | `project, id` | `{id, from, to, cc, subject, date, body, attachments:[{name,size}]}` | collaborator |
 | `email_search` | `project, query, limit=20` | `[{id, from, subject, date, snippet}]` | collaborator |
-| `email_create_draft` | `project, to, subject, body, cc?, in_reply_to?` | `{draft_id, folder:"Drafts"}` | collaborator |
+| `email_create_draft` | `project, to, subject, body, cc?, in_reply_to?, account?` | `{status, subject, account}` — `account` = lådan utkastet hamnade i | collaborator |
 | `email_send` | `project, to, subject, body, cc?` | `{sent:true}` | **owner** + `allow_send` |
 
 > Standard: AI:n skapar utkast. `email_send` är avstängt tills `allow_send: true` i config.

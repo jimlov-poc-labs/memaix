@@ -135,7 +135,7 @@ def test_email_create_draft_idempotency_key_survives_a_failed_append(wired, tmp_
     first = server.email_create_draft("proj", "to@x.com", "Subj", "body", idempotency_key="k1")
     again = server.email_create_draft("proj", "to@x.com", "Subj", "body", idempotency_key="k1")
 
-    assert first == again == {"status": "draft_created", "subject": "Subj"}
+    assert first == again == {"status": "draft_created", "subject": "Subj", "account": "me@example.com"}
     assert len(backend.appended) == 1
     _, flag_set, folder = backend.appended[0]
     assert (folder, flag_set) == ("Drafts", ("\\Draft",))
