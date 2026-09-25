@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import datetime
 import smtplib
+from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Any, NamedTuple
 
@@ -497,6 +498,87 @@ def email_create_draft(
     return {"status": "draft_created", "subject": subject, "account": saved_in}
 
 
+@dataclass(frozen=True)
+class EmailAttachment:
+    """A single file attached to an email_send message.
+
+    Only system-generated content (e.g. booking .ics files) is attached —
+    see email_send's docstring for why an attachment never goes through
+    outbox review.
+    """
+
+    filename: str
+    content: bytes
+    mimetype: str = "text/calendar"
+
+
+def _queue_for_review(
+    acl: Acl, user_id: str, project: str, args: dict, outbox, cfg: dict | None
+) -> dict | None:
+    """Enqueue the send in the outbox if policy says 'review'.
+
+    Returns the pending-result dict when queued, None when the send may
+    proceed immediately.
+    """
+    from ..outbox.policy import action_mode
+    from ..outbox.preview import render_preview
+    from ..outbox.queue import default_queue
+
+    memaix_cfg = cfg if cfg is not None else config.load()
+    if action_mode(memaix_cfg, acl, project, "email_send", args) != "review":
+        return None
+    queue = outbox if outbox is not None else default_queue()
+    action_id = queue.enqueue(
+        user_id, project, "email_send", args, render_preview("email_send", args)
+    )
+    return {
+        "pending": True,
+        "action_id": action_id,
+        "note": "Väntar på godkännande i utkorgen",
+    }
+
+
+def _build_message(
+    from_addr: str,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None,
+    attachment: EmailAttachment | None,
+) -> EmailMessage:
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    if cc:
+        msg["Cc"] = cc
+    msg.set_content(body)
+    if attachment is not None and attachment.content is not None and attachment.filename:
+        maintype, _, subtype = attachment.mimetype.partition("/")
+        msg.add_attachment(
+            attachment.content,
+            maintype=maintype,
+            subtype=subtype or "octet-stream",
+            filename=attachment.filename,
+        )
+    return msg
+
+
+def _smtp_deliver(msg: EmailMessage, project: str, mailbox_cfg: dict, smtp_cfg: dict) -> None:
+    """Open an SMTP connection from project config and send msg."""
+    host = smtp_cfg.get("host", mailbox_cfg.get("host", "localhost"))
+    port = int(smtp_cfg.get("port", 587))
+    user = smtp_cfg.get("user") or mailbox_cfg.get("user", "")
+    password_ref = smtp_cfg.get("password_ref") or mailbox_cfg.get("password_ref")
+    password = config.secret(password_ref)
+    if password is None:
+        raise ValueError(f"no password configured for mailbox (project {project!r})")
+    with smtplib.SMTP(host, port) as s:
+        s.starttls()
+        s.login(user, password)
+        s.send_message(msg)
+
+
 def email_send(
     acl: Acl,
     user_id: str,
@@ -506,9 +588,7 @@ def email_send(
     body: str,
     cc: str | None = None,
     *,
-    attachment_filename: str | None = None,
-    attachment_content: bytes | None = None,
-    attachment_mimetype: str = "text/calendar",
+    attachment: EmailAttachment | None = None,
     _smtp=None,
     _confirmed: bool = False,
     _outbox=None,
@@ -529,56 +609,20 @@ def email_send(
         raise RuntimeError("feature_disabled: allow_send is false")
 
     if not _confirmed:
-        from ..outbox.policy import action_mode
-        from ..outbox.preview import render_preview
-        from ..outbox.queue import default_queue
-
         args = {"to": to, "subject": subject, "body": body, "cc": cc}
-        memaix_cfg = _cfg if _cfg is not None else config.load()
-        if action_mode(memaix_cfg, acl, project, "email_send", args) == "review":
-            queue = _outbox if _outbox is not None else default_queue()
-            action_id = queue.enqueue(
-                user_id, project, "email_send", args, render_preview("email_send", args)
-            )
-            return {
-                "pending": True,
-                "action_id": action_id,
-                "note": "Väntar på godkännande i utkorgen",
-            }
+        pending = _queue_for_review(acl, user_id, project, args, _outbox, _cfg)
+        if pending is not None:
+            return pending
 
     cfg = _mailbox_cfg(acl, project)
     smtp_cfg: dict = acl.resource(project, "smtp") or {}
 
     from_addr = smtp_cfg.get("from_addr") or cfg.get("user", "")
-    msg = EmailMessage()
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    if cc:
-        msg["Cc"] = cc
-    msg.set_content(body)
-    if attachment_content is not None and attachment_filename:
-        maintype, _, subtype = attachment_mimetype.partition("/")
-        msg.add_attachment(
-            attachment_content,
-            maintype=maintype,
-            subtype=subtype or "octet-stream",
-            filename=attachment_filename,
-        )
+    msg = _build_message(from_addr, to, subject, body, cc, attachment)
 
     if _smtp is not None:
         _smtp.send_message(msg)
     else:
-        host = smtp_cfg.get("host", cfg.get("host", "localhost"))
-        port = int(smtp_cfg.get("port", 587))
-        user = smtp_cfg.get("user") or cfg.get("user", "")
-        password_ref = smtp_cfg.get("password_ref") or cfg.get("password_ref")
-        password = config.secret(password_ref)
-        if password is None:
-            raise ValueError(f"no password configured for mailbox (project {project!r})")
-        with smtplib.SMTP(host, port) as s:
-            s.starttls()
-            s.login(user, password)
-            s.send_message(msg)
+        _smtp_deliver(msg, project, cfg, smtp_cfg)
 
     return {"status": "sent", "to": to, "subject": subject}
