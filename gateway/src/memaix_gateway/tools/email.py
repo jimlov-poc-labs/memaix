@@ -385,6 +385,31 @@ def _draft_sources(acl: Acl, project: str, mb) -> list[_DraftSource]:
     return [_DraftSource("", fallback, mb, False)]
 
 
+def _matches_account(src: _DraftSource, wanted: str) -> bool:
+    """True if `wanted` is `src`'s address (case-insensitive) or its full label."""
+    if src.account and src.account.lower() == wanted.lower():
+        return True
+    return bool(src.label) and src.label == wanted
+
+
+def _source_for_account(project: str, sources: list[_DraftSource], wanted: str) -> _DraftSource:
+    """The source matching an explicit `account`, or ValueError naming the valid ones."""
+    for src in sources:
+        if _matches_account(src, wanted):
+            return src
+    valid = sorted({src.account for src in sources if src.account})
+    listed = ", ".join(valid) if valid else "(none)"
+    raise ValueError(f"unknown account {wanted!r} for project {project!r}; valid accounts: {listed}")
+
+
+def _source_for_reply(sources: list[_DraftSource], in_reply_to: str | None) -> _DraftSource | None:
+    """The source named by a "label|id" `in_reply_to`, or None."""
+    if not in_reply_to or "|" not in in_reply_to:
+        return None
+    label = in_reply_to.strip().partition("|")[0]
+    return next((src for src in sources if src.label and src.label == label), None)
+
+
 def _pick_draft_source(
     project: str, sources: list[_DraftSource], account: str | None, in_reply_to: str | None,
 ) -> _DraftSource | None:
@@ -399,20 +424,29 @@ def _pick_draft_source(
     """
     wanted = (account or "").strip()
     if wanted:
-        for src in sources:
-            if (src.account and src.account.lower() == wanted.lower()) or (src.label and src.label == wanted):
-                return src
-        valid = sorted({src.account for src in sources if src.account})
-        raise ValueError(
-            f"unknown account {wanted!r} for project {project!r}; "
-            f"valid accounts: {', '.join(valid) if valid else '(none)'}"
-        )
-    if in_reply_to and "|" in in_reply_to:
-        label = in_reply_to.strip().partition("|")[0]
-        for src in sources:
-            if src.label and src.label == label:
-                return src
-    return None
+        return _source_for_account(project, sources, wanted)
+    return _source_for_reply(sources, in_reply_to)
+
+
+def _build_draft_message(
+    mb, to: str, subject: str, body: str, sender: str, cc: str | None, in_reply_to: str | None,
+) -> EmailMessage:
+    """The draft as an EmailMessage; `sender` "" leaves From out entirely."""
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = subject
+    if sender:
+        msg["From"] = sender
+    if cc:
+        msg["Cc"] = cc
+    if in_reply_to:
+        # Resolved against the whole backend: it routes a "label|id" to the
+        # source that owns it, whichever source the draft goes to.
+        reply_to_id, references = _resolve_reply_headers(mb, in_reply_to)
+        msg["In-Reply-To"] = reply_to_id
+        msg["References"] = references
+    msg.set_content(body)
+    return msg
 
 
 def email_create_draft(
@@ -450,32 +484,16 @@ def email_create_draft(
     sources = _draft_sources(acl, project, mb)
     target = _pick_draft_source(project, sources, account, in_reply_to)
 
-    msg = EmailMessage()
-    msg["To"] = to
-    msg["Subject"] = subject
     # Omitted, not blanked, when the source is a linked account rather than
     # an acl.yaml mailbox: Gmail and Graph both stamp the authenticated
     # account's own address on a draft that arrives without a From header,
     # but an empty `From:` is a malformed header, not an absent one. A draft
     # for a chosen linked account never carries the acl.yaml address.
     sender = "" if target is not None and target.linked else _inbox_address(acl, project)
-    if sender:
-        msg["From"] = sender
-    if cc:
-        msg["Cc"] = cc
-    if in_reply_to:
-        # Resolved against the whole backend: it routes a "label|id" to the
-        # source that owns it, whichever source the draft goes to.
-        reply_to_id, references = _resolve_reply_headers(mb, in_reply_to)
-        msg["In-Reply-To"] = reply_to_id
-        msg["References"] = references
-    msg.set_content(body)
-    if target is None:
-        mb.append(msg.as_bytes(), folder=resolve_drafts_folder(mb), flag_set=(_DRAFT_FLAG,))
-        saved_in = sources[0].account
-    else:
-        target.adapter.append(msg.as_bytes(), folder=resolve_drafts_folder(target.adapter), flag_set=(_DRAFT_FLAG,))
-        saved_in = target.account
+    msg = _build_draft_message(mb, to, subject, body, sender, cc, in_reply_to)
+    # No explicit target: the backend's own append (acl.yaml mailbox first).
+    dest, saved_in = (mb, sources[0].account) if target is None else (target.adapter, target.account)
+    dest.append(msg.as_bytes(), folder=resolve_drafts_folder(dest), flag_set=(_DRAFT_FLAG,))
     return {"status": "draft_created", "subject": subject, "account": saved_in}
 
 
