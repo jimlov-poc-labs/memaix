@@ -112,7 +112,7 @@ def test_draft_is_appended_to_special_use_drafts_folder_with_draft_flag(acl):
         acl, "jimmy", "jimlov", "kund@example.com", "Offert", "Hej", _imap=_WireMailBox(client),
     )
 
-    assert result == {"status": "draft_created", "subject": "Offert"}
+    assert result == {"status": "draft_created", "subject": "Offert", "account": "jimmy@jimlov.se"}
     assert len(client.appended) == 1
     mailbox, flags, _dt, message = client.appended[0]
     assert mailbox == b'"[Gmail]/Utkast"'  # imap_tools encodes + quotes the name

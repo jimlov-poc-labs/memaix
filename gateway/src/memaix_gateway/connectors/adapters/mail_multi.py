@@ -146,6 +146,13 @@ class MultiMailBackend:
     def folder(self) -> _MultiMailFolderProxy:
         return _MultiMailFolderProxy(self)
 
+    @property
+    def sources(self) -> list[tuple[str, _MailSource]]:
+        """Every (label, adapter) pair, in registry order — the acl.yaml
+        mailbox first when the project has one. email_create_draft uses this
+        to put a draft in one chosen source instead of the first."""
+        return list(self._sources)
+
     def _labeled(self, label: str, msgs):
         address = source_address(label)
         for m in msgs:
@@ -218,8 +225,10 @@ class MultiMailBackend:
         """Drafts are appended to the FIRST source only (matches today's
         single-mailbox semantics: email_create_draft has always saved to
         exactly one mailbox's Drafts folder — with multiple sources now
-        possible, "the first/primary one" is the least-surprising default
-        until a project explicitly needs to choose).
+        possible, "the first/primary one" is the least-surprising default).
+        A caller that has chosen a source (email_create_draft's `account`,
+        or a reply to a message from a linked source) appends to that
+        source's adapter directly via `sources`.
 
         This backend has no `folder.list()`, so email_create_draft hands it
         the logical "Drafts"; it is resolved against the source that

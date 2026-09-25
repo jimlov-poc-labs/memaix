@@ -53,6 +53,7 @@ from __future__ import annotations
 import datetime
 import smtplib
 from email.message import EmailMessage
+from typing import Any, NamedTuple
 
 from .. import config
 from ..acl import Acl
@@ -353,6 +354,67 @@ def _resolve_reply_headers(mb, in_reply_to: str) -> tuple[str, str]:
     return msg_id, f"{references} {msg_id}".strip()
 
 
+class _DraftSource(NamedTuple):
+    label: str  # registry label ("google_mail:jimmy@jimlov.se"), "" if unknown
+    account: str  # the address email_list/email_search show as `inbox`
+    adapter: Any
+    linked: bool  # a per-user linked account, not the acl.yaml mailbox
+
+
+def _draft_sources(acl: Acl, project: str, mb) -> list[_DraftSource]:
+    """Every source behind `mb` that a draft can be saved in.
+
+    `account` is the same address email_list/email_search put in a message's
+    `inbox` field: a linked account's own address, or the acl.yaml mailbox
+    user for the project's shared mailbox. A backend that is not a
+    MultiMailBackend is a single source whose label is unknown.
+    """
+    from ..connectors.adapters.mail_multi import source_address
+
+    fallback = _inbox_address(acl, project)
+    sources = getattr(mb, "sources", None)
+    if isinstance(sources, list) and sources:
+        out = []
+        for label, adapter in sources:
+            address = source_address(label)
+            out.append(_DraftSource(label, address or fallback, adapter, bool(address)))
+        return out
+    linked_address = getattr(mb, "inbox_address", None)
+    if isinstance(linked_address, str) and linked_address:
+        return [_DraftSource("", linked_address, mb, True)]
+    return [_DraftSource("", fallback, mb, False)]
+
+
+def _pick_draft_source(
+    project: str, sources: list[_DraftSource], account: str | None, in_reply_to: str | None,
+) -> _DraftSource | None:
+    """The source a draft goes to, or None for the default path (unchanged:
+    the backend's own append, i.e. the project's acl.yaml mailbox first).
+
+    An explicit `account` must match a source's address (case-insensitive)
+    or its full label; anything else is an error naming the valid accounts.
+    Without one, a reply to a message id carrying a source label
+    ("google_mail:jimmy@jimlov.se|18f2c...") goes to that source, so the
+    draft lands in the same mailbox as the thread.
+    """
+    wanted = (account or "").strip()
+    if wanted:
+        for src in sources:
+            if (src.account and src.account.lower() == wanted.lower()) or (src.label and src.label == wanted):
+                return src
+        valid = sorted({src.account for src in sources if src.account})
+        raise ValueError(
+            f"unknown account {wanted!r} for project {project!r}; "
+            f"valid accounts: {', '.join(valid) if valid else '(none)'}"
+        )
+    if in_reply_to and "|" in in_reply_to:
+        label = in_reply_to.strip().partition("|")[0]
+        for src in sources:
+            if src.label and src.label == label:
+                return src
+    return None
+
+
 def email_create_draft(
     acl: Acl,
     user_id: str,
@@ -362,16 +424,31 @@ def email_create_draft(
     body: str,
     cc: str | None = None,
     in_reply_to: str | None = None,
+    account: str | None = None,
     *,
     _imap=None,
 ) -> dict:
-    """IMAP APPEND to the Drafts folder with the \\Draft flag.
+    """Save a draft: IMAP APPEND to Drafts with the \\Draft flag, or a
+    Gmail/Graph draft when the chosen mailbox is a linked account.
+
+    `account` (optional) picks the mailbox when the project has several: a
+    linked account's address (as in the `inbox` field of email_list /
+    email_search) or the project's own acl.yaml mailbox address. Omitted,
+    the draft goes where it always has (the project's own mailbox) — unless
+    `in_reply_to` is a message id from a specific source ("label|id"), in
+    which case it goes to that source so the reply sits in the thread's
+    mailbox. An unknown account raises ValueError listing the valid ones.
 
     `in_reply_to` (optional) threads the draft as a reply: a Memaix message
-    id or a Message-ID, see _resolve_reply_headers. Returns {status, subject}.
+    id or a Message-ID, see _resolve_reply_headers.
+
+    Returns {status, subject, account}; `account` is the mailbox the draft
+    was saved in.
     """
     acl.enforce(user_id, project, "collaborator")
     mb = _imap if _imap is not None else _make_mailbox(acl, project)
+    sources = _draft_sources(acl, project, mb)
+    target = _pick_draft_source(project, sources, account, in_reply_to)
 
     msg = EmailMessage()
     msg["To"] = to
@@ -379,19 +456,27 @@ def email_create_draft(
     # Omitted, not blanked, when the source is a linked account rather than
     # an acl.yaml mailbox: Gmail and Graph both stamp the authenticated
     # account's own address on a draft that arrives without a From header,
-    # but an empty `From:` is a malformed header, not an absent one.
-    sender = _inbox_address(acl, project)
+    # but an empty `From:` is a malformed header, not an absent one. A draft
+    # for a chosen linked account never carries the acl.yaml address.
+    sender = "" if target is not None and target.linked else _inbox_address(acl, project)
     if sender:
         msg["From"] = sender
     if cc:
         msg["Cc"] = cc
     if in_reply_to:
+        # Resolved against the whole backend: it routes a "label|id" to the
+        # source that owns it, whichever source the draft goes to.
         reply_to_id, references = _resolve_reply_headers(mb, in_reply_to)
         msg["In-Reply-To"] = reply_to_id
         msg["References"] = references
     msg.set_content(body)
-    mb.append(msg.as_bytes(), folder=resolve_drafts_folder(mb), flag_set=(_DRAFT_FLAG,))
-    return {"status": "draft_created", "subject": subject}
+    if target is None:
+        mb.append(msg.as_bytes(), folder=resolve_drafts_folder(mb), flag_set=(_DRAFT_FLAG,))
+        saved_in = sources[0].account
+    else:
+        target.adapter.append(msg.as_bytes(), folder=resolve_drafts_folder(target.adapter), flag_set=(_DRAFT_FLAG,))
+        saved_in = target.account
+    return {"status": "draft_created", "subject": subject, "account": saved_in}
 
 
 def email_send(

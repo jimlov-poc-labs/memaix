@@ -303,6 +303,24 @@ def test_email_create_draft_with_multi_source_appends_to_first_source_only(wired
     assert total_appends == 1
 
 
+def test_email_create_draft_account_picks_the_linked_source(wired, monkeypatch):
+    """24e8a91f: the MCP tool's `account` reaches tools/email.py and the
+    draft lands in the linked mailbox, not the acl.yaml one."""
+    acl, token_store = wired
+    shared = _FakeMailbox([])
+    personal = _FakeMailbox([])
+    _register_imap_user_and_shared(monkeypatch, shared, {"imap.a.example.com": personal})
+    token_store.store("alice", "imap", "alice@a.example.com", {
+        "host": "imap.a.example.com", "user": "alice", "password": "pw",
+    })
+
+    result = server.email_create_draft("proj", "to@x.com", "Subj", "body", account="alice@a.example.com")
+
+    assert result["account"] == "alice@a.example.com"
+    assert shared.appended == []
+    assert len(personal.appended) == 1
+
+
 # ------------------------------------------------------------------
 # Per-source inbox and merge order
 # ------------------------------------------------------------------
