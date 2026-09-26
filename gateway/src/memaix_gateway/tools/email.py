@@ -13,6 +13,11 @@ _imap duck type (must implement):
     where msg has: uid, subject, from_, to, cc, date_str, text, html, and
     either flags (imap_tools.MailMessage) or seen (other connectors, e.g.
     the Microsoft Graph adapter) — _msg_to_dict checks for flags first.
+    Messages may also expose `attachments` (imap_tools.MailAttachment shape:
+    filename, content_type, size, content_disposition, content_id, payload),
+    read by email_attachments/email_attachment_get/email_export_pdf; the
+    Gmail adapter downloads `payload` lazily, a source without the
+    attribute (Graph) gets a clear "not supported" error.
     Messages may also expose `headers` (lowercase name -> tuple of values,
     as imap_tools.MailMessage does); email_create_draft reads Message-ID and
     References from it to thread a reply.

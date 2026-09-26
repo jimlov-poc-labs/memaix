@@ -398,6 +398,14 @@ def test_empty_message_still_renders():
     assert pdf.startswith(b"%PDF-") and rendered_from == "empty"
 
 
+def test_block_elements_inside_cells_keep_the_row_on_one_line():
+    html = (
+        "<table><tr><td><div>Kaffe</div></td><td><p>35,00 kr</p></td></tr>"
+        "<tr><td>Moms</td><td><span>3,75 kr</span></td></tr></table><p>Tack</p>"
+    )
+    assert mail_pdf.html_to_text(html) == "Kaffe | 35,00 kr\nMoms | 3,75 kr\nTack"
+
+
 @pytest.mark.parametrize("subject, expected", [
     ("Kvitto #42", "Kvitto 42.pdf"),
     ("../../etc/passwd", "etcpasswd.pdf"),

@@ -65,9 +65,15 @@ class _TextExtractor(HTMLParser):
         self._skip_depth = 0
         self._pre_depth = 0
         self._cells_in_row = 0
+        self._cell_depth = 0  # >0 while inside a <td>/<th>
 
     def _newline(self) -> None:
-        if self._out and not self._out[-1].endswith("\n"):
+        # Inside a table cell a block element (<td><div>35 kr</div></td>,
+        # the usual receipt layout) must not split the row: a space keeps
+        # "Kaffe | 35,00 kr" on one line.
+        if self._cell_depth:
+            self._out.append(" ")
+        elif self._out and not self._out[-1].endswith("\n"):
             self._out.append("\n")
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -79,12 +85,14 @@ class _TextExtractor(HTMLParser):
         if tag == "br":
             self._out.append("\n")
         elif tag == "tr":
+            self._cell_depth = 0  # an unclosed <td> ends with its row
             self._newline()
             self._cells_in_row = 0
         elif tag in _CELL:
             if self._cells_in_row:
                 self._out.append(" | ")
             self._cells_in_row += 1
+            self._cell_depth += 1
         elif tag == "li":
             self._newline()
             self._out.append("• ")
@@ -103,6 +111,10 @@ class _TextExtractor(HTMLParser):
             return
         if self._skip_depth:
             return
+        if tag in _CELL:
+            self._cell_depth = max(0, self._cell_depth - 1)
+        elif tag == "table":
+            self._cell_depth = 0
         if tag in _BLOCK or tag == "li":
             self._newline()
             if tag == "pre":
@@ -128,11 +140,11 @@ def html_to_text(html: str) -> str:
 
 
 def _tidy(text: str) -> str:
-    """Trim lines, drop cell separators left on empty rows, keep at most one
-    blank line in a row."""
+    """Trim lines and runs of spaces, drop cell separators left on empty
+    rows, keep at most one blank line in a row."""
     lines: list[str] = []
     for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw.replace("\xa0", " ").strip()
+        line = re.sub(r" {2,}", " ", raw.replace("\xa0", " ")).strip()
         if line and not line.strip("| "):
             line = ""
         if line.startswith("| "):
