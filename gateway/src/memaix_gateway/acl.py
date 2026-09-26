@@ -45,6 +45,39 @@ def _str_list(client_id: str, key: str, value) -> frozenset[str]:
     return frozenset(value)
 
 
+def _user_subjects(users: dict) -> set[str]:
+    subjects: set[str] = set()
+    for u in users.values():
+        if u.get("oauth_sub"):
+            subjects.add(u["oauth_sub"])
+        subjects.update(u.get("oauth_subjects") or [])
+    return subjects
+
+
+def _parse_service_client(client_id: str, spec, users: dict, projects: dict, user_subjects: set[str]) -> ServiceClient:
+    if not isinstance(spec, dict):
+        raise ValueError(f"service_clients.{client_id} must be a mapping")
+    acts_as = spec.get("acts_as")
+    if not acts_as or not isinstance(acts_as, str):
+        raise ValueError(f"service_clients.{client_id}: acts_as is required")
+    if acts_as not in users:
+        raise ValueError(f"service_clients.{client_id}: acts_as {acts_as!r} is not a user in acl.yaml")
+    if client_id in user_subjects:
+        raise ValueError(
+            f"service_clients.{client_id} is also a user oauth_sub/oauth_subjects entry; "
+            "a subject must be either a user login or a service client, not both"
+        )
+    unknown = set(spec) - {"acts_as", "tools", "projects"}
+    if unknown:
+        raise ValueError(f"service_clients.{client_id}: unknown keys {sorted(unknown)}")
+    tools = _str_list(client_id, "tools", spec.get("tools"))
+    client_projects = _str_list(client_id, "projects", spec.get("projects"))
+    missing = client_projects - set(projects)
+    if missing:
+        raise ValueError(f"service_clients.{client_id}: unknown projects {sorted(missing)}")
+    return ServiceClient(client_id, acts_as, tools, client_projects)
+
+
 def _parse_service_clients(raw, users: dict, projects: dict) -> dict[str, ServiceClient]:
     """Validate the ``service_clients`` section of acl.yaml.
 
@@ -54,36 +87,11 @@ def _parse_service_clients(raw, users: dict, projects: dict) -> dict[str, Servic
         return {}
     if not isinstance(raw, dict):
         raise ValueError("service_clients must be a mapping of client id -> settings")
-    user_subjects: set[str] = set()
-    for u in users.values():
-        if u.get("oauth_sub"):
-            user_subjects.add(u["oauth_sub"])
-        user_subjects.update(u.get("oauth_subjects") or [])
-    parsed: dict[str, ServiceClient] = {}
-    for client_id, spec in raw.items():
-        client_id = str(client_id)
-        if not isinstance(spec, dict):
-            raise ValueError(f"service_clients.{client_id} must be a mapping")
-        acts_as = spec.get("acts_as")
-        if not acts_as or not isinstance(acts_as, str):
-            raise ValueError(f"service_clients.{client_id}: acts_as is required")
-        if acts_as not in users:
-            raise ValueError(f"service_clients.{client_id}: acts_as {acts_as!r} is not a user in acl.yaml")
-        if client_id in user_subjects:
-            raise ValueError(
-                f"service_clients.{client_id} is also a user oauth_sub/oauth_subjects entry; "
-                "a subject must be either a user login or a service client, not both"
-            )
-        unknown = set(spec) - {"acts_as", "tools", "projects"}
-        if unknown:
-            raise ValueError(f"service_clients.{client_id}: unknown keys {sorted(unknown)}")
-        tools = _str_list(client_id, "tools", spec.get("tools"))
-        client_projects = _str_list(client_id, "projects", spec.get("projects"))
-        missing = client_projects - set(projects)
-        if missing:
-            raise ValueError(f"service_clients.{client_id}: unknown projects {sorted(missing)}")
-        parsed[client_id] = ServiceClient(client_id, acts_as, tools, client_projects)
-    return parsed
+    user_subjects = _user_subjects(users)
+    return {
+        str(cid): _parse_service_client(str(cid), spec, users, projects, user_subjects)
+        for cid, spec in raw.items()
+    }
 
 
 class Acl:
