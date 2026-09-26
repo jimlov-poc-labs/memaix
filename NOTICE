@@ -21,6 +21,8 @@ och den genererade SBOM:en (sbom.cdx.json) för komplett, versionsspecifik fört
   restic / borg ............. BSD-2-Clause
   MCP Python SDK ............ MIT
   caldav, imap-tools, requests, pyyaml ... MIT / BSD / Apache-2.0
+  fpdf2 ..................... LGPL-3.0-only  (email_export_pdf; beror på Pillow: MIT-CMU, fontTools: MIT)
+  DejaVu-typsnitt ........... Bitstream Vera-licens (Debian-paketet fonts-dejavu-core i imagen, ej i koden)
 
 Modeller (vid lokal körning) har egna licenser:
   Qwen, Gemma, Mistral ...... Apache-2.0

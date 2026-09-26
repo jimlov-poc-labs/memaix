@@ -13,6 +13,11 @@ _imap duck type (must implement):
     where msg has: uid, subject, from_, to, cc, date_str, text, html, and
     either flags (imap_tools.MailMessage) or seen (other connectors, e.g.
     the Microsoft Graph adapter) — _msg_to_dict checks for flags first.
+    Messages may also expose `attachments` (imap_tools.MailAttachment shape:
+    filename, content_type, size, content_disposition, content_id, payload),
+    read by email_attachments/email_attachment_get/email_export_pdf; the
+    Gmail adapter downloads `payload` lazily, a source without the
+    attribute (Graph) gets a clear "not supported" error.
     Messages may also expose `headers` (lowercase name -> tuple of values,
     as imap_tools.MailMessage does); email_create_draft reads Message-ID and
     References from it to thread a reply.
@@ -282,6 +287,181 @@ def email_search(
     msgs = list(mb.fetch(criteria, mark_seen=False, limit=limit))
     fallback = _inbox_address(acl, project)
     return _with_source_errors([_msg_to_dict(m, inbox=_inbox_of(m, mb, fallback)) for m in msgs], mb)
+
+
+# ------------------------------------------------------------------
+# Attachments and PDF export — read-only, for the receipt flow to the
+# bookkeeping (gnubok): n8n asks Memaix for a receipt's attachment, or for
+# the message itself as a PDF when the receipt is only mail text.
+# ------------------------------------------------------------------
+
+# Largest attachment (or rendered PDF) returned in one call. Base64 adds a
+# third on top, and the whole thing travels as one MCP tool result.
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+
+def _fetch_one(acl: Acl, project: str, id: str, _imap):
+    """(message, backend) for message `id`, fetched without side effects.
+
+    Goes through the same backend as email_read, so the project scoping of
+    linked accounts (registry.get_all) applies unchanged: an id from an
+    account the project has not been given is simply not found.
+    """
+    mb = _imap if _imap is not None else _make_mailbox(acl, project)
+    msgs = list(mb.fetch(f"UID {id}", mark_seen=False))
+    if not msgs:
+        raise FileNotFoundError(f"message not found: {id!r}")
+    return msgs[0], mb
+
+
+def _attachments_of(m) -> list:
+    """The message's attachments, or ValueError for a source without them.
+
+    imap_tools messages and the Gmail adapter expose `attachments`; the
+    Microsoft Graph adapter does not (yet), and saying so beats pretending
+    the message has none.
+    """
+    atts = getattr(m, "attachments", None)
+    if atts is None:
+        raise ValueError("attachments are not supported for this mail source (only IMAP and Gmail)")
+    return list(atts)
+
+
+def _attachment_size(att) -> int:
+    size = getattr(att, "size", None)
+    return int(size) if size is not None else len(att.payload)
+
+
+def _attachment_row(index: int, att) -> dict:
+    return {
+        "attachment_id": str(index),
+        "filename": att.filename or "",
+        "mimetype": att.content_type or "application/octet-stream",
+        "size": _attachment_size(att),
+        "disposition": getattr(att, "content_disposition", "") or "",
+        "content_id": getattr(att, "content_id", "") or "",
+    }
+
+
+def _check_size(what: str, size: int) -> None:
+    if size > MAX_ATTACHMENT_BYTES:
+        raise ValueError(
+            f"{what} is too large: {size} bytes, the limit is {MAX_ATTACHMENT_BYTES} bytes "
+            f"({MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB)"
+        )
+
+
+def email_attachments(
+    acl: Acl,
+    user_id: str,
+    project: str,
+    id: str,
+    *,
+    _imap=None,
+) -> list[dict]:
+    """List a message's attachments without downloading them (Gmail) or
+    returning their content.
+
+    Returns [{attachment_id, filename, mimetype, size, disposition,
+    content_id}]. `attachment_id` is the attachment's position in the
+    message ("0", "1", ...) and is what email_attachment_get takes. Inline
+    images (disposition "inline", a content_id) are listed too; a receipt
+    is normally the one with disposition "attachment".
+
+    Side-effect free: the message is never marked as read. On IMAP the
+    whole message is fetched to find the parts.
+    """
+    acl.enforce(user_id, project, "collaborator")
+    m, _ = _fetch_one(acl, project, id, _imap)
+    return [_attachment_row(i, att) for i, att in enumerate(_attachments_of(m))]
+
+
+def email_attachment_get(
+    acl: Acl,
+    user_id: str,
+    project: str,
+    id: str,
+    attachment_id: str,
+    *,
+    _imap=None,
+) -> dict:
+    """One attachment's content, base64-encoded.
+
+    Returns {id, attachment_id, filename, mimetype, size, content_base64}.
+    Anything over MAX_ATTACHMENT_BYTES (10 MB) is refused with a ValueError
+    before it is downloaded (Gmail reports the size up front). Side-effect
+    free, like email_attachments.
+    """
+    import base64
+
+    acl.enforce(user_id, project, "collaborator")
+    m, _ = _fetch_one(acl, project, id, _imap)
+    atts = _attachments_of(m)
+    key = str(attachment_id).strip()
+    if not key.isdigit() or int(key) >= len(atts):
+        raise FileNotFoundError(
+            f"attachment not found: {attachment_id!r} (message {id!r} has {len(atts)} attachment(s))"
+        )
+    att = atts[int(key)]
+    _check_size(f"attachment {att.filename or key!r}", _attachment_size(att))
+    content = att.payload
+    _check_size(f"attachment {att.filename or key!r}", len(content))
+    return {
+        "id": str(id),
+        "attachment_id": key,
+        "filename": att.filename or "",
+        "mimetype": att.content_type or "application/octet-stream",
+        "size": len(content),
+        "content_base64": base64.b64encode(content).decode("ascii"),
+    }
+
+
+def email_export_pdf(
+    acl: Acl,
+    user_id: str,
+    project: str,
+    id: str,
+    *,
+    _imap=None,
+) -> dict:
+    """Render a message to PDF: a header block (From, To, Cc, Date, Subject,
+    attachment names) and the body.
+
+    For receipts that exist only as mail text. The HTML body is preferred
+    and rendered as its text content, with table rows kept on one line;
+    no remote resource (image, stylesheet, font) is ever fetched. See
+    tools/mail_pdf.py.
+
+    Returns {id, filename, mimetype, size, rendered_from, content_base64};
+    rendered_from is "html", "text" or "empty". Side-effect free.
+    """
+    import base64
+
+    from .mail_pdf import pdf_filename, render_message_pdf
+
+    acl.enforce(user_id, project, "collaborator")
+    m, _ = _fetch_one(acl, project, id, _imap)
+    atts = getattr(m, "attachments", None)
+    names = [a.filename for a in atts if a.filename] if atts is not None else []
+    pdf, rendered_from = render_message_pdf(
+        from_=m.from_ or "",
+        to=list(m.to) if m.to else [],
+        cc=list(m.cc) if getattr(m, "cc", None) else [],
+        date=m.date_str or "",
+        subject=m.subject or "",
+        html=getattr(m, "html", "") or "",
+        text=getattr(m, "text", "") or "",
+        attachment_names=names,
+    )
+    _check_size("rendered PDF", len(pdf))
+    return {
+        "id": str(id),
+        "filename": pdf_filename(m.subject or ""),
+        "mimetype": "application/pdf",
+        "size": len(pdf),
+        "rendered_from": rendered_from,
+        "content_base64": base64.b64encode(pdf).decode("ascii"),
+    }
 
 
 # Logical name for the drafts folder. The REST adapters (Gmail API, Graph)

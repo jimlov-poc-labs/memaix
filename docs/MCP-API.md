@@ -33,6 +33,9 @@ gatewayen implementerar (se `BUILD.md` för bygg-ordning). PM-modulens verktyg d
 | `email_list` | `project, folder="INBOX", limit=20` | `[{id, from, subject, date, snippet, unread}]` | collaborator |
 | `email_read` | `project, id` | `{id, from, to, cc, subject, date, body, attachments:[{name,size}]}` | collaborator |
 | `email_search` | `project, query, limit=20` | `[{id, from, subject, date, snippet}]` | collaborator |
+| `email_attachments` | `project, id` | `[{attachment_id, filename, mimetype, size, disposition, content_id}]` — laddar inte ner innehållet | collaborator |
+| `email_attachment_get` | `project, id, attachment_id` | `{id, attachment_id, filename, mimetype, size, content_base64}` — max 10 MB, större ger fel | collaborator |
+| `email_export_pdf` | `project, id` | `{id, filename, mimetype, size, rendered_from, content_base64}` — huvudrader + kropp som PDF, inga externa resurser hämtas | collaborator |
 | `email_create_draft` | `project, to, subject, body, cc?, in_reply_to?, account?` | `{status, subject, account}` — `account` = lådan utkastet hamnade i | collaborator |
 | `email_send` | `project, to, subject, body, cc?` | `{sent:true}` | **owner** + `allow_send` |
 

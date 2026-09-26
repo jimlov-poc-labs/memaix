@@ -27,6 +27,9 @@ dependencies = [
     "pydantic>=2.6,<3",          # kör 2.13.5
     "google-auth>=2.29,<3",
     "google-api-python-client>=2.130,<3",
+    # email_export_pdf. Rent Python (fontTools, Pillow, defusedxml); imagen
+    # har ingen webbläsare att skriva ut med. Se tools/mail_pdf.py.
+    "fpdf2>=2.8,<3",             # kör 2.8.8
 ]
 
 [project.optional-dependencies]

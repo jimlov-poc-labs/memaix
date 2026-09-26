@@ -2282,6 +2282,42 @@ def email_search(
 
 
 @mcp.tool()
+def email_attachments(project: str, id: str) -> list:
+    """List a message's attachments (id as returned by email_list/email_search).
+
+    Returns [{attachment_id, filename, mimetype, size, disposition,
+    content_id}]. Pass attachment_id to email_attachment_get for the
+    content. Inline images are listed too (disposition "inline"). Works for
+    IMAP mailboxes and linked Gmail accounts. Read-only: the message is not
+    marked as read."""
+    return _tool_call("email_attachments", project, _with_mail_backend(t_email.email_attachments), id)
+
+
+@mcp.tool()
+def email_attachment_get(project: str, id: str, attachment_id: str) -> dict:
+    """Fetch one attachment's content, base64-encoded.
+
+    attachment_id comes from email_attachments. Returns {id, attachment_id,
+    filename, mimetype, size, content_base64}. Attachments over 10 MB are
+    refused with an error. Read-only: the message is not marked as read."""
+    return _tool_call(
+        "email_attachment_get", project, _with_mail_backend(t_email.email_attachment_get), id, attachment_id,
+    )
+
+
+@mcp.tool()
+def email_export_pdf(project: str, id: str) -> dict:
+    """Render a message to PDF, e.g. a receipt that exists only as mail text.
+
+    The PDF has From/To/Cc/Date/Subject (and attachment names) followed by
+    the body; an HTML body is rendered as its text, table rows kept on one
+    line. No remote content (images, stylesheets) is fetched. Returns {id,
+    filename, mimetype, size, rendered_from, content_base64}. Read-only:
+    the message is not marked as read."""
+    return _tool_call("email_export_pdf", project, _with_mail_backend(t_email.email_export_pdf), id)
+
+
+@mcp.tool()
 def email_create_draft(
     project: str,
     to: str,
