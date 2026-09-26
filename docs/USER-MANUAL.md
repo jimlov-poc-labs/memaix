@@ -217,6 +217,8 @@ Alla verktyg är projekt-scopade och valideras mot `acl.yaml`. Roll anges där d
 | Verktyg | Roll | Beskrivning |
 |---|---|---|
 | `email_list` / `email_read` / `email_search` | collaborator | Lista/läs/sök i inkorgen. |
+| `email_attachments` / `email_attachment_get` | collaborator | Lista bilagor / hämta en bilaga base64-kodad (IMAP och Gmail, max 10 MB). Mejlet markeras inte som läst. |
+| `email_export_pdf` | collaborator | Mejlet som PDF (avsändare, mottagare, datum, ämne + text), t.ex. kvitton som bara är mejltext. |
 | `email_create_draft` | collaborator | Spara utkast i Drafts. |
 | `email_send` | owner | Skicka (kräver `allow_send: true`; går via utkorgen i `review`). |
 

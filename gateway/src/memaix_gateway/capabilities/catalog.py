@@ -77,7 +77,10 @@ def register_defaults() -> None:
             key="mail.triage", area="mail",
             title_key="cap.mail.triage.title",
             summary_key="cap.mail.triage.summary",
-            tools=("email_list", "email_search", "email_read"),
+            tools=(
+                "email_list", "email_search", "email_read",
+                "email_attachments", "email_attachment_get", "email_export_pdf",
+            ),
             example_prompts_key="cap.mail.triage.examples",
             needs_role="collaborator", needs_resource="mailbox",
             tags=("mejl", "inkorg", "mail", "inbox"),

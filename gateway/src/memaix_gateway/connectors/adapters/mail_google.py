@@ -27,6 +27,15 @@ Gmail specifics worth knowing before reading the code:
 5. **Bodies are base64url inside a MIME part tree.** `_walk_parts` hunts
    the first text/plain and text/html leaf, matching what `_msg_to_dict`
    reads off an imap_tools message.
+6. **Attachments are fetched separately.** A `format=full` message carries
+   each attachment's metadata (filename, mimeType, body.size) but usually
+   only an `attachmentId`, not the bytes; `users.messages.attachments.get`
+   returns those. `_GmailMessage.attachments` mirrors imap_tools'
+   `MailMessage.attachments` and downloads a part's bytes only when its
+   `payload` is read, so listing them and checking a size limit costs no
+   download. Gmail's `attachmentId` is not stable between two `get`s of
+   the same message, so it is never handed out; callers identify an
+   attachment by its position, and the id is read off the fresh fetch.
 
 v1 scope mirrors the Graph adapter: read (list/read/search) + append-to-
 Drafts, i.e. everything tools/email.py calls `_imap` for. `email_send`
@@ -100,12 +109,66 @@ def _walk_parts(part: dict, out: dict) -> None:
         _walk_parts(child, out)
 
 
+def _part_headers(part: dict) -> dict[str, str]:
+    return {h.get("name", "").lower(): h.get("value", "") for h in part.get("headers") or []}
+
+
+def _is_attachment(part: dict) -> bool:
+    """imap_tools' rule for what counts as an attachment: a leaf part with a
+    filename, a Content-ID (an inline image), or an attached message."""
+    mime = part.get("mimeType", "")
+    if mime.startswith("multipart/"):
+        return False
+    headers = _part_headers(part)
+    return bool(part.get("filename")) or "content-id" in headers or mime == "message/rfc822"
+
+
+def _attachment_parts(part: dict, out: list[dict]) -> list[dict]:
+    """Every attachment part, depth-first in MIME order — the same walk
+    order imap_tools uses, so an attachment's position is stable."""
+    if _is_attachment(part):
+        out.append(part)
+    for child in part.get("parts") or []:
+        _attachment_parts(child, out)
+    return out
+
+
+class GmailAttachment:
+    """One attachment of a Gmail message, shaped like imap_tools'
+    MailAttachment (filename, content_type, size, content_id,
+    content_disposition, payload). `payload` downloads on first access."""
+
+    def __init__(self, adapter: "GmailAdapter", message_id: str, part: dict) -> None:
+        self._adapter = adapter
+        self._message_id = message_id
+        body = part.get("body") or {}
+        headers = _part_headers(part)
+        self.filename = part.get("filename") or ""
+        self.content_type = part.get("mimeType") or "application/octet-stream"
+        self.size = int(body.get("size") or 0)
+        self.content_id = headers.get("content-id", "").strip().strip("<>")
+        self.content_disposition = headers.get("content-disposition", "").split(";", 1)[0].strip().lower()
+        self._data: str | None = body.get("data")
+        self._attachment_id: str | None = body.get("attachmentId")
+        self._payload: bytes | None = None
+
+    @property
+    def payload(self) -> bytes:
+        if self._payload is None:
+            data = self._data
+            if data is None and self._attachment_id:
+                data = self._adapter.get_attachment_data(self._message_id, self._attachment_id)
+            self._payload = _b64url_decode(data) if data else b""
+        return self._payload
+
+
 class _GmailMessage:
     """Wraps one Gmail message resource with the attributes tools/email.py's
     `_msg_to_dict` reads off an imap_tools message."""
 
-    def __init__(self, data: dict) -> None:
+    def __init__(self, data: dict, adapter: "GmailAdapter | None" = None) -> None:
         self.uid = data["id"]
+        self._adapter = adapter
         payload = data.get("payload") or {}
         headers = {
             h.get("name", "").lower(): h.get("value", "")
@@ -126,6 +189,16 @@ class _GmailMessage:
         _walk_parts(payload, bodies)
         self.text = bodies.get("text/plain", "")
         self.html = bodies.get("text/html", "")
+        self._payload_tree = payload
+
+    @property
+    def attachments(self) -> list[GmailAttachment]:
+        """Attachment metadata from the part tree; bytes are fetched lazily.
+        Empty for a `format=metadata` message (list/search rows), which has
+        no part tree to read."""
+        if self._adapter is None:
+            return []
+        return [GmailAttachment(self._adapter, self.uid, p) for p in _attachment_parts(self._payload_tree, [])]
 
 
 def _split_addrs(raw: str) -> list[str]:
@@ -272,7 +345,13 @@ class GmailAdapter:
         if mark_seen:
             for m in messages:
                 self._mark_read(m)
-        return [_GmailMessage(m) for m in messages]
+        return [_GmailMessage(m, self) for m in messages]
+
+    def get_attachment_data(self, message_id: str, attachment_id: str) -> str:
+        """base64url data of one attachment (users.messages.attachments.get).
+        Read-only: gmail.readonly covers it."""
+        resp = self._request("GET", f"/messages/{message_id}/attachments/{attachment_id}")
+        return (resp.json() or {}).get("data") or ""
 
     def _mark_read(self, m: dict) -> None:
         """Best-effort removal of UNREAD. It needs gmail.modify, which a
