@@ -13,8 +13,13 @@
         level DEBUG
     }
 
-    # DCR via gateway (injects audience before forwarding to Hydra)
-    handle /oauth2/register {
+    # DCR via gateway (injects audience and restricts grant types before
+    # forwarding to Hydra). The whole /oauth2/register* tree goes here —
+    # including RFC 7592 /oauth2/register/{id} (GET/PUT/DELETE) — otherwise
+    # a client could PUT itself to client_credentials straight at Hydra.
+    # Regex also catches //oauth2//register-style paths.
+    @dcr path_regexp dcr (?i)^/+oauth2/+register
+    handle @dcr {
         reverse_proxy gateway:8080
     }
 

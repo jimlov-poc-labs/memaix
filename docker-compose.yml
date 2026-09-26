@@ -131,24 +131,27 @@ services:
   hydra:
     image: oryd/hydra:v2.2
     restart: unless-stopped
-    command: serve all --dev
+    # Inte --dev: dev stänger av säkerhetskontroller (Secure-kakor, https-krav
+    # på redirect_uri för icke-localhost, issuer-schema). TLS termineras i
+    # Cloudflare-tunneln och Hydra pratar vanlig HTTP på docker-nätet —
+    # det sköter SERVE_TLS_ENABLED=false, inte dev-läget.
+    command: serve all
     environment:
       DSN: postgres://hydra:${HYDRA_DB_PASSWORD}@postgres:5432/hydra?sslmode=disable
       URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-https://mcp.example.com/}
       URLS_CONSENT: ${HYDRA_CONSENT_URL:-https://mcp.example.com/consent}
       URLS_LOGIN: ${HYDRA_LOGIN_URL:-https://mcp.example.com/login}
       SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET}
-      LOG_LEVEL: debug
-      LOG_LEAK_SENSITIVE_VALUES: "true"
+      LOG_LEVEL: info
+      LOG_LEAK_SENSITIVE_VALUES: "false"   # true skriver tokens/secrets i loggen
+      SERVE_TLS_ENABLED: "false"
       STRATEGIES_ACCESS_TOKEN: jwt
       OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED: "true"
-      # Hydra i --dev sätter inte Secure på sina kakor, men defaultar till
-      # SameSite=None — en kombination varje modern webbläsare avvisar. Kakan
-      # lagras då aldrig, och nästa steg i flödet dör med
-      # "No CSRF value available in the session cookie".
-      # Lax kräver inte Secure och räcker här: login och consent ligger på
-      # samma host som Hydra, och Lax släpper igenom top-level-navigeringen
-      # in från klienten.
+      # Hydra defaultar till SameSite=None. Under --dev (fram till 2026-09-26)
+      # sattes dessutom inte Secure, en kombination webbläsare avvisar:
+      # "No CSRF value available in the session cookie". Utan dev är kakorna
+      # Secure, men Lax står kvar: login och consent ligger på samma host som
+      # Hydra, och Lax släpper igenom top-level-navigeringen från klienten.
       SERVE_COOKIES_SAME_SITE_MODE: "Lax"
       SERVE_PUBLIC_CORS_ENABLED: "true"
       SERVE_PUBLIC_CORS_ALLOWED_ORIGINS: "https://claude.ai,https://api.claude.ai"
