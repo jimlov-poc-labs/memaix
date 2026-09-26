@@ -80,6 +80,38 @@ def _stada_dcr_svar(data: object) -> object:
     return ut
 
 
+# Hydra v2.2 saknar både initial access token och en spärr för vilka
+# grant types en dynamiskt registrerad klient får be om — vem som helst som
+# når /oauth2/register kan annars registrera en client_credentials-klient,
+# eller PUT:a om en befintlig till det via /oauth2/register/{id}.
+# claude.ai och Claude Code registrerar sig dynamiskt vid ny koppling
+# (authorization_code + refresh_token, response_types code), så registreringen
+# kan inte stängas; den begränsas i stället här. Caddy skickar hela
+# /oauth2/register* till gatewayn, så det här är den enda vägen utifrån.
+# Utelämnad lista är tillåten: då sätter Hydra authorization_code/code.
+_DCR_TILLATNA_GRANTS = frozenset({"authorization_code", "refresh_token"})
+_DCR_TILLATNA_RESPONSE_TYPES = frozenset({"code"})
+
+
+def _dcr_avvisning(body: object) -> str | None:
+    """Skäl att neka en DCR-begäran, eller None om den får passera."""
+    if not isinstance(body, dict):
+        return "registreringen måste vara ett JSON-objekt"
+    for falt, tillatna in (
+        ("grant_types", _DCR_TILLATNA_GRANTS),
+        ("response_types", _DCR_TILLATNA_RESPONSE_TYPES),
+    ):
+        varde = body.get(falt)
+        if varde is None:
+            continue
+        if not isinstance(varde, list) or not all(isinstance(v, str) for v in varde):
+            return f"{falt} måste vara en lista av strängar"
+        otillatna = sorted(set(varde) - tillatna)
+        if otillatna:
+            return f"{falt} tillåter inte {', '.join(otillatna)}"
+    return None
+
+
 _acl: Acl | None = None
 _audit: AuditLog | None = None
 _token_store: "TokenStore | None" = None  # type: ignore[name-defined]
@@ -3168,11 +3200,52 @@ def build_http_app():
         client is whitelisted for https://mcp.example.com (with and without trailing
         slash) before forwarding to Hydra's public DCR endpoint.
         """
+        return await _dcr_vidare(request, "POST", "http://hydra:4444/oauth2/register")
+
+    async def dcr_klient_handler(request: Request) -> Response:
+        """RFC 7592-hanteringen av en registrerad klient (GET/PUT/DELETE).
+
+        Hydra kräver klientens registration access token; den följer med i
+        Authorization-huvudet. PUT får samma spärr och audience som POST —
+        annars kunde en klient registrera sig som authorization_code och
+        sedan byta till client_credentials.
+        """
+        import httpx
+        client_id = request.path_params["client_id"]
+        url = f"http://hydra:4444/oauth2/register/{client_id}"
+        if request.method == "PUT":
+            return await _dcr_vidare(request, "PUT", url)
+        headers = {}
+        if "authorization" in request.headers:
+            headers["Authorization"] = request.headers["authorization"]
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.request(request.method, url, headers=headers, timeout=10.0)
+        except Exception as exc:
+            logger.warning("DCR proxy error: %s", exc)
+            return JSONResponse({"error": "server_error"}, status_code=500)
+        if request.method == "GET" and resp.status_code == 200:
+            return JSONResponse(_stada_dcr_svar(resp.json()), status_code=200)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type"),
+        )
+
+    async def _dcr_vidare(request: Request, method: str, url: str) -> JSONResponse:
         import httpx
         try:
             body = await request.json()
         except Exception:
             body = {}
+
+        skal = _dcr_avvisning(body)
+        if skal:
+            logger.warning("DCR nekad (%s): %s", method, skal)
+            return JSONResponse(
+                {"error": "invalid_client_metadata", "error_description": skal},
+                status_code=400,
+            )
 
         cfg = config.load()
         issuer = cfg.get("memaix", {}).get("auth", {}).get("issuer", _DEFAULT_ISSUER).rstrip("/")
@@ -3180,14 +3253,12 @@ def build_http_app():
         existing = body.get("audience") or []
         body["audience"] = list({*existing, *resource_urls})
 
+        headers = {"Content-Type": "application/json"}
+        if method == "PUT" and "authorization" in request.headers:
+            headers["Authorization"] = request.headers["authorization"]
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    "http://hydra:4444/oauth2/register",
-                    json=body,
-                    headers={"Content-Type": "application/json"},
-                    timeout=10.0,
-                )
+                resp = await client.request(method, url, json=body, headers=headers, timeout=10.0)
                 return JSONResponse(_stada_dcr_svar(resp.json()), status_code=resp.status_code)
         except Exception as exc:
             logger.warning("DCR proxy error: %s", exc)
@@ -3425,6 +3496,7 @@ def build_http_app():
         Route("/health", health_handler),
         Route("/.well-known/oauth-authorization-server", as_metadata_handler),
         Route("/oauth2/register", dcr_handler, methods=["POST"]),
+        Route("/oauth2/register/{client_id}", dcr_klient_handler, methods=["GET", "PUT", "DELETE"]),
         Route("/link/{provider}", link_start),
         Route("/link/{provider}/callback", link_callback),
         Route("/hooks", rule_webhook, methods=["POST"]),

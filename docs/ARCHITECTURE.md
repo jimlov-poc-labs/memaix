@@ -20,7 +20,7 @@
         ▼
   caddy :80    reverse proxy, auto_https off   [profile: hydra]
         │
-        ├── /oauth2/register ─────────────► gateway  (injicerar audience, proxar vidare)
+        ├── /oauth2/register* ────────────► gateway  (spärrar grant types, injicerar audience)
         ├── /oauth2/*, /.well-known/openid-configuration,
         │   /.well-known/jwks.json ───────► hydra:4444
         ├── /login*, /consent* ───────────► login-app:3000
@@ -165,7 +165,8 @@ valfria installationer.
 | `/health` | liveness |
 | `/.well-known/oauth-authorization-server` | proxar Hydras openid-configuration och **injicerar `registration_endpoint`** (rad 2250) — Hydra v2 annonserar inte DCR själv |
 | `/.well-known/oauth-protected-resource` | RFC 9728. Insatt **först** i router-listan (rad 2526) för att undvika trailing-slash-mismatch mot claude.ai:s aud-validering |
-| `/oauth2/register` (POST) | proxar DCR till `http://hydra:4444/oauth2/register` (rad 2276) och injicerar `aud` så JWT:erna får audience-claim |
+| `/oauth2/register` (POST) | proxar DCR till `http://hydra:4444/oauth2/register` och injicerar `aud` så JWT:erna får audience-claim. Nekar `grant_types` utanför `authorization_code`/`refresh_token` och `response_types` utanför `code` (`_dcr_avvisning`) — Hydra v2.2 kan inte själv begränsa DCR och saknar initial access token |
+| `/oauth2/register/{client_id}` (GET/PUT/DELETE) | RFC 7592-hanteringen, proxad med klientens registration access token. PUT får samma spärr som POST, annars kunde en klient byta sig till `client_credentials` |
 | `/link/{provider}` + `/link/{provider}/callback` | per-användar-OAuth mot Google/Microsoft |
 | `/hooks/{token}` (POST) | webhook-triggers för automationsregler |
 | `/app/*`, `/board` | webb-UI och board, monterade ovanpå MCP-appen |
@@ -412,7 +413,7 @@ bygger på fel antagande.
 | 1 | **`README.md` beskriver inte produkten.** Den säger att koden flyttat till `jimlov-poc-labs/memaix` — vilket är exakt det repo filen ligger i. Kvarleva från `git subtree split` 2026-06-30. | `README.md` |
 | 2 | **Git-commits är synkrona, inte asynkrona.** `AGENTS.md` §1 och tidigare versioner av detta dokument slog fast "git asynkront, aldrig commit-per-skrivning". Koden commit:ar synkront inne i `write_lock` så att snapshot-id blir en riktig commit-hash; det finns ett `TODO(perf)` om batchning. `gateway/Dockerfile:5` säger uttryckligen "commit per skrivning". | `backends/memory_store.py:6-10` |
 | 3 | **`make up` startar inte kärntjänsterna.** Målet kör `--profile tunnel --profile nextcloud`, men gateway, caddy, hydra, postgres och login-app ligger alla under profilen `hydra`. | `Makefile:22` vs `docker-compose.yml` |
-| 4 | **Hydra kör i dev-läge med läckande loggar.** `serve all --dev`, `LOG_LEVEL: debug`, `LOG_LEAK_SENSITIVE_VALUES: "true"` — i direkt spänning med `AGENTS.md` §2 ("scrub före sändning, inga hemligheter i loggar"). | `docker-compose.yml:86,93-94` |
+| 4 | ~~**Hydra kör i dev-läge med läckande loggar.**~~ Åtgärdat 2026-09-26: `serve all` utan `--dev` (utom lokala http-installationer, där setup sätter `HYDRA_SERVE_FLAGS=--dev`), `SERVE_TLS_ENABLED: "false"` (TLS termineras i tunneln), `LOG_LEVEL: info`, `LOG_LEAK_SENSITIVE_VALUES: "false"`. | `docker-compose.yml` (hydra) |
 | 5 | **Inga healthchecks.** Trots att `DOCTOR.md` och `make doctor` är centrala i drift-berättelsen har ingen service en `healthcheck:`. `gateway` väntar bara på `service_started`. | `docker-compose.yml` |
 | 6 | **`gateway/README.md` märker implementerad kod som stub.** `server.py [stub]` (2634 rader), `auth/ [todo]`, `tools/ [stub]` — alla tre är fullt implementerade. Samma sak i `tools/__init__.py:1` ("STUBS to implement per docs/BUILD.md"). | `gateway/README.md:11-13` |
 | 7 | **`docs/BUSINESS-CASE.md` är gitignorerad men länkad från `INDEX.md`** — bruten länk i den publika kopian. | `docs/INDEX.md` |
