@@ -18,7 +18,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from . import config
-from .acl import AccessDenied, Acl
+from .acl import AccessDenied, Acl, ServiceClient
 from .capabilities.catalog import register_defaults as _register_default_capabilities
 
 # Agentloopens identitetskontext (FEATURE-LLM-ENGINE Fas 2) — definieras i
@@ -209,7 +209,13 @@ def _user() -> str:
         from mcp.server.auth.middleware.auth_context import get_access_token
         token = get_access_token()
         if token and token.subject:
-            uid = _get_acl().user_by_subject(token.subject)
+            acl = _get_acl()
+            # A service client acts as its acts_as user; what it may call is
+            # narrowed at dispatch (_MemaixMCP), not here.
+            sc = acl.service_client(token.subject)
+            if sc is not None:
+                return sc.acts_as
+            uid = acl.user_by_subject(token.subject)
             if uid:
                 return uid
             raise RuntimeError(f"OAuth subject not mapped in acl.yaml: {token.subject!r}")
@@ -692,7 +698,92 @@ def _tool_call(
     return _audited(user, project, tool, fn, acl, user, project, *tail, idempotency_key=idempotency_key, **kwargs)
 
 
-mcp = FastMCP("memaix")
+def _service_client() -> ServiceClient | None:
+    """The restriction for the current request's token, if its subject is a
+    service client in acl.yaml. Read from the verified token on every call,
+    never cached, so there is no state to leak between requests."""
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+    except ImportError:  # pragma: no cover - mcp always ships it
+        return None
+    token = get_access_token()
+    if token is None or not token.subject:
+        return None
+    return _get_acl().service_client(token.subject)
+
+
+class ServiceClientDenied(PermissionError):
+    """A service client asked for something outside its allowlist."""
+
+
+def _deny_service_client(sc: ServiceClient, tool: str, project: str, reason: str) -> None:
+    msg = f"service client {sc.client_id} may not {reason}"
+    _get_audit().log(sc.acts_as, project, tool, False, msg)
+    raise ServiceClientDenied(msg)
+
+
+class _MemaixMCP(FastMCP):
+    """FastMCP with the service-client restriction applied at dispatch.
+
+    Many tools call _user() directly instead of going through _tool_call, so
+    the only place that sees every call is the MCP request handler itself.
+    FastMCP binds these methods as the lowlevel handlers in __init__, which
+    is why this is a subclass and not a patch on the instance.
+
+    For a service client (acl.yaml service_clients): only tools in its
+    ``tools`` list are listed or callable; a tool that takes ``project``
+    must be called with a project from its ``projects`` list; resources and
+    prompts are hidden and refused. Everyone else passes through untouched.
+    """
+
+    def _check_tool(self, sc: ServiceClient, name: str, arguments: dict) -> None:
+        project = arguments.get("project") if isinstance(arguments, dict) else None
+        project_str = project if isinstance(project, str) else ""
+        if name not in sc.tools:
+            _deny_service_client(sc, name, project_str, f"call tool {name!r}")
+        tool = self._tool_manager.get_tool(name)
+        takes_project = tool is not None and "project" in (tool.parameters.get("properties") or {})
+        if takes_project and project_str not in sc.projects:
+            _deny_service_client(
+                sc, name, project_str, f"call {name!r} in project {project_str or '(none)'!r}"
+            )
+
+    async def list_tools(self):
+        tools = await super().list_tools()
+        sc = _service_client()
+        if sc is None:
+            return tools
+        return [t for t in tools if t.name in sc.tools]
+
+    async def call_tool(self, name, arguments):
+        sc = _service_client()
+        if sc is not None:
+            self._check_tool(sc, name, arguments or {})
+        return await super().call_tool(name, arguments)
+
+    async def list_resources(self):
+        return [] if _service_client() is not None else await super().list_resources()
+
+    async def list_resource_templates(self):
+        return [] if _service_client() is not None else await super().list_resource_templates()
+
+    async def read_resource(self, uri):
+        sc = _service_client()
+        if sc is not None:
+            _deny_service_client(sc, f"resource:{uri}", "", "read resources")
+        return await super().read_resource(uri)
+
+    async def list_prompts(self):
+        return [] if _service_client() is not None else await super().list_prompts()
+
+    async def get_prompt(self, name, arguments=None):
+        sc = _service_client()
+        if sc is not None:
+            _deny_service_client(sc, f"prompt:{name}", "", "use prompts")
+        return await super().get_prompt(name, arguments)
+
+
+mcp = _MemaixMCP("memaix")
 
 # Populate the capability registry (docs/FEATURE-DISCOVERABILITY.md) once at
 # import time so onboarding/help/board surfaces always reflect the tools
@@ -3543,6 +3634,9 @@ def _get_account_email(provider: str, token_data: dict) -> str:
 
 def main() -> None:
     import sys
+    # Load acl.yaml up front so an invalid file (e.g. a bad service_clients
+    # block) stops the gateway at start instead of failing the first request.
+    _get_acl()
     if "--http" in sys.argv or os.environ.get("MEMAIX_TRANSPORT") == "http":
         import uvicorn
         app = build_http_app()
