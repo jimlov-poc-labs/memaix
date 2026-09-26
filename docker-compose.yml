@@ -135,7 +135,9 @@ services:
     # på redirect_uri för icke-localhost, issuer-schema). TLS termineras i
     # Cloudflare-tunneln och Hydra pratar vanlig HTTP på docker-nätet —
     # det sköter SERVE_TLS_ENABLED=false, inte dev-läget.
-    command: serve all
+    # HYDRA_SERVE_FLAGS=--dev sätts av setup bara för lokala installationer
+    # med http-issuer (http://localhost), som Hydra annars vägrar starta med.
+    command: serve all ${HYDRA_SERVE_FLAGS:-}
     environment:
       DSN: postgres://hydra:${HYDRA_DB_PASSWORD}@postgres:5432/hydra?sslmode=disable
       URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-https://mcp.example.com/}

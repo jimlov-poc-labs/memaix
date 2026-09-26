@@ -219,6 +219,11 @@ def write_config(a: dict, root: Path) -> dict:
     # ska resa, och vilket uid gatewayen kör som mot bind-mountarna (samma
     # ägare som skrev vaults/ och data/ här, annars vägrar git — se compose).
     env_lines.append(f"COMPOSE_PROFILES={compose_profiles(a)}")
+    # Hydra vägrar starta med en http-issuer utan --dev. Bara lokala
+    # installationer (http://localhost) får dev-läget; allt med riktig domän
+    # kör Hydra utan, och compose defaultar dit när variabeln saknas.
+    if issuer.startswith("http://"):
+        env_lines.append("HYDRA_SERVE_FLAGS=--dev")
     if hasattr(os, "getuid"):
         env_lines.append(f"MEMAIX_UID={os.getuid()}")
         env_lines.append(f"MEMAIX_GID={os.getgid()}")

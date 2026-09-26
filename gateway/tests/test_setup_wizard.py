@@ -237,6 +237,22 @@ def test_write_config_compose_profiles_and_mount_dirs(tmp_path):
     assert "COMPOSE_PROFILES=hydra,tunnel\n" in (tmp_path / ".env").read_text()
 
 
+def test_hydra_dev_mode_only_for_http_issuer(tmp_path):
+    """Hydra kör utan --dev så fort issuern är https; bara en lokal
+    http-issuer (som Hydra annars vägrar starta med) får dev-läget."""
+    engine.write_config(_answers(), tmp_path)
+    lokal = (tmp_path / ".env").read_text()
+    assert "HYDRA_PUBLIC_URL=http://localhost" in lokal
+    assert "HYDRA_SERVE_FLAGS=--dev\n" in lokal
+
+    engine.write_config(
+        _answers(track=2, domain="mcp.acme.se", tunnel_provider="cloudflare"), tmp_path
+    )
+    env = (tmp_path / ".env").read_text()
+    assert "HYDRA_PUBLIC_URL=https://" in env
+    assert "HYDRA_SERVE_FLAGS" not in env
+
+
 def test_unattended_init_generates_password_file(tmp_path, monkeypatch, capsys):
     import bootstrap
 
