@@ -8,6 +8,8 @@ This module is the security boundary; keep it simple and well-tested.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 # Role hierarchy: higher index = more privilege.
 ROLES = ("reader", "collaborator", "owner")
 
@@ -23,16 +25,92 @@ def _rank(role: str) -> int:
         return -1
 
 
+@dataclass(frozen=True)
+class ServiceClient:
+    """A headless OAuth client (client_credentials) restricted to a subset of
+    what its ``acts_as`` user may do: only the listed tools, only in the listed
+    projects. Empty sets mean nothing is allowed (default deny)."""
+
+    client_id: str
+    acts_as: str
+    tools: frozenset[str]
+    projects: frozenset[str]
+
+
+def _str_list(client_id: str, key: str, value) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError(f"service_clients.{client_id}.{key} must be a list of names")
+    return frozenset(value)
+
+
+def _parse_service_clients(raw, users: dict, projects: dict) -> dict[str, ServiceClient]:
+    """Validate the ``service_clients`` section of acl.yaml.
+
+    Raises ValueError on anything ambiguous, so a bad block stops the gateway
+    at load instead of granting something by accident."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("service_clients must be a mapping of client id -> settings")
+    user_subjects: set[str] = set()
+    for u in users.values():
+        if u.get("oauth_sub"):
+            user_subjects.add(u["oauth_sub"])
+        user_subjects.update(u.get("oauth_subjects") or [])
+    parsed: dict[str, ServiceClient] = {}
+    for client_id, spec in raw.items():
+        client_id = str(client_id)
+        if not isinstance(spec, dict):
+            raise ValueError(f"service_clients.{client_id} must be a mapping")
+        acts_as = spec.get("acts_as")
+        if not acts_as or not isinstance(acts_as, str):
+            raise ValueError(f"service_clients.{client_id}: acts_as is required")
+        if acts_as not in users:
+            raise ValueError(f"service_clients.{client_id}: acts_as {acts_as!r} is not a user in acl.yaml")
+        if client_id in user_subjects:
+            raise ValueError(
+                f"service_clients.{client_id} is also a user oauth_sub/oauth_subjects entry; "
+                "a subject must be either a user login or a service client, not both"
+            )
+        unknown = set(spec) - {"acts_as", "tools", "projects"}
+        if unknown:
+            raise ValueError(f"service_clients.{client_id}: unknown keys {sorted(unknown)}")
+        tools = _str_list(client_id, "tools", spec.get("tools"))
+        client_projects = _str_list(client_id, "projects", spec.get("projects"))
+        missing = client_projects - set(projects)
+        if missing:
+            raise ValueError(f"service_clients.{client_id}: unknown projects {sorted(missing)}")
+        parsed[client_id] = ServiceClient(client_id, acts_as, tools, client_projects)
+    return parsed
+
+
 class Acl:
     """Loaded from config/acl.yaml. See config/acl.example.yaml for shape."""
 
-    def __init__(self, users: dict, projects: dict):
+    def __init__(self, users: dict, projects: dict, service_clients: dict[str, ServiceClient] | None = None):
         self.users = users
         self.projects = projects
+        self.service_clients = service_clients or {}
 
     @classmethod
     def from_config(cls, cfg: dict) -> "Acl":
-        return cls(users=cfg.get("users", {}), projects=cfg.get("projects", {}))
+        users = cfg.get("users", {})
+        projects = cfg.get("projects", {})
+        return cls(
+            users=users,
+            projects=projects,
+            service_clients=_parse_service_clients(cfg.get("service_clients"), users, projects),
+        )
+
+    def service_client(self, oauth_sub: str) -> ServiceClient | None:
+        """Return the restriction for a service-client subject, else None.
+
+        Deliberately separate from user_by_subject: a caller that only maps
+        subject -> user must never pick up ``acts_as`` without the
+        restriction that comes with it (enforced in server._MemaixMCP)."""
+        return self.service_clients.get(oauth_sub)
 
     def user_by_subject(self, oauth_sub: str) -> str | None:
         """Map an authenticated OAuth subject to an internal user id.

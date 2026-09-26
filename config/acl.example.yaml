@@ -28,6 +28,17 @@ users:
       acme: collaborator
       shared: reader
 
+# Service-klienter (docs/AI-CLIENTS.md#service-klienter-client_credentials):
+# en Hydra-klient med client_credentials som agerar som en användare men bara
+# får anropa verktygen i `tools` och bara i projekten i `projects`. Saknas
+# `tools` får klienten ingenting. Nyckeln är Hydra-klientens UUID (= token-sub)
+# och får inte samtidigt stå som oauth_sub/oauth_subjects hos en användare.
+# service_clients:
+#   00000000-0000-0000-0000-000000000000:
+#     acts_as: alice
+#     tools: [email_search, email_read, email_attachments, email_attachment_get, email_export_pdf]
+#     projects: [acme]
+
 projects:
   acme:
     vault: /srv/vaults/acme
