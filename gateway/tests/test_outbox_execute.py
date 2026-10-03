@@ -46,5 +46,5 @@ def test_execute_pending_default_dispatch_covers_gated_tools():
     dispatch = _default_dispatch()
     assert set(dispatch) == {
         "email_send", "calendar_create", "calendar_update",
-        "project_member_set", "user_invite",
+        "project_member_set", "user_invite", "user_reset_link",
     }

@@ -402,7 +402,7 @@ def register_defaults() -> None:
             key="access.members", area="access",
             title_key="cap.access.members.title",
             summary_key="cap.access.members.summary",
-            tools=("project_members", "project_member_set", "user_invite"),
+            tools=("project_members", "project_member_set", "user_invite", "user_reset_link"),
             example_prompts_key="cap.access.members.examples",
             needs_role="owner",
             tags=("medlem", "bjud in", "invite", "admin", "behörighet", "access"),

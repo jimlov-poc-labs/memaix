@@ -3754,6 +3754,17 @@ def user_invite(project: str, invitee: str, role: str, email: str | None = None)
     return _audited(user, project, "user_invite", t_access.user_invite, acl, user, project, invitee, role, email)
 
 
+@mcp.tool()
+def user_reset_link(project: str, member: str) -> dict:
+    """Create a set-new-password link for an existing member of a project.
+    After approval in the outbox the result holds a reset_url. Project owner
+    only, and only for members whose access lies entirely in projects you own."""
+    user = _user()
+    _rl(user, project)
+    acl = _get_acl()
+    return _audited(user, project, "user_reset_link", t_access.user_reset_link, acl, user, project, member)
+
+
 def main() -> None:
     import sys
     # Load acl.yaml up front so an invalid file (e.g. a bad service_clients

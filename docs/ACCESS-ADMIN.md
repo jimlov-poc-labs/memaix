@@ -22,8 +22,9 @@ Ett konto som bjuds in får aldrig `admin`.
 | `project_members(project)` | projektägare | Lista medlemmar och roller. |
 | `project_member_set(project, member, role)` | projektägare | Ändra roll, eller `role: null` för att ta bort. |
 | `user_invite(project, invitee, role, email?)` | projektägare | Skapa ett inloggningskonto begränsat till projektet. |
+| `user_reset_link(project, member)` | projektägare | Återställningslänk för en medlem som redan har lösenord. |
 
-`project_member_set` och `user_invite` **köas i utkorgen** och körs först när en människa godkänner
+`project_member_set`, `user_invite` och `user_reset_link` **köas i utkorgen** och körs först när en människa godkänner
 (`outbox_approve` eller webbens utkorg). Behörigheten kontrolleras igen vid godkännandet, så en
 ägare som degraderats i mellantiden kan inte få en gammal åtgärd genomförd.
 Skyddsregel: den sista icke-admin-ägaren i ett projekt kan inte ta bort sig själv
@@ -38,6 +39,15 @@ Skyddsregel: den sista icke-admin-ägaren i ett projekt kan inte ta bort sig sj�
    7 dagar; en ny inbjudan ogiltigförklarar den gamla.
 4. Därefter kopplar personen in Memaix i sin AI-klient (se [AI-CLIENTS.md](AI-CLIENTS.md)) och loggar in
    med användarnamnet och lösenordet.
+
+## Återställningslänk
+
+`user_reset_link` → godkänn i utkorgen → `reset_url` (samma sida och samma regler som inbjudan:
+en gång, 7 dagar, minst 12 tecken). Det är det enda sättet en länk får byta ett befintligt lösenord;
+en vanlig inbjudningslänk gör det aldrig. Målet måste vara medlem i projektet och icke-admin, och en
+projektägare kan bara återställa konton vars alla behörigheter ligger i projekt hen själv äger
+(annars kan en ägare ta över ett konto som når andra projekt). Systemadmin kan återställa alla
+icke-admin-konton. Det gamla lösenordet gäller tills länken används.
 
 Säkerhet: bara SHA-256 av token sparas (`memaix-invites.db`), länken kan aldrig sätta lösenord på ett
 konto som redan har ett, och sidan svarar `no-store` utan Referer. Tokenen finns i klartext i utkorgens

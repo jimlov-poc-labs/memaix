@@ -185,17 +185,43 @@ class AccessAdmin:
         token = self._invites.issue(user, actor, ttl_s)
         return {"status": status, "project": project, "user": user, "role": role, "token": token}
 
+    def reset_link(
+        self, acl: Acl, actor: str, project: str, user: str, *, ttl_s: int = DEFAULT_TTL_S
+    ) -> dict:
+        """Issue a set-new-password link for an existing member of ``project``.
+
+        The target must be a non-admin whose every grant lies in projects the
+        actor owns, so a project owner cannot take over an account that also
+        reaches projects they do not control.
+        """
+        self._require_project_owner(acl, actor, project)
+        target = acl.users.get(user)
+        if target is None:
+            raise AccessError(f"unknown user: {user}")
+        if acl.is_admin(user):
+            raise AccessError(_ADMIN_LOCKED)
+        grants = acl.grants(user)
+        if project not in grants:
+            raise AccessError(f"{user} is not a member of {project}")
+        if not acl.is_admin(actor) and any(acl.grants(actor).get(p) != "owner" for p in grants):
+            raise AccessError(f"{user} also has access to projects you do not own")
+        token = self._invites.issue(user, actor, ttl_s, reset=True)
+        return {"status": "reset", "project": project, "user": user, "token": token}
+
     def accept_invite(self, token: str, password: str) -> str:
-        user = self._invites.peek(token)
-        if user is None:
+        found = self._invites.lookup(token)
+        if found is None:
             raise AccessError("invalid or expired invitation")
+        user, is_reset = found
         if not isinstance(password, str) or len(password) < MIN_PASSWORD_LEN:
             raise AccessError(f"password must be at least {MIN_PASSWORD_LEN} characters")
         hashed = hash_password(password)
 
         def apply(data: dict) -> None:
             u = data.get("users", {}).get(user)
-            if u is None or u.get("disabled") or u.get("admin") is True or u.get("password_hash"):
+            if u is None or u.get("disabled") or u.get("admin") is True:
+                raise AccessError("invalid or expired invitation")
+            if u.get("password_hash") and not is_reset:
                 raise AccessError("invalid or expired invitation")
             u["password_hash"] = hashed
 

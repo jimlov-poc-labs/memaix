@@ -20,6 +20,7 @@ def _default_dispatch() -> dict[str, Callable]:
         "calendar_update": t_calendar.calendar_update,
         "project_member_set": t_access.project_member_set,
         "user_invite": t_access.user_invite,
+        "user_reset_link": t_access.user_reset_link,
     }
 
 

@@ -20,7 +20,7 @@ from ..invites import InviteStore
 from ..paths import data_dir
 from ..web.acl_writer import AclWriter
 
-ACCESS_TOOLS = ("project_member_set", "user_invite")
+ACCESS_TOOLS = ("project_member_set", "user_invite", "user_reset_link")
 
 
 def _admin() -> AccessAdmin:
@@ -86,4 +86,19 @@ def user_invite(
     if token:
         base = (config.load().get("memaix", {}).get("server", {}) or {}).get("public_url", "").rstrip("/")
         out["invite_url"] = f"{base}/app/invite/{token}"
+    return out
+
+
+def user_reset_link(
+    acl: Acl, user: str, project: str, member: str,
+    *, _confirmed: bool = False, _outbox=None, _admin_obj: AccessAdmin | None = None,
+) -> dict:
+    adm = _admin_obj or _admin()
+    adm._require_project_owner(acl, user, project)
+    if not _confirmed:
+        return _queue(user, project, "user_reset_link", {"member": member}, _outbox)
+    out = adm.reset_link(_fresh_acl(), user, project, member)
+    token = out.pop("token")
+    base = (config.load().get("memaix", {}).get("server", {}) or {}).get("public_url", "").rstrip("/")
+    out["reset_url"] = f"{base}/app/invite/{token}"
     return out

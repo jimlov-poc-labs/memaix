@@ -46,12 +46,17 @@ def _member_set(args: dict) -> str:
     return f"Medlem: {args.get('member', '')}\nÄndring: {change}"
 
 
+def _reset_link(args: dict) -> str:
+    return f"Skapa återställningslänk för lösenord: {args.get('member', '')}"
+
+
 _RENDERERS = {
     "email_send": _email_send,
     "calendar_create": _calendar,
     "calendar_update": _calendar,
     "user_invite": _user_invite,
     "project_member_set": _member_set,
+    "user_reset_link": _reset_link,
 }
 
 

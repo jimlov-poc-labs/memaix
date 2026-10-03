@@ -308,3 +308,60 @@ def test_acl_write_keeps_inode_so_file_bind_mounts_stay_fresh(env):
     assert env.path.stat().st_ino == before
     assert env.acl().grants("bob")["acme"] == "reader"
     assert env.path.with_suffix(".yaml.bak1").exists()
+
+
+# --------------------------------------------------------- återställningslänk
+
+
+def _with_password(env, user):
+    data = yaml.safe_load(env.path.read_text())
+    data["users"][user]["password_hash"] = hash_password("old password here")
+    env.path.write_text(yaml.safe_dump(data))
+
+
+def test_reset_link_sets_new_password_on_account_that_has_one(env):
+    _with_password(env, "bob")
+    out = env.admin.reset_link(env.acl(), "alice", "acme", "bob")
+    assert out["status"] == "reset" and len(out["token"]) >= 40
+    assert env.admin.accept_invite(out["token"], "brand new password") == "bob"
+    salt = env.acl().users["bob"]["password_hash"].split(":")[0]
+    assert env.acl().users["bob"]["password_hash"] == hash_password(
+        "brand new password", salt=bytes.fromhex(salt)
+    )
+    assert env.invites.peek(out["token"]) is None
+
+
+def test_plain_invite_token_still_cannot_overwrite_password(env):
+    token = env.admin.invite(env.acl(), "alice", "acme", "newbie", "reader")["token"]
+    _with_password(env, "newbie")
+    with pytest.raises(AccessError):
+        env.admin.accept_invite(token, "attacker chosen password")
+
+
+def test_reset_link_requires_project_owner(env):
+    with pytest.raises(AccessDenied):
+        env.admin.reset_link(env.acl(), "bob", "acme", "carol")
+
+
+def test_reset_link_refused_for_admin_unknown_and_non_member(env):
+    with pytest.raises(AccessError):
+        env.admin.reset_link(env.acl(), "alice", "acme", "root")
+    with pytest.raises(AccessError):
+        env.admin.reset_link(env.acl(), "alice", "acme", "nobody")
+    with pytest.raises(AccessError):
+        env.admin.reset_link(env.acl(), "alice", "acme", "dave")
+
+
+def test_owner_cannot_reset_account_reaching_projects_they_do_not_own(env):
+    data = yaml.safe_load(env.path.read_text())
+    data["users"]["carol"]["grants"]["beta"] = "reader"
+    env.path.write_text(yaml.safe_dump(data))
+    with pytest.raises(AccessError):
+        env.admin.reset_link(env.acl(), "alice", "acme", "carol")
+    assert env.admin.reset_link(env.acl(), "root", "acme", "carol")["status"] == "reset"
+
+
+def test_reset_token_is_single_use_and_expires(env):
+    token = env.admin.reset_link(env.acl(), "alice", "acme", "bob", ttl_s=-1)["token"]
+    with pytest.raises(AccessError):
+        env.admin.accept_invite(token, "brand new password")
