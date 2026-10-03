@@ -168,7 +168,7 @@ class AccessAdmin:
             if existing is not None and existing.get("password_hash"):
                 existing.setdefault("grants", {})[project] = role
                 return "granted"
-            entry = existing if existing is not None else {"oauth_subjects": [user]}
+            entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
             entry.setdefault("grants", {})[project] = role
             if email:
                 entry["email"] = email
