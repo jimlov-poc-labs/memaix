@@ -22,6 +22,7 @@ from .invites import DEFAULT_TTL_S, InviteStore
 from .web.acl_writer import AclWriter
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+_ADMIN_LOCKED = "a system admin's access cannot be changed here"
 _RESERVED_USERS = {"admin", "root", "system", "memaix", "anonymous"}
 MIN_PASSWORD_LEN = 12
 
@@ -32,6 +33,30 @@ class AccessError(Exception):
 
 def _live_admin(acl: Acl, actor: str) -> bool:
     return actor in acl.users and not acl.is_disabled(actor) and acl.is_admin(actor)
+
+
+def _apply_member(data: dict, actor_is_admin: bool, project: str, user: str, role: str | None) -> None:
+    users = data["users"]
+    if user not in users or project not in data.get("projects", {}):
+        raise AccessError("user or project vanished")
+    if users[user].get("admin") is True:
+        raise AccessError(_ADMIN_LOCKED)
+    grants = users[user].setdefault("grants", {})
+    if not actor_is_admin and grants.get(project) == "owner" and role != "owner":
+        if not _other_owners(users, user, project):
+            raise AccessError("cannot remove the last project owner; add another owner first")
+    if role is None:
+        grants.pop(project, None)
+    else:
+        grants[project] = role
+
+
+def _other_owners(users: dict, user: str, project: str) -> list[str]:
+    return [
+        uid for uid, u in users.items()
+        if uid != user and u.get("admin") is not True
+        and (u.get("grants") or {}).get(project) == "owner"
+    ]
 
 
 class AccessAdmin:
@@ -112,31 +137,10 @@ class AccessAdmin:
         if user not in acl.users:
             raise AccessError(f"unknown user: {user}")
         if acl.is_admin(user):
-            raise AccessError("a system admin's access cannot be changed here")
+            raise AccessError(_ADMIN_LOCKED)
         actor_is_admin = acl.is_admin(actor)
 
-        def apply(data: dict) -> None:
-            users = data["users"]
-            if user not in users or project not in data.get("projects", {}):
-                raise AccessError("user or project vanished")
-            if users[user].get("admin") is True:
-                raise AccessError("a system admin's access cannot be changed here")
-            current = (users[user].get("grants") or {}).get(project)
-            if not actor_is_admin and current == "owner" and role != "owner":
-                others = [
-                    uid for uid, u in users.items()
-                    if uid != user and u.get("admin") is not True
-                    and (u.get("grants") or {}).get(project) == "owner"
-                ]
-                if not others:
-                    raise AccessError("cannot remove the last project owner; add another owner first")
-            grants = users[user].setdefault("grants", {})
-            if role is None:
-                grants.pop(project, None)
-            else:
-                grants[project] = role
-
-        self._writer.update(apply)
+        self._writer.update(lambda data: _apply_member(data, actor_is_admin, project, user, role))
         return {"project": project, "user": user, "role": role}
 
     # ------------------------------------------------------------ invitations
@@ -158,13 +162,13 @@ class AccessAdmin:
         if not isinstance(user, str) or not _NAME.match(user) or user in _RESERVED_USERS:
             raise AccessError("user id must be 2-32 chars of a-z, 0-9, '-' or '_' and not reserved")
         if acl.is_admin(user):
-            raise AccessError("a system admin's access cannot be changed here")
+            raise AccessError(_ADMIN_LOCKED)
 
         def apply(data: dict) -> str:
             users = data.setdefault("users", {})
             existing = users.get(user)
             if existing is not None and existing.get("admin") is True:
-                raise AccessError("a system admin's access cannot be changed here")
+                raise AccessError(_ADMIN_LOCKED)
             if existing is not None and existing.get("password_hash"):
                 existing.setdefault("grants", {})[project] = role
                 return "granted"

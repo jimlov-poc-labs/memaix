@@ -39,7 +39,7 @@ def _reload() -> None:
     server.reload_acl()
 
 
-def _queue(acl: Acl, user: str, project: str, tool: str, args: dict, outbox=None) -> dict:
+def _queue(user: str, project: str, tool: str, args: dict, outbox=None) -> dict:
     from ..outbox.preview import render_preview
     from ..outbox.queue import default_queue
 
@@ -65,7 +65,7 @@ def project_member_set(
     adm = _admin_obj or _admin()
     adm._require_project_owner(acl, user, project)
     if not _confirmed:
-        return _queue(acl, user, project, "project_member_set", {"member": member, "role": role}, _outbox)
+        return _queue(user, project, "project_member_set", {"member": member, "role": role}, _outbox)
     out = adm.set_member(_fresh_acl(), user, project, member, role)
     _reload()
     return out
@@ -79,7 +79,7 @@ def user_invite(
     adm._require_project_owner(acl, user, project)
     if not _confirmed:
         args = {"invitee": invitee, "role": role, "email": email}
-        return _queue(acl, user, project, "user_invite", args, _outbox)
+        return _queue(user, project, "user_invite", args, _outbox)
     out = adm.invite(_fresh_acl(), user, project, invitee, role, email=email)
     _reload()
     token = out.pop("token", None)
