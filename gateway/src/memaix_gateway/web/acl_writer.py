@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """AclWriter — atomic acl.yaml mutation with backup rotation (MEX-025 Fas D).
 
-Every write: load current YAML → mutate → atomic write (tmp + os.replace)
+Every write: load current YAML → mutate → in-place write (same inode, .bak1 first)
 with the 3 previous versions kept as .bak1/.bak2/.bak3. Callers MUST call
 server.reload_acl() after a successful write so the running gateway sees the
 change (the Acl is cached in a module global). Lockout guards (self-disable,
@@ -14,7 +14,6 @@ values (docs/SECRETS.md).
 from __future__ import annotations
 
 import os
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -100,11 +99,10 @@ class AclWriter:
         return yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
 
     def _write_atomic(self, data: dict) -> None:
-        """tmp file + os.replace; keeps .bak1 (newest) … .bak3 (oldest).
+        """Rewrite acl.yaml in place; keeps .bak1 (newest) … .bak3 (oldest).
 
-        The current acl.yaml is COPIED (not moved) into .bak1 before the
-        replace, so there is never an instant where acl.yaml is missing —
-        a crash mid-write leaves the old file in place."""
+        The current acl.yaml is COPIED into .bak1 first, so a crash
+        mid-write always leaves a good previous version to restore."""
         import shutil
 
         # Rotate backups: bak2→bak3, bak1→bak2, current→(copy)→bak1.
@@ -116,14 +114,14 @@ class AclWriter:
         if self._path.exists():
             shutil.copy2(self._path, self._path.with_suffix(".yaml.bak1"))
 
-        fd, tmp_name = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
-            os.replace(tmp_name, self._path)
-        except BaseException:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
+        text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        # In place, not os.replace: docker bind-mounts a single file by inode, so
+        # a replaced acl.yaml would leave login-app reading the old one forever.
+        # .bak1 above is the recovery copy if a crash lands mid-write.
+        mode = "r+" if self._path.exists() else "w"
+        with open(self._path, mode, encoding="utf-8") as fh:
+            fh.seek(0)
+            fh.write(text)
+            fh.truncate()
+            fh.flush()
+            os.fsync(fh.fileno())

@@ -300,3 +300,11 @@ def test_user_disabled_after_invite_cannot_accept(env):
     env.path.write_text(yaml.safe_dump(data))
     with pytest.raises(AccessError):
         env.admin.accept_invite(token, "long enough password")
+
+
+def test_acl_write_keeps_inode_so_file_bind_mounts_stay_fresh(env):
+    before = env.path.stat().st_ino
+    env.admin.set_member(env.acl(), "alice", "acme", "bob", "reader")
+    assert env.path.stat().st_ino == before
+    assert env.acl().grants("bob")["acme"] == "reader"
+    assert env.path.with_suffix(".yaml.bak1").exists()
