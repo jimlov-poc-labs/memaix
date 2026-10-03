@@ -86,6 +86,45 @@ def load_per_user_hashes(acl_path: str) -> dict[str, str]:
     return hashes
 
 
+class AclLoginState:
+    """Per-user hashes and enabled accounts from acl.yaml, reloaded when the
+    file changes — so a user who has just accepted an invitation can sign in
+    without restarting the login app. A read failure keeps the last good
+    state rather than locking everybody out or letting anyone in."""
+
+    def __init__(self, acl_path: str) -> None:
+        self._path = acl_path
+        self._mtime: float | None = None
+        self.hashes: dict[str, str] = {}
+        self.enabled: set[str] = set()
+
+    def refresh(self) -> None:
+        import os
+
+        try:
+            mtime = os.stat(self._path).st_mtime_ns
+        except OSError:
+            return
+        if mtime == self._mtime:
+            return
+        try:
+            import yaml
+
+            with open(self._path) as f:
+                users = (yaml.safe_load(f) or {}).get("users") or {}
+        except Exception:
+            return
+        hashes: dict[str, str] = {}
+        enabled: set[str] = set()
+        for uid, udata in users.items():
+            udata = udata or {}
+            if udata.get("password_hash"):
+                hashes[uid] = udata["password_hash"]
+                if not udata.get("disabled"):
+                    enabled.add(uid)
+        self.hashes, self.enabled, self._mtime = hashes, enabled, mtime
+
+
 def password_hash_for(
     user: str,
     *,

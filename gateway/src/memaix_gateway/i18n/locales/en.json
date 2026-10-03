@@ -186,7 +186,9 @@
   ],
   "cap.backlog.assign.title": "Assign to agent",
   "cap.backlog.assign.summary": "Assign a backlog item to an agent or person (owner only). The basis of the agent team — the PM allocates work, the team member picks up their items.",
-  "cap.backlog.assign.examples": ["Assign this item to the backend agent"],
+  "cap.backlog.assign.examples": [
+    "Assign this item to the backend agent"
+  ],
   "cap.backlog.deck_sync.title": "Sync with Nextcloud Deck",
   "cap.backlog.deck_sync.summary": "Two-way sync between a Nextcloud Deck board and the backlog — new cards become backlog items, and changes on either side are kept in sync (most-recently-changed wins on conflict). Owner only.",
   "cap.backlog.deck_sync.examples": [
@@ -403,5 +405,16 @@
   "web_mfa_active": "MFA active — write operations enabled.",
   "web_admin_enable": "Enable",
   "web_admin_disable": "Disable",
-  "web_admin_last_admin": "Refused: would disable the last active admin."
+  "web_admin_last_admin": "Refused: would disable the last active admin.",
+  "cap.access.projects.title": "Create a new project",
+  "cap.access.projects.summary": "A system admin creates a new project with its own memory vault. Nobody else gets access until you invite them.",
+  "cap.access.projects.examples": [
+    "Create a project called itsq"
+  ],
+  "cap.access.members.title": "Manage project members",
+  "cap.access.members.summary": "Project owners see members, change roles and invite new people with a link where they choose their own password. Changes wait for your approval in the outbox.",
+  "cap.access.members.examples": [
+    "Who has access to itsq?",
+    "Invite anna@example.com as owner of itsq"
+  ]
 }

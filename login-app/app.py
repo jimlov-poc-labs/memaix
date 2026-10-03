@@ -51,7 +51,16 @@ _SHARED_HASH = os.environ.get("MEMAIX_LOGIN_PASSWORD_HASH", "")
 
 # Per-user hashes from acl.yaml (users.<id>.password_hash). Loaded at startup.
 _ACL_PATH = os.environ.get("MEMAIX_ACL_CONFIG", "/app/config/acl.yaml")
-_PER_USER_HASHES: dict[str, str] = auth.load_per_user_hashes(_ACL_PATH)
+_ACL_STATE = auth.AclLoginState(_ACL_PATH)
+_ACL_STATE.refresh()
+
+
+def _allowed_users() -> set[str]:
+    """Env allow-list plus every enabled acl.yaml user that has a password
+    (invited users appear here without a restart)."""
+    _ACL_STATE.refresh()
+    return ALLOWED_USERS | _ACL_STATE.enabled
+
 _LOGIN_TEMPLATE = "login.html"
 
 app = FastAPI(title="Memaix login")
@@ -66,7 +75,7 @@ def _verify_password(user: str, provided: str) -> bool:
         user,
         provided,
         allowed_users=ALLOWED_USERS,
-        per_user_hashes=_PER_USER_HASHES,
+        per_user_hashes=_ACL_STATE.hashes,
         shared_hash=_SHARED_HASH,
     )
 
@@ -152,7 +161,7 @@ async def login_post(
             {"challenge": login_challenge, "error": t("login_error_credentials"), "t": t, "locale": locale},
             status_code=429,
         )
-    if username not in ALLOWED_USERS or not _verify_password(username, password):
+    if username not in _allowed_users() or not _verify_password(username, password):
         return templates.TemplateResponse(
             request, _LOGIN_TEMPLATE,
             {"challenge": login_challenge, "error": t("login_error_credentials"), "t": t, "locale": locale},
@@ -205,7 +214,7 @@ async def consent_get(consent_challenge: str = ""):
         return HTMLResponse(f"<p>Hydra-fel: {exc}</p>", status_code=502)
 
     subject = info.get("subject", "")
-    if subject not in ALLOWED_USERS:
+    if subject not in _allowed_users():
         redirect = _hydra_reject(
             "/admin/oauth2/auth/requests/consent",
             "consent_challenge", consent_challenge,

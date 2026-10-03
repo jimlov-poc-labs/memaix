@@ -49,7 +49,9 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./config/acl.yaml:/app/config/acl.yaml:ro
+      # Katalog, inte filen: AclWriter byter fil via os.replace (ny inode), och en
+      # fil-bindmount skulle då för alltid peka på den gamla acl.yaml.
+      - ./config:/app/config:ro
       # rw: approved_clients.db (memaix-src 4c8f32fe) — (subject, client_id)
       # approvals for the login skip check. Not the gateway's ./data (that's
       # its own service's sqlite state); a separate subdir keeps ownership clear.

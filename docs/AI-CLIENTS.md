@@ -6,6 +6,11 @@ Din Memaix connector-URL är `https://mcp.din-domän.se` (det du satte som `publ
 Memaix använder **OAuth 2.1 med PKCE** för autentisering. Klienten måste stödja
 OAuth-autentiserade remote MCP-servrar (inte bara localhost/stdio). Se kolumnen "OAuth" nedan.
 
+> **Blev du inbjuden?** Öppna länken du fick, välj lösenord, och lägg sedan in connector-URL:en
+> (den du fick av den som bjöd in) i Claude, ChatGPT eller Mistral enligt stegen nedan. När
+> klienten öppnar inloggningen använder du ditt användarnamn och lösenordet du just valde. Du ser
+> bara de projekt du fått åtkomst till. Se [ACCESS-ADMIN.md](ACCESS-ADMIN.md).
+
 ---
 
 ## Snabb-matris
