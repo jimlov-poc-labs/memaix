@@ -117,6 +117,27 @@ class _PerUserGoogleAdapter:
             ),
         }
 
+    def _calendar_ids(self, transient: tuple) -> list[str]:
+        """Ids of the calendars to read; [] means "just primary".
+
+        calendarList needs calendar(.readonly) or calendar.calendarlist(.readonly);
+        accounts linked with only calendar.events get 403 here yet read "primary"
+        fine, so a 403 falls back rather than failing the account (subscription
+        calendars stay undiscovered until it is relinked with the wider scope).
+        Network trouble also falls back; a 401 or any other HTTP error is raised,
+        since swallowing it made a dead account look like an empty calendar."""
+        import requests
+
+        try:
+            cal_list = self._get("/users/me/calendarList", minAccessRole="reader")
+        except transient:
+            return []
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code != 403:
+                raise
+            return []
+        return [c["id"] for c in cal_list.get("items", [])]
+
     def list_events(self, start: datetime, end: datetime) -> list[dict]:
         from urllib.parse import quote as _quote
 
@@ -125,22 +146,8 @@ class _PerUserGoogleAdapter:
         time_min = start.isoformat() if start.tzinfo else start.isoformat() + "Z"
         time_max = end.isoformat() if end.tzinfo else end.isoformat() + "Z"
 
-        # Only network trouble skips a calendar. A 401/403 on the events means the
-        # token or scope is wrong; swallowing it made a dead account look empty.
         transient = (requests.ConnectionError, requests.Timeout)
-        try:
-            cal_list = self._get("/users/me/calendarList", minAccessRole="reader")
-            calendar_ids = [c["id"] for c in cal_list.get("items", [])]
-        except transient:
-            calendar_ids = []
-        except requests.HTTPError as exc:
-            # calendarList needs calendar(.readonly) or calendar.calendarlist(.readonly);
-            # accounts linked with only calendar.events get 403 here yet read "primary"
-            # fine. Falling back keeps them working (subscription calendars stay
-            # undiscovered until relinked with the wider scope). A 401 is a dead token.
-            if exc.response is None or exc.response.status_code != 403:
-                raise
-            calendar_ids = []
+        calendar_ids = self._calendar_ids(transient)
         if not calendar_ids:
             calendar_ids = ["primary"]
 
