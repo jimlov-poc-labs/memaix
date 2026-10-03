@@ -86,3 +86,22 @@ def test_project_create_is_admin_only(rig):
     with pytest.raises(AccessDenied):
         t.project_create(acl(), "alice", "newproj")
     assert t.project_create(acl(), "root", "newproj")["project"] == "newproj"
+
+
+def test_reset_link_is_queued_then_returns_reset_url_after_approval(rig):
+    admin, q, path, acl = rig
+    data = yaml.safe_load(path.read_text())
+    data["users"]["bob"]["password_hash"] = "aa:bb"
+    path.write_text(yaml.safe_dump(data))
+    out = t.user_reset_link(acl(), "alice", "acme", "bob", _outbox=q)
+    assert out["pending"] is True
+    assert yaml.safe_load(path.read_text())["users"]["bob"]["password_hash"] == "aa:bb"
+    result = execute_pending(acl(), q.get(out["action_id"]))
+    assert result["reset_url"].startswith("https://m.example/app/invite/")
+    assert "token" not in result
+
+
+def test_non_owner_cannot_queue_reset_link(rig):
+    admin, q, path, acl = rig
+    with pytest.raises(AccessDenied):
+        t.user_reset_link(acl(), "bob", "acme", "bob", _outbox=q)
