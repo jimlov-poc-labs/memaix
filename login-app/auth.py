@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import threading
 import time
@@ -112,7 +113,8 @@ class AclLoginState:
 
             with open(self._path) as f:
                 users = (yaml.safe_load(f) or {}).get("users") or {}
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning("cannot read %s: %s", self._path, exc)
             return
         hashes: dict[str, str] = {}
         enabled: set[str] = set()
