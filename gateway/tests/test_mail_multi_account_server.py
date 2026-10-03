@@ -376,3 +376,55 @@ def test_merge_is_ordered_by_date_before_the_limit_cuts_it():
 
     assert [m.uid.rpartition("|")[2] for m in merged] == ["new0", "new1", "old0"]
     assert [getattr(m, "inbox", None) for m in merged] == ["jimmy@jimlov.se", "jimmy@jimlov.se", None]
+
+
+# ------------------------------------------------------------------
+# A needs_relink account is reported, not silently dropped (card 9c4b6599)
+# ------------------------------------------------------------------
+
+
+def _link_imap(token_store, account, host):
+    token_store.store("alice", "imap", account, {"host": host, "user": "alice", "password": "pw"})
+
+
+def test_email_search_warns_about_needs_relink_account(wired, monkeypatch):
+    acl, token_store = wired
+    shared = _FakeMailbox([_Msg("1", "From shared inbox")])
+    live = _FakeMailbox([_Msg("1", "From live account")])
+    _register_imap_user_and_shared(monkeypatch, shared, {"imap.live.example.com": live})
+    _link_imap(token_store, "alice@live.example.com", "imap.live.example.com")
+    _link_imap(token_store, "alice@dead.example.com", "imap.dead.example.com")
+    token_store.mark_needs_relink("alice", "imap", "alice@dead.example.com")
+
+    result = server.email_search("proj", query="body")
+
+    hits = [m for m in result if "warning" not in m]
+    assert {m["subject"] for m in hits} == {"From shared inbox", "From live account"}
+    warning = result[-1]
+    assert "source_errors" in warning
+    [err] = warning["source_errors"]
+    assert "alice@dead.example.com" in err["source"]
+    assert err["error"].startswith("needs_relink")
+
+
+def test_email_search_warns_when_the_only_other_source_needs_relink(wired, monkeypatch):
+    acl, token_store = wired
+    shared = _FakeMailbox([_Msg("1", "From shared inbox")])
+    _register_imap_user_and_shared(monkeypatch, shared, {})
+    _link_imap(token_store, "alice@dead.example.com", "imap.dead.example.com")
+    token_store.mark_needs_relink("alice", "imap", "alice@dead.example.com")
+
+    result = server.email_search("proj", query="body")
+
+    assert [m["subject"] for m in result if "warning" not in m] == ["From shared inbox"]
+    assert "alice@dead.example.com" in result[-1]["source_errors"][0]["source"]
+
+
+def test_email_search_has_no_warning_without_needs_relink(wired, monkeypatch):
+    acl, token_store = wired
+    shared = _FakeMailbox([_Msg("1", "From shared inbox")])
+    _register_imap_user_and_shared(monkeypatch, shared, {})
+
+    result = server.email_search("proj", query="body")
+
+    assert all("warning" not in m for m in result)

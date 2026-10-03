@@ -139,6 +139,25 @@ class ConnectorRegistry:
 
         return spec.factory(acl, project, user, resource_cfg, token)
 
+    def relink_pending(self, token_store, project: str, capability: str, user: str) -> list[tuple[str, str]]:
+        """(label, account) for each per-user account flagged `needs_relink` that
+        `project` may use for `capability`. get()/get_all() drop these, so a
+        caller that wants to tell the user which account went silent asks here.
+        The label has the same "{type}:{account}" shape get_all() gives live sources."""
+        pending: list[tuple[str, str]] = []
+        for (cap, type_), spec in self._specs.items():
+            if cap != capability or spec.auth != "per_user":
+                continue
+            provider = spec.provider or spec.type
+            for a in token_store.list_accounts(user):
+                if (
+                    a["provider"] == provider
+                    and a.get("status") == "needs_relink"
+                    and token_store.is_allowed(user, provider, a["account"], capability, project)
+                ):
+                    pending.append((f"{type_}:{a['account']}", a["account"]))
+        return pending
+
     def capabilities_for_provider(self, provider: str) -> list[str]:
         """Which capabilities a linked account of `provider` can serve, as the
         registry stands right now — the set of checkboxes the settings UI
