@@ -24,10 +24,10 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from . import invite as _invite
 from ..board.routes import _board_html_with_locale, _check_cookie, _config_locale
 from ..i18n import locale_from_request
 from ..paths import data_dir as _data_dir
+from . import invite as _invite
 
 _WEB_DIR = Path(__file__).parent
 _PAGES = _WEB_DIR / "pages"
