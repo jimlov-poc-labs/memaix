@@ -53,6 +53,6 @@ resultatrad tills den används — samma förtroendezon som `acl.yaml`.
 ## Drift
 
 Login-appen läser `acl.yaml` när filen ändras, så nya konton kan logga in utan omstart.
-Därför monteras hela `config/`-katalogen skrivskyddat (inte filen): `AclWriter` byter fil atomärt och
-en fil-bindmount skulle annars peka på den gamla.
+Login-appen monterar `acl.yaml` som fil; `AclWriter` skriver i samma fil (samma inode, `.bak1` först) och
+en omkopierad fil skulle annars lämna login-appen med den gamla. Hela `config/` monteras inte: där ligger servicekontonycklar.
 `MEMAIX_VAULTS_DIR` (standard `/srv/vaults`) styr var nya valv skapas.
