@@ -27,6 +27,7 @@ from starlette.routing import Route
 from ..board.routes import _board_html_with_locale, _check_cookie, _config_locale
 from ..i18n import locale_from_request
 from ..paths import data_dir as _data_dir
+from . import invite as _invite
 
 _WEB_DIR = Path(__file__).parent
 _PAGES = _WEB_DIR / "pages"
@@ -438,6 +439,7 @@ web_routes = [
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_set, methods=["POST"]),
     Route("/app/board/frame", app_board_frame, methods=["GET"]),
     Route("/app/static/{path:path}", app_static, methods=["GET"]),
+    Route("/app/invite/{token:str}", _invite.invite_page, methods=["GET", "POST"]),
     Route("/app/{page:str}", app_page, methods=["GET"]),
     Route("/board", board_redirect, methods=["GET"]),
 ]

@@ -139,3 +139,43 @@ def test_load_per_user_hashes_from_acl(tmp_path):
 
 def test_load_per_user_hashes_missing_file_returns_empty(tmp_path):
     assert auth.load_per_user_hashes(str(tmp_path / "nope.yaml")) == {}
+
+
+# --- AclLoginState: invited users can sign in without a restart ------------
+
+
+def _write_acl(path, users):
+    import yaml
+
+    path.write_text(yaml.safe_dump({"users": users}))
+
+
+def test_acl_login_state_picks_up_new_user_without_restart(tmp_path):
+    p = tmp_path / "acl.yaml"
+    _write_acl(p, {"a": {"password_hash": "s:h"}, "pending": {"grants": {}}})
+    st = auth.AclLoginState(str(p))
+    st.refresh()
+    assert st.enabled == {"a"} and "pending" not in st.hashes
+    _write_acl(p, {"a": {"password_hash": "s:h"}, "pending": {"password_hash": "s2:h2"}})
+    os.utime(p, ns=(1, 2_000_000_000_000_000_000))
+    st.refresh()
+    assert st.enabled == {"a", "pending"} and st.hashes["pending"] == "s2:h2"
+
+
+def test_acl_login_state_excludes_disabled_users(tmp_path):
+    p = tmp_path / "acl.yaml"
+    _write_acl(p, {"a": {"password_hash": "s:h", "disabled": True}})
+    st = auth.AclLoginState(str(p))
+    st.refresh()
+    assert st.enabled == set()
+
+
+def test_acl_login_state_keeps_last_good_state_on_bad_file(tmp_path):
+    p = tmp_path / "acl.yaml"
+    _write_acl(p, {"a": {"password_hash": "s:h"}})
+    st = auth.AclLoginState(str(p))
+    st.refresh()
+    p.write_text("users: [unterminated")
+    os.utime(p, ns=(1, 3_000_000_000_000_000_000))
+    st.refresh()
+    assert st.enabled == {"a"}

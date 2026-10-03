@@ -186,7 +186,9 @@
   ],
   "cap.backlog.assign.title": "Tilldela till agent",
   "cap.backlog.assign.summary": "Tilldela ett backlog-item till en agent eller person (endast ägare). Grunden för agent-teamet — PM:en fördelar arbetet, teammedlemmen plockar upp sina items.",
-  "cap.backlog.assign.examples": ["Tilldela det här itemet till backend-agenten"],
+  "cap.backlog.assign.examples": [
+    "Tilldela det här itemet till backend-agenten"
+  ],
   "cap.backlog.deck_sync.title": "Synka med Nextcloud Deck",
   "cap.backlog.deck_sync.summary": "Tvåvägssynk mellan en Nextcloud Deck-tavla och backloggen — nya kort blir backlog-items, och ändringar på båda håll hålls i synk (senast ändrad vinner vid konflikt). Endast ägare.",
   "cap.backlog.deck_sync.examples": [
@@ -403,5 +405,16 @@
   "web_mfa_active": "MFA aktiv — skrivoperationer tillgängliga.",
   "web_admin_enable": "Aktivera",
   "web_admin_disable": "Stäng av",
-  "web_admin_last_admin": "Vägrade: skulle stänga av sista aktiva admin."
+  "web_admin_last_admin": "Vägrade: skulle stänga av sista aktiva admin.",
+  "cap.access.projects.title": "Skapa nytt projekt",
+  "cap.access.projects.summary": "Systemadmin skapar ett nytt projekt med eget minnesvalv. Ingen annan får åtkomst förrän du bjuder in dem.",
+  "cap.access.projects.examples": [
+    "Skapa ett projekt som heter itsq"
+  ],
+  "cap.access.members.title": "Hantera projektets medlemmar",
+  "cap.access.members.summary": "Projektägare ser medlemmar, ändrar roller och bjuder in nya personer med en länk där de väljer eget lösenord. Ändringar väntar på ditt godkännande i utkorgen.",
+  "cap.access.members.examples": [
+    "Vilka har tillgång till itsq?",
+    "Bjud in anna@example.com som ägare av itsq"
+  ]
 }

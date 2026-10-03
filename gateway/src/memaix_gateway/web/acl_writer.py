@@ -68,6 +68,16 @@ class AclWriter:
             projects[project][key] = value
             self._write_atomic(data)
 
+    def update(self, fn) -> Any:
+        """Run ``fn(data)`` on the freshly loaded YAML under the write lock and
+        persist the result. ``fn`` may raise to abort without writing, which
+        makes check-then-write sequences atomic."""
+        with self._lock:
+            data = self._load()
+            result = fn(data)
+            self._write_atomic(data)
+            return result
+
     def set_top_level(self, key: str, value: Any) -> None:
         """Set — eller med value=None: ta bort — en toppnivåsektion. Används
         för memaix.yaml:s model-block (admin_llm); acl.yaml-mutationer har

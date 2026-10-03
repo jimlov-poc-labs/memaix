@@ -29,6 +29,7 @@ from .llm.identity import AGENT_USER as _AGENT_USER
 from .paths import data_dir as _data_dir
 from .safety.audit import AuditLog
 from .safety.rate_limit import rate_limiter as _rate_limiter
+from .tools import access as t_access
 from .tools import account as t_account
 from .tools import backlog as t_backlog
 from .tools import calendar as t_cal
@@ -3703,6 +3704,54 @@ def _get_account_email(provider: str, token_data: dict) -> str:
         if sub:
             return f"{provider}-{sub}"
     return f"linked-{provider}"
+
+
+# ------------------------------------------------------------------
+# Access administration (docs/ACCESS-ADMIN.md)
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+def project_create(name: str) -> dict:
+    """Create a new project with its own memory vault (system admin only).
+
+    The caller becomes owner; nobody else gets access until invited. Name:
+    2-32 chars of a-z, 0-9, '-' or '_'."""
+    user = _user()
+    _rl(user, name)
+    acl = _get_acl()
+    return _audited(user, name, "project_create", t_access.project_create, acl, user, name)
+
+
+@mcp.tool()
+def project_members(project: str) -> list:
+    """List who has access to a project and with which role (project owner)."""
+    user = _user()
+    _rl(user, project)
+    acl = _get_acl()
+    return _audited(user, project, "project_members", t_access.project_members, acl, user, project)
+
+
+@mcp.tool()
+def project_member_set(project: str, member: str, role: str | None) -> dict:
+    """Change a member's role in a project (reader/collaborator/owner), or
+    remove them with role=null. Project owner only. Queued in the outbox:
+    nothing changes until a human approves it."""
+    user = _user()
+    _rl(user, project)
+    acl = _get_acl()
+    return _audited(user, project, "project_member_set", t_access.project_member_set, acl, user, project, member, role)
+
+
+@mcp.tool()
+def user_invite(project: str, invitee: str, role: str, email: str | None = None) -> dict:
+    """Invite a person to one project. Creates a login limited to that project;
+    after approval in the outbox the result holds an invite_url where the
+    person chooses their own password. Project owner only."""
+    user = _user()
+    _rl(user, project)
+    acl = _get_acl()
+    return _audited(user, project, "user_invite", t_access.user_invite, acl, user, project, invitee, role, email)
 
 
 def main() -> None:

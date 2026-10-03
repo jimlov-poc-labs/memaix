@@ -10,6 +10,7 @@ def _default_dispatch() -> dict[str, Callable]:
     # Imported lazily to avoid a circular import: tools.email/tools.calendar
     # import outbox.policy/outbox.queue/outbox.preview at module scope, so
     # outbox.execute must only import them back inside a function.
+    from ..tools import access as t_access
     from ..tools import calendar as t_calendar
     from ..tools import email as t_email
 
@@ -17,6 +18,8 @@ def _default_dispatch() -> dict[str, Callable]:
         "email_send": t_email.email_send,
         "calendar_create": t_calendar.calendar_create,
         "calendar_update": t_calendar.calendar_update,
+        "project_member_set": t_access.project_member_set,
+        "user_invite": t_access.user_invite,
     }
 
 

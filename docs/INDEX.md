@@ -72,6 +72,7 @@ Läs i den ordning som passar din roll.
 8. [SELF-HOST-STACK.md](SELF-HOST-STACK.md) — topologi (Nextcloud-samlokalisering) + mejl-provisionering.
 9. [MAIL.md](MAIL.md) — mejlstrategi: leverantörer, reseller-postur, transaktionsmejl, slutanvändar-UI.
 10. [SYSTEM-MAIL.md](SYSTEM-MAIL.md) — systemmejl: config, avsändardomän/DKIM, mallar.
+   · [ACCESS-ADMIN.md](ACCESS-ADMIN.md) — skapa projekt, projektägare, inbjudningar med eget lösenord.
 11. [BACKUP.md](BACKUP.md) — backup & återställning (vaults, config, hemligheter, Nextcloud).
 12. [UPDATE.md](UPDATE.md) — uppdatering: versionsmigrering, rollback, nedtid.
 13. [FEATURE-BOOKING-EMBED.md](FEATURE-BOOKING-EMBED.md) — bokningswidgeten: bädda in mötesbokning på en extern sida med en div och en script-tagg.

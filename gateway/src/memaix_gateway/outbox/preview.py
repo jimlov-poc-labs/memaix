@@ -43,5 +43,16 @@ def render_preview(tool: str, args: dict) -> str:
             lines.append(f"Deltagare: {', '.join(attendees)}")
         return "\n".join(lines)
 
+    if tool == "user_invite":
+        lines = [f"Bjud in: {args.get('invitee', '')} som {args.get('role', '')}"]
+        if args.get("email"):
+            lines.append(f"E-post: {args['email']}")
+        return "\n".join(lines)
+
+    if tool == "project_member_set":
+        role = args.get("role")
+        change = f"sätt roll {role}" if role else "ta bort från projektet"
+        return f"Medlem: {args.get('member', '')}\nÄndring: {change}"
+
     # Generic fallback for future action types.
     return f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})"

@@ -387,6 +387,27 @@ def register_defaults() -> None:
             tags=("utkorg", "godkänn", "outbox", "approve"),
         ),
         # ------------------------------------------------------------------
+        # access administration (docs/ACCESS-ADMIN.md)
+        # ------------------------------------------------------------------
+        Capability(
+            key="access.projects", area="access",
+            title_key="cap.access.projects.title",
+            summary_key="cap.access.projects.summary",
+            tools=("project_create",),
+            example_prompts_key="cap.access.projects.examples",
+            needs_role="owner",
+            tags=("projekt", "skapa projekt", "project", "create project"),
+        ),
+        Capability(
+            key="access.members", area="access",
+            title_key="cap.access.members.title",
+            summary_key="cap.access.members.summary",
+            tools=("project_members", "project_member_set", "user_invite"),
+            example_prompts_key="cap.access.members.examples",
+            needs_role="owner",
+            tags=("medlem", "bjud in", "invite", "admin", "behörighet", "access"),
+        ),
+        # ------------------------------------------------------------------
         # undo (FEATURE-UNDO-TIMELINE.md)
         # ------------------------------------------------------------------
         Capability(

@@ -45,6 +45,8 @@ APPROVAL_ROLE: dict[str, str] = {
     "email_send": "owner",
     "calendar_create": "collaborator",
     "calendar_update": "collaborator",
+    "project_member_set": "owner",
+    "user_invite": "owner",
 }
 
 
