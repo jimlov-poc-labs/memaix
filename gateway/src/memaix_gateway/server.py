@@ -2323,7 +2323,8 @@ def _mail_backend(project: str, user: str):
         raise ConnectorAuthRequired("mail", "unknown")  # pragma: no cover - get() above always raises first
     from .connectors.adapters.mail_multi import MultiMailBackend, source_address
 
-    if len(sources) == 1:
+    relink_pending = registry.relink_pending(token_store, project, "mail", user)
+    if len(sources) == 1 and not relink_pending:
         label, adapter = sources[0]
         address = source_address(label)
         if address:
@@ -2335,7 +2336,7 @@ def _mail_backend(project: str, user: str):
                 pass  # an adapter that refuses attributes just keeps the fallback
         return adapter
 
-    return MultiMailBackend(sources)
+    return MultiMailBackend(sources, relink_pending)
 
 
 def _with_mail_backend(fn):

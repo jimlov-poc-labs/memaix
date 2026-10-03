@@ -126,7 +126,9 @@ class MultiMailBackend:
 
     _SEP = "|"
 
-    def __init__(self, sources: list[tuple[str, object]]) -> None:
+    def __init__(
+        self, sources: list[tuple[str, object]], relink_pending: list[tuple[str, str]] | None = None
+    ) -> None:
         if not sources:
             raise ValueError("MultiMailBackend requires at least one source")
         # get_all() types adapters as `object` (it can't know the capability
@@ -137,6 +139,10 @@ class MultiMailBackend:
             (label, cast(_MailSource, adapter)) for label, adapter in sources
         ]
         self._folder = "INBOX"
+        # Accounts the registry left out because their token is dead. They are
+        # not sources, so nothing can fail on them; fetch reports them anyway,
+        # or a search would pass as complete while one mailbox is missing.
+        self._relink_pending = list(relink_pending or [])
         # Per-source failures: folder.set's are held until the next fetch,
         # which reports them (with its own) in source_errors.
         self._set_errors: dict[str, Exception] = {}
@@ -195,7 +201,10 @@ class MultiMailBackend:
         # `source_errors` (tools/email.py turns that into a warning next to
         # the hits). Only when EVERY source failed is the first error raised.
         merged = []
-        errors: list[dict] = []
+        errors: list[dict] = [
+            {"source": label, "error": f"needs_relink: {account} måste kopplas om"}
+            for label, account in self._relink_pending
+        ]
         first_exc: Exception | None = None
         failed = 0
         for label, adapter in self._sources:
