@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -69,15 +70,57 @@ def _secret() -> bytes:
     return raw.encode()[:32].ljust(32, b"0")
 
 
+def _acl_users() -> dict:
+    """users.* from acl.yaml, read on every call so an invitation accepted a
+    second ago is visible without a restart (same as login-app's
+    AclLoginState). A read failure returns {}: env-configured users keep
+    working, and nobody is let in on the strength of a file we could not read.
+    """
+    try:
+        from .. import config
+        users = (config.load().get("acl") or {}).get("users") or {}
+    except Exception as exc:  # noqa: BLE001 -- any read/parse failure means "no acl users"
+        logging.getLogger(__name__).warning("board: cannot read acl.yaml users: %s", exc)
+        return {}
+    return users if isinstance(users, dict) else {}
+
+
+def _acl_user(user: str) -> dict:
+    entry = _acl_users().get(user)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _is_allowed(user: str) -> bool:
+    """May *user* use the board at all?
+
+    The env allow-list (MEMAIX_ALLOWED_USERS), plus every acl.yaml user who has
+    a password and is not disabled — invited users set their password through
+    /app/invite, which writes acl.yaml, so before this the board refused every
+    invited user however correct the password (incident 2026-10-04, `itsq`).
+    `disabled` in acl.yaml is a kill-switch and wins over the env list too.
+    """
+    entry = _acl_user(user)
+    if entry.get("disabled"):
+        return False
+    return user in _ALLOWED_USERS or bool(entry.get("password_hash"))
+
+
 def _password_hash_for(user: str) -> str | None:
-    """Per-user password hash (MEMAIX_LOGIN_PASSWORD_HASH_<USER>), falling back
-    to the shared MEMAIX_LOGIN_PASSWORD_HASH ONLY when exactly one user is
-    allowed — so a shared password can never authenticate as a *different*
-    user in a multi-user board."""
+    """Per-user password hash, in order:
+
+    1. MEMAIX_LOGIN_PASSWORD_HASH_<USER> (env, unchanged behaviour),
+    2. users.<user>.password_hash in acl.yaml (invited users),
+    3. the shared MEMAIX_LOGIN_PASSWORD_HASH ONLY when exactly one user is
+       allowed by env and it is this user — so a shared password can never
+       authenticate as a *different* user in a multi-user board.
+    """
     per_user = os.environ.get(f"MEMAIX_LOGIN_PASSWORD_HASH_{user.upper()}")
     if per_user:
         return per_user
-    if len(_ALLOWED_USERS) == 1:
+    acl_hash = _acl_user(user).get("password_hash")
+    if acl_hash:
+        return acl_hash
+    if len(_ALLOWED_USERS) == 1 and user in _ALLOWED_USERS:
         return _PASSWORD_HASH or None
     return None
 
@@ -118,7 +161,7 @@ def _check_cookie(request: Request) -> str | None:
     expected = hmac.new(secret, f"{user}:{day}".encode(), "sha256").hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         return None
-    if user not in _ALLOWED_USERS:
+    if not _is_allowed(user):
         return None
     return user
 
@@ -180,7 +223,7 @@ async def board_login(request: Request) -> JSONResponse:
 
     if not rate_limiter.check(f"board_login:{username}", limit=5, window_s=600):
         return JSONResponse({"error": "rate_limited"}, status_code=429)
-    if username not in _ALLOWED_USERS or not _verify_password(username, password):
+    if not _is_allowed(username) or not _verify_password(username, password):
         return JSONResponse({"error": "invalid credentials"}, status_code=401)
 
     try:
