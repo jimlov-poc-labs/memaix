@@ -39,7 +39,7 @@ def wired(tmp_path, monkeypatch):
     shared_vault.mkdir(parents=True)
     acl = Acl(
         users={
-            "alice": {"grants": {"proj": "owner"}},
+            "alice": {"grants": {"proj": "owner", "shared": "reader"}},
             "bob": {"grants": {"proj": "reader"}},
         },
         projects={"proj": {"vault": str(vault)}, "shared": {"vault": str(shared_vault)}},
@@ -143,6 +143,14 @@ def test_onboarding_complete_returns_tour(wired):
     assert result["ok"] is True
     assert "tour" in result
     assert result["tour"]["suggestions"]
+
+
+def test_onboarding_complete_denied_without_shared_grant(wired, monkeypatch):
+    from memaix_gateway.acl import AccessDenied
+
+    monkeypatch.setattr(server, "_user", lambda: "bob")
+    with pytest.raises(AccessDenied):
+        server.onboarding_complete("Profil")
 
 
 # ------------------------------------------------------------------
