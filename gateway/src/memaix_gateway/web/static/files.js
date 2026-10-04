@@ -3,9 +3,8 @@
 // The folder lives in the URL hash so the sidebar's project picker, which
 // rewrites ?project=, does not fight with navigation.
 
-(async () => {
-  const me = await window.ME;
-  if (!me) return;
+const me = await window.ME;
+if (me) {
   const project = new URLSearchParams(location.search).get('project')
         ?? localStorage.getItem('memaix_project') ?? me.projects[0] ?? '';
   const q = (path) => `project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
@@ -107,4 +106,4 @@
 
   window.addEventListener('hashchange', load);
   load();
-})();
+}
