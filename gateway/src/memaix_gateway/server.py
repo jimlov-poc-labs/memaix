@@ -2060,6 +2060,7 @@ def calendar_setup(
     mode='oauth'       — link via Google OAuth (full read+write). Returns a link_url to open.
     mode='ical_secret' — supply your Google Calendar secret iCal URL (read-only).
     mode='free_busy'   — supply your Google calendar_id (read-only, no event titles).
+    mode='native'      — Memaix' own calendar (no external account; bookings are stored in Memaix).
     mode='none'        — remove calendar configuration for this project.
     """
     user = _user()
@@ -3120,6 +3121,12 @@ def _resolve_normal_calendar_dav(
         api_key = cfg.get("memaix", {}).get("google_api_key", "")
         if token_data and token_data.get("calendar_id") and api_key:
             return _FreeBusyAdapter(token_data["calendar_id"], api_key)
+
+    # 4. Memaix' own calendar
+    if any(a["provider"] == "native" for a in all_accounts):
+        from .connectors.native_calendar import NativeCalendarAdapter, native_path
+
+        return NativeCalendarAdapter(native_path(acl, project, user))
 
     if not require_per_user:
         return None  # use static CalDAV from acl.yaml

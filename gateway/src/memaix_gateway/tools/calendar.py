@@ -1346,13 +1346,21 @@ def setup_mode(
         return {"ok": True, "mode": "free_busy", "calendar_id": calendar_id,
                 "note": "Kräver att google_api_key finns i memaix.yaml och att din kalender är publik"}
 
+    if mode == "native":
+        from ..connectors.native_calendar import NATIVE_PROVIDER, native_path
+
+        native_path(acl, project, user_id)  # fails early if the project has no vault
+        store.store(user_id, NATIVE_PROVIDER, NATIVE_PROVIDER, {"enabled": True})
+        return {"ok": True, "mode": "native",
+                "note": "Memaix egen kalender: bokningar sparas i Memaix, tider blockeras via calendar_schedule_set"}
+
     if mode == "none":
-        for provider, account in [("ical_secret", "ical_secret"), ("free_busy", "free_busy")]:
+        for provider, account in [("ical_secret", "ical_secret"), ("free_busy", "free_busy"), ("native", "native")]:
             store.delete(user_id, provider, account)
         return {"ok": True, "mode": "none",
                 "note": "Kalender-koppling borttagen (OAuth-token behåller du via account_unlink)"}
 
-    return {"ok": False, "error": f"Okänt mode: {mode!r}. Välj oauth, ical_secret, free_busy eller none"}
+    return {"ok": False, "error": f"Okänt mode: {mode!r}. Välj oauth, ical_secret, free_busy, native eller none"}
 
 
 def get_status(user_id: str, project: str, acl: Acl, store) -> dict:
@@ -1367,6 +1375,7 @@ def get_status(user_id: str, project: str, acl: Acl, store) -> dict:
     google = [a for a in all_accounts if a["provider"] == "google"]
     ical = [a for a in all_accounts if a["provider"] == "ical_secret"]
     fb = [a for a in all_accounts if a["provider"] == "free_busy"]
+    native = [a for a in all_accounts if a["provider"] == "native"]
 
     active = "none"
     details: dict = {}
@@ -1380,10 +1389,13 @@ def get_status(user_id: str, project: str, acl: Acl, store) -> dict:
         active = "free_busy"
         token_data = store.load_one(user_id, "free_busy", "free_busy") or {}
         details = {"calendar_id": token_data.get("calendar_id", ""), "status": fb[0]["status"]}
+    elif native:
+        active = "native"
+        details = {"status": native[0]["status"]}
 
     return {
         "active_mode": active,
         "details": details,
-        "available_modes": ["oauth", "ical_secret", "free_busy"],
+        "available_modes": ["oauth", "ical_secret", "free_busy", "native"],
     }
 

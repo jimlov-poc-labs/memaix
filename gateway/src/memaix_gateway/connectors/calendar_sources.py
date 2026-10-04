@@ -142,6 +142,13 @@ def resolve_effective_sources(
     pairs = registry.get_all(acl, token_store, project, "calendar", user)
     results = [(label, adapter) for label, adapter in pairs if label not in disabled]
 
+    if "native" not in disabled and any(
+        a["provider"] == "native" for a in token_store.list_accounts(user)
+    ):
+        from .native_calendar import NativeCalendarAdapter, native_path
+
+        results.append(("native", NativeCalendarAdapter(native_path(acl, project, user))))
+
     spec = registry.get_spec("calendar", "public_ics")
     if spec is not None:
         for link in data["public_links"]:
