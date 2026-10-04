@@ -373,7 +373,7 @@ class GmailAdapter:
         found = self._request("GET", "/messages", params=params).json().get("messages") or []
         return found[0].get("threadId") if found else None
 
-    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None) -> None:
+    def append(self, message: bytes, folder: str = "INBOX", **_ignored) -> None:
         """Create a Gmail draft from the raw MIME tools/email.py built.
 
         Signature mirrors imap_tools.MailBox.append. Unlike Graph, Gmail

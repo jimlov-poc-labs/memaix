@@ -195,7 +195,7 @@ class GraphMailAdapter:
             return
         m["isRead"] = True
 
-    def append(self, message: bytes, folder: str = "INBOX", dt=None, flag_set=None) -> None:
+    def append(self, message: bytes, **_ignored) -> None:
         """Graph has no raw-MIME append; parse the message tools/email.py
         built and re-create it as a Graph draft — a faithful translation of
         the subject/to/cc/body fields email_create_draft actually sets.
