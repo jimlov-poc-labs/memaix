@@ -12,6 +12,35 @@ import hmac
 import re
 
 
+def _mail_matches(trigger: dict, event: dict, payload: dict) -> bool:
+    if trigger.get("project") and trigger["project"] != event.get("project"):
+        return False
+    from_contains = trigger.get("from_contains", "")
+    if from_contains and from_contains.lower() not in (payload.get("from") or "").lower():
+        return False
+    subject_contains = trigger.get("subject_contains", "")
+    if subject_contains and subject_contains.lower() not in (payload.get("subject") or "").lower():
+        return False
+    return True
+
+
+def _internal_matches(trigger: dict, payload: dict) -> bool:
+    if trigger.get("event") != payload.get("event"):
+        return False
+    expected_to = trigger.get("to")
+    return expected_to is None or payload.get("to") == expected_to
+
+
+def _webhook_matches(trigger: dict, payload: dict) -> bool:
+    expected = trigger.get("token")
+    provided = payload.get("token")
+    # Constant-time compare — the token is the shared secret authenticating
+    # the caller; a plain == leaks it byte-by-byte via timing.
+    if not expected or not isinstance(provided, str):
+        return False
+    return hmac.compare_digest(str(expected), provided)
+
+
 def trigger_matches(trigger: dict, event: dict) -> bool:
     """Does *trigger* fire for *event*?  event = {"type", "project", "id", "payload"}."""
     if trigger.get("type") != event.get("type"):
@@ -21,38 +50,15 @@ def trigger_matches(trigger: dict, event: dict) -> bool:
     payload = event.get("payload", {}) or {}
 
     if ttype == "mail":
-        if trigger.get("project") and trigger["project"] != event.get("project"):
-            return False
-        from_contains = trigger.get("from_contains", "")
-        if from_contains and from_contains.lower() not in (payload.get("from") or "").lower():
-            return False
-        subject_contains = trigger.get("subject_contains", "")
-        if subject_contains and subject_contains.lower() not in (payload.get("subject") or "").lower():
-            return False
-        return True
-
+        return _mail_matches(trigger, event, payload)
     if ttype == "internal":
-        if trigger.get("event") != payload.get("event"):
-            return False
-        expected_to = trigger.get("to")
-        if expected_to is not None and payload.get("to") != expected_to:
-            return False
-        return True
-
+        return _internal_matches(trigger, payload)
     if ttype == "webhook":
-        expected = trigger.get("token")
-        provided = payload.get("token")
-        # Constant-time compare — the token is the shared secret authenticating
-        # the caller; a plain == leaks it byte-by-byte via timing.
-        if not expected or not isinstance(provided, str):
-            return False
-        return hmac.compare_digest(str(expected), provided)
-
+        return _webhook_matches(trigger, payload)
     if ttype == "schedule":
         # Time-window filtering happens before the event reaches evaluate();
         # here we only confirm this is a schedule-shaped trigger.
         return bool(trigger.get("cron"))
-
     return False
 
 
