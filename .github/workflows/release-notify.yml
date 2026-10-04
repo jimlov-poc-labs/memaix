@@ -81,6 +81,9 @@ jobs:
         run: |
           git config user.name "jimlov-release-bot"
           git config user.email "bot@jimlov.se"
-          git add content/releases/
+          # jimlov-se:s CI kräver att projects.json stämmer med content/releases
+          npm ci --ignore-scripts
+          npm run projekt
+          git add content/releases/ src/data/projects.json
           git commit -m "Release: Memaix $RELEASE_TAG"
           git push
