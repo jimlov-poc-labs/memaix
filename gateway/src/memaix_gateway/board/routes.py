@@ -90,19 +90,26 @@ def _acl_user(user: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
-def _is_allowed(user: str) -> bool:
-    """May *user* use the board at all?
+def _is_known(user: str) -> bool:
+    """Is *user* a board account at all?
 
     The env allow-list (MEMAIX_ALLOWED_USERS), plus every acl.yaml user who has
-    a password and is not disabled — invited users set their password through
-    /app/invite, which writes acl.yaml, so before this the board refused every
-    invited user however correct the password (incident 2026-10-04, `itsq`).
-    `disabled` in acl.yaml is a kill-switch and wins over the env list too.
+    a password — invited users set their password through /app/invite, which
+    writes acl.yaml, so before this the board refused every invited user
+    however correct the password (incident 2026-10-04, `itsq`).
+
+    Deliberately says nothing about `disabled`: a disabled user's existing
+    session must still resolve to the user, so the project-access layer can
+    answer 403 (the kill-switch's documented behaviour, tests_e2e
+    test_mfa_enrollment_and_kill_switch_flow) rather than a confusing 401.
     """
-    entry = _acl_user(user)
-    if entry.get("disabled"):
-        return False
-    return user in _ALLOWED_USERS or bool(entry.get("password_hash"))
+    return user in _ALLOWED_USERS or bool(_acl_user(user).get("password_hash"))
+
+
+def _may_log_in(user: str) -> bool:
+    """A known account that is not disabled. `disabled` in acl.yaml is a
+    kill-switch and wins over the env list too: no new session is issued."""
+    return _is_known(user) and not _acl_user(user).get("disabled")
 
 
 def _password_hash_for(user: str) -> str | None:
@@ -161,7 +168,7 @@ def _check_cookie(request: Request) -> str | None:
     expected = hmac.new(secret, f"{user}:{day}".encode(), "sha256").hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         return None
-    if not _is_allowed(user):
+    if not _is_known(user):
         return None
     return user
 
@@ -223,7 +230,7 @@ async def board_login(request: Request) -> JSONResponse:
 
     if not rate_limiter.check(f"board_login:{username}", limit=5, window_s=600):
         return JSONResponse({"error": "rate_limited"}, status_code=429)
-    if not _is_allowed(username) or not _verify_password(username, password):
+    if not _may_log_in(username) or not _verify_password(username, password):
         return JSONResponse({"error": "invalid credentials"}, status_code=401)
 
     try:

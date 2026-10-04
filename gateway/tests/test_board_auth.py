@@ -122,7 +122,7 @@ def test_invited_acl_user_can_log_in(reload_routes, monkeypatch):
         monkeypatch,
         {"itsq": {"password_hash": _hash("itsq-pw"), "grants": {"x": "owner"}}},
     )
-    assert r._is_allowed("itsq") is True
+    assert r._may_log_in("itsq") is True
     assert r._verify_password("itsq", "itsq-pw") is True
     assert r._verify_password("itsq", "wrong") is False
 
@@ -133,7 +133,7 @@ def test_disabled_acl_user_is_refused_even_with_right_password(reload_routes, mo
         monkeypatch,
         {"itsq": {"password_hash": _hash("itsq-pw"), "disabled": True}},
     )
-    assert r._is_allowed("itsq") is False
+    assert r._may_log_in("itsq") is False
 
 
 def test_disabled_in_acl_wins_over_env_allow_list(reload_routes, monkeypatch):
@@ -142,12 +142,12 @@ def test_disabled_in_acl_wins_over_env_allow_list(reload_routes, monkeypatch):
         monkeypatch,
         {"alice": {"disabled": True}},
     )
-    assert r._is_allowed("alice") is False
+    assert r._may_log_in("alice") is False
 
 
 def test_acl_user_without_password_is_not_allowed(reload_routes, monkeypatch):
     r = _with_acl(reload_routes(MEMAIX_ALLOWED_USERS="alice"), monkeypatch, {"pending": {"grants": {}}})
-    assert r._is_allowed("pending") is False
+    assert r._may_log_in("pending") is False
     assert r._verify_password("pending", "") is False
 
 
@@ -193,9 +193,9 @@ def test_unreadable_acl_keeps_env_users_working(reload_routes, monkeypatch):
     from memaix_gateway import config
     monkeypatch.setattr(config, "load", boom)
     assert r._acl_users() == {}
-    assert r._is_allowed("alice") is True
+    assert r._may_log_in("alice") is True
     assert r._verify_password("alice", "alice-pw") is True
-    assert r._is_allowed("itsq") is False
+    assert r._may_log_in("itsq") is False
 
 
 def test_cookie_for_invited_user_is_accepted(reload_routes, monkeypatch):
@@ -209,5 +209,23 @@ def test_cookie_for_invited_user_is_accepted(reload_routes, monkeypatch):
         cookies = {"memaix_board": r._make_cookie("itsq")}
 
     assert r._check_cookie(_Req()) == "itsq"
+    # Disabled: the session still names the user, so project access can answer
+    # 403 (the kill-switch's contract), but no new login is accepted.
     monkeypatch.setattr(r, "_acl_users", lambda: {"itsq": {"password_hash": _hash("itsq-pw"), "disabled": True}})
-    assert r._check_cookie(_Req()) is None  # kill-switch also ends an existing session
+    assert r._check_cookie(_Req()) == "itsq"
+    assert r._may_log_in("itsq") is False
+
+
+def test_cookie_for_unknown_user_is_refused(reload_routes, monkeypatch):
+    r = _with_acl(
+        reload_routes(MEMAIX_TRANSPORT=None, HYDRA_SYSTEM_SECRET=None, MEMAIX_ALLOWED_USERS="alice"),
+        monkeypatch,
+        {"pending": {"grants": {}}},
+    )
+
+    class _Req:
+        cookies = {"memaix_board": r._make_cookie("mallory")}
+
+    assert r._check_cookie(_Req()) is None
+    _Req.cookies = {"memaix_board": r._make_cookie("pending")}  # in acl, no password
+    assert r._check_cookie(_Req()) is None
