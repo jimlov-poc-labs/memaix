@@ -93,6 +93,24 @@
     return me;
   }).catch(() => null);
 
+  // --- Maintenance banner (operator notice from /app/api/me) ------------
+  const showMaintenance = async (fresh) => {
+    const me = fresh ? await api('GET', '/app/api/me').catch(() => null) : await window.ME;
+    const text = me?.maintenance?.message;
+    let bar = document.getElementById('maintenance-banner');
+    if (!text) { bar?.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'maintenance-banner';
+      bar.className = 'maintenance-banner';
+      bar.setAttribute('role', 'status');
+      document.getElementById('content')?.before(bar);
+    }
+    bar.textContent = text;
+  };
+  showMaintenance(false);
+  setInterval(() => { if (!document.hidden) showMaintenance(true); }, 60000);
+
   // --- Outbox badge (poll, pauses when tab hidden) ----------------------
   pollBadge('/app/api/me', document.querySelector('.outbox-badge'));
 

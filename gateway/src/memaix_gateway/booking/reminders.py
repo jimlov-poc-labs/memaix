@@ -83,44 +83,54 @@ def stale_offsets(
     return stale
 
 
+def _close_stale_offsets(store, row_id: str, meeting_start: int, sent: set[str], now_epoch: int) -> None:
+    for offset in stale_offsets(meeting_start, sent, now_epoch):
+        store.mark_reminder_sent(row_id, offset)  # never send, just close it out
+        sent.add(str(offset))
+
+
+def _send_and_claim(store, row: dict, acl_fn, link_fn, offset: int) -> bool:
+    """Send one reminder and claim it. True when it counts as dispatched; False
+    when there is no link yet (retry next tick, unclaimed) or another tick
+    claimed it after we sent (don't double count)."""
+    from .routes import _format_meeting_detail_line, _send_reminder_email
+
+    meeting_start = row["meeting_start"]
+    link = link_fn(row["slug"]) if row["slug"] else None
+    if link is None:
+        return False  # no link to resolve title/host from — don't claim, retry next tick
+    title = link.get("title_template", "Möte")
+    start_dt = datetime.fromtimestamp(meeting_start, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(row.get("meeting_end") or meeting_start, tz=timezone.utc)
+    meeting_detail_line = _format_meeting_detail_line(
+        row.get("meeting_form_provider"), row.get("meeting_form_detail"),
+    )
+    _send_reminder_email(
+        acl_fn(), row["project"], link, title, row["event_id"],
+        row["visitor_email"], start_dt, end_dt, offset, row.get("manage_token", ""),
+        meeting_detail_line, row.get("meeting_form_detail"),
+    )
+    # Claim only after a successful send — claiming first would
+    # permanently lose the reminder if the send then failed
+    # (card ecffcb5b review, Simon).
+    return bool(store.mark_reminder_sent(row["id"], offset))
+
+
 def send_due_reminders(store, acl_fn, link_fn, now: datetime) -> int:
     """Send every due reminder across every pending booking. Returns the
     number of emails dispatched this tick. A single row's failure never
     blocks the rest — same isolation as purge_due()."""
-    from .routes import _format_meeting_detail_line, _send_reminder_email
-
     now_epoch = int(now.timestamp())
     sent_count = 0
     for row in store.reminders_due(now_epoch, REMINDER_OFFSETS_MIN):
         row_id, meeting_start = row["id"], row["meeting_start"]
         sent = {s for s in row["reminders_sent"].split(",") if s}
-
-        for offset in stale_offsets(meeting_start, sent, now_epoch):
-            store.mark_reminder_sent(row_id, offset)  # never send, just close it out
-            sent.add(str(offset))
+        _close_stale_offsets(store, row_id, meeting_start, sent, now_epoch)
 
         for offset in due_offsets(meeting_start, sent, now_epoch):
             try:
-                link = link_fn(row["slug"]) if row["slug"] else None
-                if link is None:
-                    continue  # no link to resolve title/host from — don't claim, retry next tick
-                title = link.get("title_template", "Möte")
-                start_dt = datetime.fromtimestamp(meeting_start, tz=timezone.utc)
-                end_dt = datetime.fromtimestamp(row.get("meeting_end") or meeting_start, tz=timezone.utc)
-                meeting_detail_line = _format_meeting_detail_line(
-                    row.get("meeting_form_provider"), row.get("meeting_form_detail"),
-                )
-                _send_reminder_email(
-                    acl_fn(), row["project"], link, title, row["event_id"],
-                    row["visitor_email"], start_dt, end_dt, offset, row.get("manage_token", ""),
-                    meeting_detail_line, row.get("meeting_form_detail"),
-                )
-                # Claim only after a successful send — claiming first would
-                # permanently lose the reminder if the send then failed
-                # (card ecffcb5b review, Simon).
-                if not store.mark_reminder_sent(row_id, offset):
-                    continue  # claimed by a prior tick/worker after we sent — don't double count
-                sent_count += 1
+                if _send_and_claim(store, row, acl_fn, link_fn, offset):
+                    sent_count += 1
             except Exception:
                 logger.exception(
                     "booking reminder failed for row=%s project=%s host_user=%s offset=%s",

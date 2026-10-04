@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -69,15 +70,64 @@ def _secret() -> bytes:
     return raw.encode()[:32].ljust(32, b"0")
 
 
+def _acl_users() -> dict:
+    """users.* from acl.yaml, read on every call so an invitation accepted a
+    second ago is visible without a restart (same as login-app's
+    AclLoginState). A read failure returns {}: env-configured users keep
+    working, and nobody is let in on the strength of a file we could not read.
+    """
+    try:
+        from .. import config
+        users = (config.load().get("acl") or {}).get("users") or {}
+    except Exception as exc:  # noqa: BLE001 -- any read/parse failure means "no acl users"
+        logging.getLogger(__name__).warning("board: cannot read acl.yaml users: %s", exc)
+        return {}
+    return users if isinstance(users, dict) else {}
+
+
+def _acl_user(user: str) -> dict:
+    entry = _acl_users().get(user)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _is_known(user: str) -> bool:
+    """Is *user* a board account at all?
+
+    The env allow-list (MEMAIX_ALLOWED_USERS), plus every acl.yaml user who has
+    a password — invited users set their password through /app/invite, which
+    writes acl.yaml, so before this the board refused every invited user
+    however correct the password (incident 2026-10-04, `itsq`).
+
+    Deliberately says nothing about `disabled`: a disabled user's existing
+    session must still resolve to the user, so the project-access layer can
+    answer 403 (the kill-switch's documented behaviour, tests_e2e
+    test_mfa_enrollment_and_kill_switch_flow) rather than a confusing 401.
+    """
+    return user in _ALLOWED_USERS or bool(_acl_user(user).get("password_hash"))
+
+
+def _may_log_in(user: str) -> bool:
+    """A known account that is not disabled. `disabled` in acl.yaml is a
+    kill-switch and wins over the env list too: no new session is issued."""
+    return _is_known(user) and not _acl_user(user).get("disabled")
+
+
 def _password_hash_for(user: str) -> str | None:
-    """Per-user password hash (MEMAIX_LOGIN_PASSWORD_HASH_<USER>), falling back
-    to the shared MEMAIX_LOGIN_PASSWORD_HASH ONLY when exactly one user is
-    allowed — so a shared password can never authenticate as a *different*
-    user in a multi-user board."""
+    """Per-user password hash, in order:
+
+    1. MEMAIX_LOGIN_PASSWORD_HASH_<USER> (env, unchanged behaviour),
+    2. users.<user>.password_hash in acl.yaml (invited users),
+    3. the shared MEMAIX_LOGIN_PASSWORD_HASH ONLY when exactly one user is
+       allowed by env and it is this user — so a shared password can never
+       authenticate as a *different* user in a multi-user board.
+    """
     per_user = os.environ.get(f"MEMAIX_LOGIN_PASSWORD_HASH_{user.upper()}")
     if per_user:
         return per_user
-    if len(_ALLOWED_USERS) == 1:
+    acl_hash = _acl_user(user).get("password_hash")
+    if acl_hash:
+        return acl_hash
+    if len(_ALLOWED_USERS) == 1 and user in _ALLOWED_USERS:
         return _PASSWORD_HASH or None
     return None
 
@@ -118,7 +168,7 @@ def _check_cookie(request: Request) -> str | None:
     expected = hmac.new(secret, f"{user}:{day}".encode(), "sha256").hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         return None
-    if user not in _ALLOWED_USERS:
+    if not _is_known(user):
         return None
     return user
 
@@ -180,7 +230,7 @@ async def board_login(request: Request) -> JSONResponse:
 
     if not rate_limiter.check(f"board_login:{username}", limit=5, window_s=600):
         return JSONResponse({"error": "rate_limited"}, status_code=429)
-    if username not in _ALLOWED_USERS or not _verify_password(username, password):
+    if not _may_log_in(username) or not _verify_password(username, password):
         return JSONResponse({"error": "invalid credentials"}, status_code=401)
 
     try:
@@ -231,6 +281,49 @@ def api_projects(request: Request) -> JSONResponse:
     return JSONResponse({"user": user, "projects": _user_projects(user, acl)})
 
 
+def _resolve_sprint(
+    sprint_filter: str, sprints: list[dict], detected_active: str | None
+) -> tuple[str | None, set | None]:
+    """Map the ``sprint`` query value to (sprint id, card ids to keep).
+
+    ``None`` as card ids means "do not filter". Raises ``LookupError`` for a
+    sprint that is unknown (or has no items)."""
+    if sprint_filter == "active":
+        if not detected_active:
+            return None, None
+        active_items: list = next((sp["items"] for sp in sprints if sp["id"] == detected_active), [])
+        return detected_active, set(active_items)
+    for sp in sprints:
+        if sp["id"] == sprint_filter:
+            keep = set(sp["items"])
+            if not keep:
+                raise LookupError(sprint_filter)
+            return sp["id"], keep
+    raise LookupError(sprint_filter)
+
+
+def _card_sort_key(card: dict):
+    return (-(card.get("value") or 0), card.get("updated_at", ""))
+
+
+def _board_columns(cards: list[dict]) -> list[dict]:
+    """Group cards into the fixed columns (unknown status -> inbox), each
+    sorted by value desc then updated_at."""
+    col_map: dict[str, list[dict]] = {key: [] for key, _ in s.COLUMNS}
+    for card in cards:
+        st = card.get("status", "inbox")
+        col_map[st if st in col_map else "inbox"].append(card)
+    return [
+        {
+            "key":   key,
+            "label": label,
+            "muted": key == "rejected",
+            "cards": sorted(col_map[key], key=_card_sort_key),
+        }
+        for key, label in s.COLUMNS
+    ]
+
+
 def api_board(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
@@ -250,56 +343,20 @@ def api_board(request: Request) -> JSONResponse:
 
     cards = s.list_backlog(vault)
 
-    # Sprint filter
     active_sprint_id = None
     if sprint_filter:
         sprints, detected_active = s.list_sprints(vault)
-        if sprint_filter == "active":
-            active_sprint_id = detected_active
-            if active_sprint_id:
-                sprint_items: list = next(
-                    (sp["items"] for sp in sprints if sp["id"] == active_sprint_id), []
-                )
-                cards = [c for c in cards if c["id"] in sprint_items]
-        else:
-            sprint_items_set: set[str] = set()
-            for sp in sprints:
-                if sp["id"] == sprint_filter:
-                    sprint_items_set = set(sp["items"])
-                    active_sprint_id = sp["id"]
-                    break
-            if not sprint_items_set and sprint_filter:
-                return JSONResponse({"error": f"unknown sprint: {sprint_filter}"}, status_code=400)
-            if sprint_items_set:
-                cards = [c for c in cards if c["id"] in sprint_items_set]
-
-    # Group into columns, sort by value desc then updated_at desc
-    col_map: dict[str, list[dict]] = {key: [] for key, _ in s.COLUMNS}
-    for card in cards:
-        st = card.get("status", "inbox")
-        if st in col_map:
-            col_map[st].append(card)
-        else:
-            col_map["inbox"].append(card)
-
-    def _sort_key(c: dict):
-        v = c.get("value") or 0
-        return (-v, c.get("updated_at", ""))
-
-    columns = [
-        {
-            "key":   key,
-            "label": label,
-            "muted": key == "rejected",
-            "cards": sorted(col_map[key], key=_sort_key),
-        }
-        for key, label in s.COLUMNS
-    ]
+        try:
+            active_sprint_id, keep_ids = _resolve_sprint(sprint_filter, sprints, detected_active)
+        except LookupError:
+            return JSONResponse({"error": f"unknown sprint: {sprint_filter}"}, status_code=400)
+        if keep_ids is not None:
+            cards = [c for c in cards if c["id"] in keep_ids]
 
     return JSONResponse({
         "project":        project,
         "sprint":         active_sprint_id or sprint_filter or None,
-        "columns":        columns,
+        "columns":        _board_columns(cards),
         "total_cards":    len(cards),
     })
 

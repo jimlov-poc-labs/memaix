@@ -77,3 +77,9 @@ provisionerar inget — du pekar `acl.yaml` mot befintliga backends själv).
 - `whoami` via AI:n returnerar rätt användare + grants.
 - En extern testanvändare når bara sitt projekt.
 - `email_send` är avstängt; inga backend-lösenord syns mot AI:n.
+
+## Deploy utan överraskningar för användarna
+
+- Caddy väntar upp till 20 s på att gateway/Hydra/login-app kommer tillbaka efter en omstart och visar annars en vänlig 503-sida (webbläsare laddar om sig själva, API-klienter får JSON med `Retry-After`).
+- Gateway och login-app har healthcheck, så `docker compose --profile hydra up -d --build --wait` är klart först när de svarar.
+- Förvarna inloggade användare: `ops/maintenance.sh on "Memaix startar om kl 22:00, nere ca 1 min."` före deployen och `ops/maintenance.sh off` efteråt. Bannern visas i webbappen inom ~1 min (filen `data/maintenance.json`, ingen omstart behövs).

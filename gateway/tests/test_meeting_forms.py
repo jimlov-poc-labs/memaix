@@ -183,3 +183,105 @@ def test_consent_store_meeting_form_columns_default_to_none(tmp_path):
     assert row["meeting_form_slug"] is None
     assert row["meeting_form_provider"] is None
     assert row["meeting_form_detail"] is None
+
+
+# ---------------------------------------------------------------------------
+# Karakteriseringstester (Sonar S3776-saneringen av validate_forms): exakta
+# meddelanden, kontrollordning och normalisering.
+# ---------------------------------------------------------------------------
+
+def _fm(slug="meet", provider="google_meet", label="Meet", **extra):
+    return {"slug": slug, "provider": provider, "label": label, **extra}
+
+
+def _ferr(forms):
+    with pytest.raises(ValueError) as exc:
+        validate_forms(forms)
+    return str(exc.value)
+
+
+def test_validate_forms_error_messages_are_exact():
+    assert _ferr([5]) == "each meeting form must be an object, got 5"
+    assert _ferr([_fm(slug="Bad")]) == "invalid slug 'Bad': must be lowercase alphanumeric/hyphen"
+    assert _ferr([{"provider": "zoom", "label": "Z"}]) == "invalid slug '': must be lowercase alphanumeric/hyphen"
+    assert _ferr([_fm(slug="a"), _fm(slug="a")]) == "duplicate slug 'a'"
+    assert _ferr([_fm(slug="a", provider="teams")]) == (
+        "'a': unknown provider 'teams', must be one of ['google_meet', 'phone', 'zoom']"
+    )
+    assert _ferr([{"slug": "a", "label": "L"}]) == (
+        "'a': unknown provider '', must be one of ['google_meet', 'phone', 'zoom']"
+    )
+    assert _ferr([_fm(slug="a", label="")]) == "'a': label is required"
+    assert _ferr([{"slug": "a", "provider": "zoom"}]) == "'a': label is required"
+    assert _ferr([_fm(slug="a", provider="phone")]) == "'a': phone form requires config.phone_number"
+    assert _ferr([_fm(slug="a", provider="phone", config={"phone_number": "  "})]) == (
+        "'a': phone form requires config.phone_number"
+    )
+    assert _ferr([_fm(slug="a", default=True), _fm(slug="b", default=True)]) == (
+        "at most one meeting form may be marked default"
+    )
+
+
+def test_validate_forms_check_order():
+    assert "invalid slug" in _ferr([{"slug": "Bad", "provider": "nope"}])
+    assert "duplicate slug" in _ferr([_fm(slug="a"), {"slug": "a", "provider": "nope"}])
+    assert "unknown provider" in _ferr([{"slug": "a", "provider": "nope"}])
+    assert "label is required" in _ferr([{"slug": "a", "provider": "phone"}])
+    assert "phone_number" in _ferr([_fm(slug="a", provider="phone")])
+    assert "label is required" in _ferr([_fm(slug="a", label="", default=True), _fm(slug="b", default=True)])
+    assert "unknown provider" in _ferr([_fm(slug="a", default=True), _fm(slug="b", provider="x", default=True)])
+
+
+def test_validate_forms_non_string_slug_raises_typeerror_today():
+    """Kvirk som låses (ändra inte): icke-sträng slug ger TypeError från regexen."""
+    with pytest.raises(TypeError):
+        validate_forms([_fm(slug=None)])
+
+
+def test_validate_forms_phone_number_is_stripped_stringified_and_extra_config_kept():
+    result = validate_forms([
+        _fm(slug="p1", provider="phone", config={"phone_number": "  +46 70 123  ", "note": "x"}),
+        _fm(slug="p2", provider="phone", config={"phone_number": 12345}),
+    ])
+    assert result[0]["config"] == {"phone_number": "+46 70 123", "note": "x"}
+    assert result[1]["config"] == {"phone_number": "12345"}
+
+
+def test_validate_forms_non_phone_config_is_always_emptied_and_none_config_ok():
+    result = validate_forms([
+        _fm(slug="a", provider="zoom", config={"phone_number": "1", "x": 2}),
+        _fm(slug="b", provider="google_meet", config=None),
+        _fm(slug="c", provider="phone", config={"phone_number": "1"}),
+    ])
+    assert [f["config"] for f in result] == [{}, {}, {"phone_number": "1"}]
+
+
+def test_validate_forms_normalizes_output_and_does_not_mutate_input():
+    cfg = {"phone_number": " 1 "}
+    src = [
+        {"slug": "a", "provider": "phone", "label": " ", "config": cfg, "junk": 1, "default": 0},
+        {"slug": "b", "provider": "zoom", "label": "Z", "default": "ja"},
+    ]
+    result = validate_forms(src)
+    assert result == [
+        {"slug": "a", "provider": "phone", "label": " ", "config": {"phone_number": "1"}, "default": False},
+        {"slug": "b", "provider": "zoom", "label": "Z", "config": {}, "default": True},
+    ]
+    assert cfg == {"phone_number": " 1 "}
+    assert "default" not in src[0] or src[0]["default"] == 0
+
+
+def test_validate_forms_promotes_first_only_when_no_default():
+    result = validate_forms([_fm(slug="a"), _fm(slug="b", provider="zoom")])
+    assert [f["default"] for f in result] == [True, False]
+    result = validate_forms([_fm(slug="a"), _fm(slug="b", provider="zoom", default=True)])
+    assert [f["default"] for f in result] == [False, True]
+
+
+def test_validate_forms_all_known_providers_accepted():
+    result = validate_forms([
+        _fm(slug="m", provider="google_meet"),
+        _fm(slug="z", provider="zoom"),
+        _fm(slug="p", provider="phone", config={"phone_number": "1"}),
+    ])
+    assert [f["provider"] for f in result] == ["google_meet", "zoom", "phone"]

@@ -22,6 +22,7 @@ Verktygsanrop (tools) kommer i Fas 2; signaturen är förberedd.
 from __future__ import annotations
 
 import ipaddress
+import json
 import time
 from urllib.parse import urlparse
 
@@ -71,6 +72,87 @@ def _guard_endpoint(url: str) -> None:
 
 def _sanitize(body: str) -> str:
     return body.replace("\n", " ")[:_ERROR_BODY_MAX]
+
+
+def _anthropic_message(m: dict) -> dict:
+    """Ett neutralt meddelande (ej system) → Messages API-format."""
+    if m["role"] == "assistant" and m.get("tool_calls"):
+        blocks = []
+        if m.get("content"):
+            blocks.append({"type": "text", "text": m["content"]})
+        blocks += [
+            {"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["args"]}
+            for c in m["tool_calls"]
+        ]
+        return {"role": "assistant", "content": blocks}
+    if m["role"] == "tool":
+        return {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": m["call_id"], "content": m["content"],
+        }]}
+    return {"role": m["role"], "content": m["content"]}
+
+
+def _anthropic_payload(model: str, messages: list, max_tokens: int, tools: list | None) -> dict:
+    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+    converted = [_anthropic_message(m) for m in messages if m["role"] != "system"]
+    payload = {"model": model, "max_tokens": max_tokens, "messages": converted}
+    if system:
+        payload["system"] = system
+    if tools:
+        payload["tools"] = [
+            {"name": t["name"], "description": t["description"],
+             "input_schema": t["input_schema"]}
+            for t in tools
+        ]
+    return payload
+
+
+def _anthropic_result(data: dict) -> dict:
+    blocks = data.get("content") or []
+    usage = data.get("usage") or {}
+    return {
+        "content": "".join(b.get("text", "") for b in blocks if b.get("type") == "text") or None,
+        "tool_calls": [
+            {"id": b["id"], "name": b["name"], "args": b.get("input") or {}}
+            for b in blocks if b.get("type") == "tool_use"
+        ],
+        "usage": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
+    }
+
+
+def _openai_message(m: dict) -> dict:
+    """Ett neutralt meddelande → chat/completions-format."""
+    if m["role"] == "assistant" and m.get("tool_calls"):
+        return {
+            "role": "assistant", "content": m.get("content"),
+            "tool_calls": [
+                {"id": c["id"], "type": "function",
+                 "function": {"name": c["name"], "arguments": json.dumps(c["args"])}}
+                for c in m["tool_calls"]
+            ],
+        }
+    if m["role"] == "tool":
+        return {"role": "tool", "tool_call_id": m["call_id"], "content": m["content"]}
+    return {"role": m["role"], "content": m["content"]}
+
+
+def _openai_parse_args(raw: str | None) -> dict:
+    try:
+        return json.loads(raw or "{}")
+    except ValueError:
+        return {}
+
+
+def _openai_tool_calls(msg: dict) -> list:
+    calls = []
+    for c in msg.get("tool_calls") or []:
+        fn = c.get("function") or {}
+        calls.append({
+            "id": c.get("id", ""),
+            "name": fn.get("name", ""),
+            "args": _openai_parse_args(fn.get("arguments")),
+        })
+    return calls
 
 
 class LLMClient:
@@ -164,78 +246,30 @@ class LLMClient:
             raise LLMError(f"{self.provider} svarade inte med JSON")
 
     def _anthropic(self, messages: list, max_tokens: int, tools: list | None = None) -> dict:
-        system = "\n".join(m["content"] for m in messages if m["role"] == "system")
-        converted = []
-        for m in messages:
-            if m["role"] == "system":
-                continue
-            if m["role"] == "assistant" and m.get("tool_calls"):
-                blocks = []
-                if m.get("content"):
-                    blocks.append({"type": "text", "text": m["content"]})
-                blocks += [
-                    {"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["args"]}
-                    for c in m["tool_calls"]
-                ]
-                converted.append({"role": "assistant", "content": blocks})
-            elif m["role"] == "tool":
-                converted.append({"role": "user", "content": [{
-                    "type": "tool_result", "tool_use_id": m["call_id"], "content": m["content"],
-                }]})
-            else:
-                converted.append({"role": m["role"], "content": m["content"]})
-        payload = {"model": self.model, "max_tokens": max_tokens, "messages": converted}
-        if system:
-            payload["system"] = system
-        if tools:
-            payload["tools"] = [
-                {"name": t["name"], "description": t["description"],
-                 "input_schema": t["input_schema"]}
-                for t in tools
-            ]
+        payload = _anthropic_payload(self.model, messages, max_tokens, tools)
         base = self.endpoint or "https://api.anthropic.com"
         data = self._post(
             f"{base}/v1/messages",
             {"x-api-key": self._key or "", "anthropic-version": "2023-06-01"},
             payload,
         )
-        blocks = data.get("content") or []
-        usage = data.get("usage") or {}
-        return {
-            "content": "".join(b.get("text", "") for b in blocks if b.get("type") == "text") or None,
-            "tool_calls": [
-                {"id": b["id"], "name": b["name"], "args": b.get("input") or {}}
-                for b in blocks if b.get("type") == "tool_use"
-            ],
-            "usage": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
-        }
+        return _anthropic_result(data)
 
-    def _openai_compatible(self, messages: list, max_tokens: int, tools: list | None = None) -> dict:
-        import json as _json
-
+    def _openai_base(self) -> str:
         base = self.endpoint or _DEFAULT_ENDPOINTS.get(self.provider, "")
         if not base:
             raise LLMError(f"{self.provider} kräver en endpoint-URL")
         # Ollama m.fl. anges ofta utan /v1 — normalisera i stället för att gissa fel.
         if not base.endswith("/v1"):
             base = f"{base}/v1"
-        converted = []
-        for m in messages:
-            if m["role"] == "assistant" and m.get("tool_calls"):
-                converted.append({
-                    "role": "assistant", "content": m.get("content"),
-                    "tool_calls": [
-                        {"id": c["id"], "type": "function",
-                         "function": {"name": c["name"], "arguments": _json.dumps(c["args"])}}
-                        for c in m["tool_calls"]
-                    ],
-                })
-            elif m["role"] == "tool":
-                converted.append({"role": "tool", "tool_call_id": m["call_id"],
-                                  "content": m["content"]})
-            else:
-                converted.append({"role": m["role"], "content": m["content"]})
-        payload: dict = {"model": self.model, "max_tokens": max_tokens, "messages": converted}
+        return base
+
+    def _openai_compatible(self, messages: list, max_tokens: int, tools: list | None = None) -> dict:
+        base = self._openai_base()
+        payload: dict = {
+            "model": self.model, "max_tokens": max_tokens,
+            "messages": [_openai_message(m) for m in messages],
+        }
         if tools:
             payload["tools"] = [
                 {"type": "function", "function": {
@@ -252,18 +286,10 @@ class LLMClient:
         if not choices:
             raise LLMError(f"{self.provider}: tomt svar (inga choices)")
         msg = choices[0].get("message") or {}
-        calls = []
-        for c in msg.get("tool_calls") or []:
-            fn = c.get("function") or {}
-            try:
-                args = _json.loads(fn.get("arguments") or "{}")
-            except ValueError:
-                args = {}
-            calls.append({"id": c.get("id", ""), "name": fn.get("name", ""), "args": args})
         usage = data.get("usage") or {}
         return {
             "content": msg.get("content") or None,
-            "tool_calls": calls,
+            "tool_calls": _openai_tool_calls(msg),
             "usage": int(usage.get("total_tokens", 0)),
         }
 

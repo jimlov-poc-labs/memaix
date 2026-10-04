@@ -66,6 +66,7 @@ import threading
 import time
 import uuid as _uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -144,11 +145,8 @@ def _resolve_dav_filtered(project: str, user: str, acl) -> object:
     to _resolve_dav when no vault is configured (SourceSelectionStore
     needs a vault path to persist state).
     """
-    import json
-    import os
-
     from ..connectors.calendar_sources import SourceSelectionStore, resolve_effective_sources
-    from ..server import _get_token_store
+    from ..server import _get_token_store, _is_sa_resource, _load_sa_info
     from ..tools.calendar import (
         _MultiCalendarAdapter,
         _ServiceAccountGoogleCalendarAdapter,
@@ -164,28 +162,8 @@ def _resolve_dav_filtered(project: str, user: str, acl) -> object:
     adapters: list = []
 
     sa_res = acl.resource(project, "calendar_sa")
-    if (
-        isinstance(sa_res, dict)
-        and sa_res.get("auth") == "service_account"
-        and "calendar_sa" not in disabled
-    ):
-        try:
-            ref = sa_res["service_account_ref"]
-            if ref.startswith("env:"):
-                env_var = ref[4:]
-                sa_json = os.environ.get(env_var, "")
-                if not sa_json:
-                    raise CalendarAuthRequired(f"Env-var {env_var} saknas för SA-kalender")
-                sa_info = json.loads(sa_json)
-            elif ref.startswith("file:"):
-                with open(ref[5:]) as f:
-                    sa_info = json.load(f)
-            else:
-                raise CalendarAuthRequired(f"Okänd service_account_ref: {ref}")
-        except CalendarAuthRequired:
-            raise
-        except (ValueError, FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as exc:
-            raise CalendarAuthRequired(f"SA-konfigfel för {project}: {exc}") from exc
+    if _is_sa_resource(sa_res) and "calendar_sa" not in disabled:
+        sa_info = _load_sa_info(sa_res, project)
         adapters.append(_ServiceAccountGoogleCalendarAdapter(sa_info, sa_res["impersonate"]))
 
     token_store = _get_token_store()
@@ -536,34 +514,35 @@ async def booking_config(request: Request) -> JSONResponse:
     })
 
 
-@_with_cors_on_error
-async def booking_create(request: Request) -> JSONResponse:
-    """POST /book/{slug} — {start, end, name, email, turnstile_token, purpose?}."""
-    client_ip = _client_ip(request)
-    if not _rate_limiter().check(f"booking:create:{client_ip}", limit=10, window_s=60):
-        return _json(request, {"error": "rate_limited"}, status_code=429)
+@dataclass(frozen=True)
+class _CreateRequest:
+    """The validated, normalised fields of a POST /book/{slug} body."""
 
-    link = get_link(request.path_params["slug"])
-    if link is None:
-        return _json(request, {"error": "not_found"}, status_code=404)
+    consent_text: str
+    name: str
+    email: str
+    purpose: str
+    meeting_form_slug: str | None
+    visitor_tz: str | None
+    start: datetime
+    end: datetime
 
+
+async def _read_json_body(request: Request) -> object:
     try:
-        body = await request.json()
+        return await request.json()
     except Exception:
-        body = {}
+        return {}
 
-    if not isinstance(body, dict):
-        return _json(request, {"error": "invalid_body"}, status_code=400)
 
-    if not await _verify_turnstile(str(body.get("turnstile_token") or ""), client_ip):
-        return _json(request, {"error": "captcha_failed"}, status_code=403)
-
+def _parse_create_fields(request: Request, body: dict) -> _CreateRequest:
+    """Normalise the body's fields, or raise _Refused for a 400."""
     # Server-side check, not just a frontend checkbox — otherwise "consent"
     # is theatre. consent_text is stored verbatim below so we can later
     # prove exactly what the visitor agreed to, not just that some box was
     # ticked.
     if body.get("consent") is not True:
-        return _json(request, {"error": "consent_required"}, status_code=400)
+        raise _Refused(_json(request, {"error": "consent_required"}, status_code=400))
     consent_text = str(body.get("consent_text") or "").strip()
 
     name = str(body.get("name") or "").strip()
@@ -577,54 +556,125 @@ async def booking_create(request: Request) -> JSONResponse:
     start = _parse_dt(str(body.get("start") or ""))
     end = _parse_dt(str(body.get("end") or ""))
     if not name or not email or start is None or end is None or end <= start:
-        return _json(request, {"error": "invalid_body"}, status_code=400)
+        raise _Refused(_json(request, {"error": "invalid_body"}, status_code=400))
 
     duration = end - start
     if not (timedelta(minutes=_MIN_DURATION_MIN) <= duration <= timedelta(minutes=_MAX_DURATION_MIN)):
-        return _json(request, {"error": "invalid_duration"}, status_code=400)
+        raise _Refused(_json(request, {"error": "invalid_duration"}, status_code=400))
 
-    acl = _get_acl()
-    project, host_user = link["project"], link["user"]
-    enabled = t_cal.calendar_booking_enabled_get(acl, host_user, project)
-    if not enabled.get("enabled"):
-        return _json(request, {"error": "not_found"}, status_code=404)
+    return _CreateRequest(consent_text, name, email, purpose, meeting_form_slug, visitor_tz, start, end)
 
-    # Session lengths the host defined are the only lengths bookable; no
-    # configured types keeps the old behaviour (any length in range).
-    types = t_cal.calendar_meeting_type_list(acl, host_user, project)
-    if types and int(duration.total_seconds() // 60) not in {t["duration_min"] for t in types}:
-        return _json(request, {"error": "invalid_duration"}, status_code=400)
 
-    # Meeting forms (card 85854d2c): an empty list means the host never
-    # configured any, which is identical to the pre-feature behaviour —
-    # skip all of this and book with no video/phone form attached.
-    forms = t_cal.calendar_meeting_form_list(acl, host_user, project)
-    meeting_form = None
-    if forms:
-        if meeting_form_slug:
-            meeting_form = next((f for f in forms if f["slug"] == meeting_form_slug), None)
-            if meeting_form is None:
-                return _json(request, {"error": "invalid_meeting_form"}, status_code=400)
-        else:
-            meeting_form = next((f for f in forms if f.get("default")), None)
-            if meeting_form is None:
-                return _json(request, {"error": "invalid_meeting_form"}, status_code=400)
+def _select_meeting_form(request: Request, forms: list, slug: str | None) -> dict | None:
+    """Pick the meeting form for a booking, or raise _Refused (400).
 
-    # _resolve_dav_filtered aggregates every enabled source (SA, registry,
-    # public ICS...) into a read-only _MultiCalendarAdapter whenever more
-    # than one is configured — exactly what the TOCTOU free-check below
-    # wants, since a false "free" from ignoring a source would double-book.
-    # calendar_create/_update/_delete need the opposite: a single adapter
-    # that actually implements create_event/update_event/delete_event, the
-    # same one the authenticated calendar_create MCP tool resolves via
-    # _resolve_calendar_dav. Using _resolve_dav_filtered's result for the
-    # write below crashes with AttributeError on _MultiCalendarAdapter.
+    Meeting forms (card 85854d2c): an empty list means the host never
+    configured any, which is identical to the pre-feature behaviour —
+    book with no video/phone form attached.
+    """
+    if not forms:
+        return None
+    if slug:
+        meeting_form = next((f for f in forms if f["slug"] == slug), None)
+    else:
+        meeting_form = next((f for f in forms if f.get("default")), None)
+    if meeting_form is None:
+        raise _Refused(_json(request, {"error": "invalid_meeting_form"}, status_code=400))
+    return meeting_form
+
+
+def _resolve_booking_davs(request: Request, project: str, host_user: str, acl) -> tuple[object, object]:
+    """(read adapter for the TOCTOU check, write adapter for calendar_create).
+
+    _resolve_dav_filtered aggregates every enabled source (SA, registry,
+    public ICS...) into a read-only _MultiCalendarAdapter whenever more
+    than one is configured — exactly what the TOCTOU free-check below
+    wants, since a false "free" from ignoring a source would double-book.
+    calendar_create/_update/_delete need the opposite: a single adapter
+    that actually implements create_event/update_event/delete_event, the
+    same one the authenticated calendar_create MCP tool resolves via
+    _resolve_calendar_dav. Using _resolve_dav_filtered's result for the
+    write below crashes with AttributeError on _MultiCalendarAdapter.
+    """
     try:
         dav = _resolve_dav_filtered(project, host_user, acl)
         write_dav = _resolve_dav(project, host_user, write=True)
     except CalendarAuthRequired:
-        return _json(request, {"error": "not_found"}, status_code=404)
+        raise _Refused(_json(request, {"error": "not_found"}, status_code=404)) from None
+    return dav, write_dav
 
+
+def _slot_covers(slot: dict, start: datetime, end: datetime) -> bool:
+    s_start, s_end = _parse_dt(slot.get("start", "")), _parse_dt(slot.get("end", ""))
+    # Unparseable start/end -> not a usable free slot. Never crash the
+    # public handler on a malformed calendar row; treat it as no cover.
+    if s_start is None or s_end is None:
+        return False
+    return s_start <= start and s_end >= end
+
+
+def _booking_title(link: dict, name: str) -> str:
+    template = link.get("title_template", "Möte")
+    return template.format(name=name) if "{name}" in template else template
+
+
+def _meeting_target(meeting_detail: dict) -> str:
+    return meeting_detail["join_url"] or meeting_detail["phone_number"]
+
+
+def _log_meeting_form_failure(project: str, host_user: str, meeting_form: dict) -> None:
+    logger.exception(
+        "meeting form resolution failed for project=%s host=%s slug=%s",
+        project, host_user, meeting_form["slug"],
+    )
+
+
+def _resolve_prebooking_detail(request, acl, project, host_user, meeting_form, req, title):
+    """Zoom/phone details must resolve before calendar_create — the detail
+    gets embedded in the event's location, unlike Google Meet whose link is
+    a side effect of calendar_create itself. None when there is nothing to
+    resolve up front; _Refused (502) when the provider fails."""
+    if meeting_form is None or meeting_form["provider"] == "google_meet":
+        return None
+    try:
+        return resolve_meeting_detail(
+            meeting_form["provider"], meeting_form.get("config") or {},
+            acl, project, host_user, start=req.start, end=req.end, title=title,
+        )
+    except MeetingProviderError:
+        _log_meeting_form_failure(project, host_user, meeting_form)
+        raise _Refused(_json(request, {"error": "meeting_form_unavailable"}, status_code=502)) from None
+
+
+def _resolve_google_meet_detail(request, acl, project, host_user, meeting_form, req, title, event, write_dav):
+    try:
+        return resolve_meeting_detail(
+            "google_meet", {}, acl, project, host_user,
+            start=req.start, end=req.end, title=title, calendar_event=event,
+        )
+    except MeetingProviderError:
+        _log_meeting_form_failure(project, host_user, meeting_form)
+        # Unlike Zoom/phone (which resolve before the event exists),
+        # calendar_create has already committed a Google event with
+        # the visitor invited by this point — leaving it in place on
+        # a 502 would silently book a real meeting with no Meet
+        # link and no consent record. Undo it so the failure is
+        # actually clean, same fail-closed guarantee as the Zoom
+        # path gets for free.
+        try:
+            t_cal.calendar_delete(acl, host_user, project, event["id"], _dav=write_dav)
+        except Exception:
+            logger.exception(
+                "failed to roll back orphaned google_meet event=%s project=%s host=%s",
+                event.get("id"), project, host_user,
+            )
+        raise _Refused(_json(request, {"error": "meeting_form_unavailable"}, status_code=502)) from None
+
+
+def _book_slot(request, acl, link, project, host_user, req, meeting_form, dav, write_dav):
+    """The race-critical section: TOCTOU re-check + calendar_create under the
+    per-host lock. Returns (event, title, meeting_detail, manage_token); raises _Refused."""
+    is_google_meet = meeting_form is not None and meeting_form["provider"] == "google_meet"
     with _BOOKING_LOCKS[(project, host_user)]:
         # TOCTOU re-check, wrapped with calendar_create in the per-host-user
         # lock above (see the lock's own docstring for what that lock does
@@ -634,99 +684,105 @@ async def booking_create(request: Request) -> JSONResponse:
         # the query window by a minute so an exact-fit free block still shows
         # up here.
         still_free = t_cal.calendar_find_free(
-            acl, host_user, project, int(duration.total_seconds() // 60),
-            start.isoformat(), (end + timedelta(minutes=1)).isoformat(), _dav=dav,
+            acl, host_user, project, int((req.end - req.start).total_seconds() // 60),
+            req.start.isoformat(), (req.end + timedelta(minutes=1)).isoformat(), _dav=dav,
         )
-        def _covers(s: dict) -> bool:
-            s_start, s_end = _parse_dt(s.get("start", "")), _parse_dt(s.get("end", ""))
-            # Unparseable start/end -> not a usable free slot. Never crash the
-            # public handler on a malformed calendar row; treat it as no cover.
-            if s_start is None or s_end is None:
-                return False
-            return s_start <= start and s_end >= end
+        if not any(_slot_covers(s, req.start, req.end) for s in still_free):
+            raise _Refused(_json(request, {"error": "slot_unavailable"}, status_code=409))
 
-        if not any(_covers(s) for s in still_free):
-            return _json(request, {"error": "slot_unavailable"}, status_code=409)
-
-        title = link.get("title_template", "Möte").format(name=name) if "{name}" in link.get("title_template", "") else link.get("title_template", "Möte")
-
-        meeting_detail = None
-        if meeting_form is not None and meeting_form["provider"] != "google_meet":
-            # Zoom/phone must resolve before calendar_create — the detail
-            # gets embedded in the event's location, unlike Google Meet
-            # whose link is a side effect of calendar_create itself.
-            try:
-                meeting_detail = resolve_meeting_detail(
-                    meeting_form["provider"], meeting_form.get("config") or {},
-                    acl, project, host_user, start=start, end=end, title=title,
-                )
-            except MeetingProviderError:
-                logger.exception(
-                    "meeting form resolution failed for project=%s host=%s slug=%s",
-                    project, host_user, meeting_form["slug"],
-                )
-                return _json(request, {"error": "meeting_form_unavailable"}, status_code=502)
+        title = _booking_title(link, req.name)
+        meeting_detail = _resolve_prebooking_detail(request, acl, project, host_user, meeting_form, req, title)
 
         event = t_cal.calendar_create(
             acl, host_user, project, title,
-            start.isoformat(), end.isoformat(),
-            attendees=[email],
-            location=meeting_detail["join_url"] or meeting_detail["phone_number"] if meeting_detail else None,
-            description=purpose or None,
-            want_conference=bool(meeting_form is not None and meeting_form["provider"] == "google_meet"),
+            req.start.isoformat(), req.end.isoformat(),
+            attendees=[req.email],
+            location=_meeting_target(meeting_detail) if meeting_detail else None,
+            description=req.purpose or None,
+            want_conference=is_google_meet,
             _dav=write_dav, _confirmed=True,
         )
 
-        if meeting_form is not None and meeting_form["provider"] == "google_meet":
-            try:
-                meeting_detail = resolve_meeting_detail(
-                    "google_meet", {}, acl, project, host_user,
-                    start=start, end=end, title=title, calendar_event=event,
-                )
-            except MeetingProviderError:
-                logger.exception(
-                    "meeting form resolution failed for project=%s host=%s slug=%s",
-                    project, host_user, meeting_form["slug"],
-                )
-                # Unlike Zoom/phone (which resolve before the event exists),
-                # calendar_create has already committed a Google event with
-                # the visitor invited by this point — leaving it in place on
-                # a 502 would silently book a real meeting with no Meet
-                # link and no consent record. Undo it so the failure is
-                # actually clean, same fail-closed guarantee as the Zoom
-                # path gets for free.
-                try:
-                    t_cal.calendar_delete(acl, host_user, project, event["id"], _dav=write_dav)
-                except Exception:
-                    logger.exception(
-                        "failed to roll back orphaned google_meet event=%s project=%s host=%s",
-                        event.get("id"), project, host_user,
-                    )
-                return _json(request, {"error": "meeting_form_unavailable"}, status_code=502)
+        if is_google_meet:
+            meeting_detail = _resolve_google_meet_detail(
+                request, acl, project, host_user, meeting_form, req, title, event, write_dav,
+            )
 
-        meeting_form_slug_final = meeting_form["slug"] if meeting_form is not None else None
-        meeting_form_provider = meeting_form["provider"] if meeting_form is not None else None
-        meeting_detail_line = meeting_detail["display_text"] if meeting_detail is not None else None
-        meeting_form_detail = (
-            (meeting_detail["join_url"] or meeting_detail["phone_number"]) if meeting_detail is not None else None
-        )
+        # Recorded inside the lock: the per-day cap counts these rows, so the
+        # next booker must see this one before the lock is released.
+        manage_token = _record_booking(request, project, host_user, req, event, meeting_form, meeting_detail)
+    return event, title, meeting_detail, manage_token
 
-        _row_id, manage_token = get_consent_store().record(
-            project=project, host_user=host_user, event_id=event.get("id"),
-            visitor_email=email, consent_text=consent_text,
-            consent_at=int(time.time()), meeting_end=int(end.timestamp()),
-            slug=request.path_params["slug"], meeting_start=int(start.timestamp()),
-            meeting_form_slug=meeting_form_slug_final, meeting_form_provider=meeting_form_provider,
-            meeting_form_detail=meeting_form_detail,
-        )
+
+def _record_booking(request, project, host_user, req, event, meeting_form, meeting_detail) -> str:
+    """Store the consent + booking row; returns the manage token."""
+    _row_id, manage_token = get_consent_store().record(
+        project=project, host_user=host_user, event_id=event.get("id"),
+        visitor_email=req.email, consent_text=req.consent_text,
+        consent_at=int(time.time()), meeting_end=int(req.end.timestamp()),
+        slug=request.path_params["slug"], meeting_start=int(req.start.timestamp()),
+        meeting_form_slug=meeting_form["slug"] if meeting_form is not None else None,
+        meeting_form_provider=meeting_form["provider"] if meeting_form is not None else None,
+        meeting_form_detail=_meeting_target(meeting_detail) if meeting_detail is not None else None,
+    )
+    return manage_token
+
+
+async def _create_booking(request: Request, link: dict, client_ip: str) -> JSONResponse:
+    body = await _read_json_body(request)
+    if not isinstance(body, dict):
+        raise _Refused(_json(request, {"error": "invalid_body"}, status_code=400))
+
+    if not await _verify_turnstile(str(body.get("turnstile_token") or ""), client_ip):
+        raise _Refused(_json(request, {"error": "captcha_failed"}, status_code=403))
+
+    req = _parse_create_fields(request, body)
+
+    acl = _get_acl()
+    project, host_user = link["project"], link["user"]
+    enabled = t_cal.calendar_booking_enabled_get(acl, host_user, project)
+    if not enabled.get("enabled"):
+        raise _Refused(_json(request, {"error": "not_found"}, status_code=404))
+
+    # Session lengths the host defined are the only lengths bookable; no
+    # configured types keeps the old behaviour (any length in range).
+    types = t_cal.calendar_meeting_type_list(acl, host_user, project)
+    if types and int((req.end - req.start).total_seconds() // 60) not in {t["duration_min"] for t in types}:
+        raise _Refused(_json(request, {"error": "invalid_duration"}, status_code=400))
+
+    forms = t_cal.calendar_meeting_form_list(acl, host_user, project)
+    meeting_form = _select_meeting_form(request, forms, req.meeting_form_slug)
+    dav, write_dav = _resolve_booking_davs(request, project, host_user, acl)
+
+    event, title, meeting_detail, manage_token = _book_slot(
+        request, acl, link, project, host_user, req, meeting_form, dav, write_dav,
+    )
     # Lock released above — the booking is already committed to the
     # calendar, so email delivery is not part of the race-critical section
     # and its latency must never hold up the next booker for this host.
     _send_confirmation_emails(
-        acl, project, link, title, event, name, email, purpose, start, end, visitor_tz, manage_token,
-        meeting_detail_line,
+        acl, project, link, title, event, req.name, req.email, req.purpose, req.start, req.end,
+        req.visitor_tz, manage_token,
+        meeting_detail["display_text"] if meeting_detail is not None else None,
     )
     return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end"), "manage_url": _manage_url(manage_token)})
+
+
+@_with_cors_on_error
+async def booking_create(request: Request) -> JSONResponse:
+    """POST /book/{slug} — {start, end, name, email, turnstile_token, purpose?}."""
+    client_ip = _client_ip(request)
+    if not _rate_limiter().check(f"booking:create:{client_ip}", limit=10, window_s=60):
+        return _json(request, {"error": "rate_limited"}, status_code=429)
+
+    link = get_link(request.path_params["slug"])
+    if link is None:
+        return _json(request, {"error": "not_found"}, status_code=404)
+
+    try:
+        return await _create_booking(request, link, client_ip)
+    except _Refused as refusal:
+        return refusal.response
 
 
 def _format_dt(dt: datetime, tz_name: str | None) -> str:
@@ -1001,6 +1057,75 @@ async def booking_manage_get(request: Request) -> JSONResponse:
     })
 
 
+def _parse_reschedule_window(request: Request, body: dict) -> tuple[datetime, datetime]:
+    """(start, end) from a reschedule body, or raise _Refused for a 400."""
+    start = _parse_dt(str(body.get("start") or ""))
+    end = _parse_dt(str(body.get("end") or ""))
+    if start is None or end is None or end <= start:
+        raise _Refused(_json(request, {"error": "invalid_body"}, status_code=400))
+    duration = end - start
+    if not (timedelta(minutes=_MIN_DURATION_MIN) <= duration <= timedelta(minutes=_MAX_DURATION_MIN)):
+        raise _Refused(_json(request, {"error": "invalid_duration"}, status_code=400))
+    return start, end
+
+
+def _move_event(request, acl, row, start, end, dav, write_dav) -> dict:
+    """Race-critical part of a reschedule: TOCTOU re-check + calendar_update
+    under the per-host lock. Returns the updated event; raises _Refused."""
+    project, host_user, event_id = row["project"], row["host_user"], row["event_id"]
+    with _BOOKING_LOCKS[(project, host_user)]:
+        # Same TOCTOU re-check booking_create does — a reschedule races
+        # other bookers for the new window exactly like a fresh booking.
+        still_free = t_cal.calendar_find_free(
+            acl, host_user, project, int((end - start).total_seconds() // 60),
+            start.isoformat(), (end + timedelta(minutes=1)).isoformat(), _dav=dav,
+            _exclude_event_id=event_id,
+        )
+        if not any(_slot_covers(s, start, end) for s in still_free):
+            raise _Refused(_json(request, {"error": "slot_unavailable"}, status_code=409))
+
+        return t_cal.calendar_update(
+            acl, host_user, project, event_id,
+            start=start.isoformat(), end=end.isoformat(),
+            _dav=write_dav, _confirmed=True,
+        )
+
+
+async def _reschedule_booking(request: Request, row: dict) -> JSONResponse:
+    body = await _read_json_body(request)
+    if not isinstance(body, dict):
+        raise _Refused(_json(request, {"error": "invalid_body"}, status_code=400))
+    start, end = _parse_reschedule_window(request, body)
+
+    link = get_link(row["slug"]) if row["slug"] else None
+    if link is None:
+        raise _Refused(_json(request, {"error": "not_found"}, status_code=404))
+
+    acl = _get_acl()
+    # See booking_create for why the free-check and the write need two
+    # different adapters.
+    dav, write_dav = _resolve_booking_davs(request, row["project"], row["host_user"], acl)
+    event = _move_event(request, acl, row, start, end, dav, write_dav)
+
+    get_consent_store().update_booking(
+        row["id"], event_id=row["event_id"], meeting_start=int(start.timestamp()),
+        meeting_end=int(end.timestamp()), status="rescheduled",
+    )
+
+    # The Zoom meeting itself isn't moved (no zoom meeting id is stored,
+    # only the resolved join_url — card 85854d2c's follow-up if this turns
+    # out to matter). Google Meet needs nothing: Google preserves
+    # conferenceData on a PATCH that doesn't touch it. Phone needs nothing.
+    # The stored link/number is still shown to the visitor either way.
+    title = event.get("title") or link.get("title_template", "Möte")
+    meeting_detail_line = _format_meeting_detail_line(row.get("meeting_form_provider"), row.get("meeting_form_detail"))
+    _send_reschedule_emails(
+        acl, row["project"], link, title, event, row["visitor_email"], start, end, request.path_params["token"],
+        meeting_detail_line, row.get("meeting_form_detail"),
+    )
+    return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end")})
+
+
 @_with_cors_on_error
 async def booking_reschedule(request: Request) -> JSONResponse:
     """POST /booking/{token}/reschedule — {start, end}. The token is the
@@ -1016,76 +1141,9 @@ async def booking_reschedule(request: Request) -> JSONResponse:
         return _json(request, {"error": "already_cancelled"}, status_code=409)
 
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        return _json(request, {"error": "invalid_body"}, status_code=400)
-
-    start = _parse_dt(str(body.get("start") or ""))
-    end = _parse_dt(str(body.get("end") or ""))
-    if start is None or end is None or end <= start:
-        return _json(request, {"error": "invalid_body"}, status_code=400)
-    duration = end - start
-    if not (timedelta(minutes=_MIN_DURATION_MIN) <= duration <= timedelta(minutes=_MAX_DURATION_MIN)):
-        return _json(request, {"error": "invalid_duration"}, status_code=400)
-
-    link = get_link(row["slug"]) if row["slug"] else None
-    if link is None:
-        return _json(request, {"error": "not_found"}, status_code=404)
-
-    acl = _get_acl()
-    project, host_user, event_id = row["project"], row["host_user"], row["event_id"]
-    try:
-        # See booking_create for why the free-check and the write need two
-        # different adapters: _resolve_dav_filtered's merged read-only view
-        # for the former, a real single writable adapter for the latter.
-        dav = _resolve_dav_filtered(project, host_user, acl)
-        write_dav = _resolve_dav(project, host_user, write=True)
-    except CalendarAuthRequired:
-        return _json(request, {"error": "not_found"}, status_code=404)
-
-    with _BOOKING_LOCKS[(project, host_user)]:
-        # Same TOCTOU re-check booking_create does — a reschedule races
-        # other bookers for the new window exactly like a fresh booking.
-        still_free = t_cal.calendar_find_free(
-            acl, host_user, project, int(duration.total_seconds() // 60),
-            start.isoformat(), (end + timedelta(minutes=1)).isoformat(), _dav=dav,
-            _exclude_event_id=event_id,
-        )
-
-        def _covers(s: dict) -> bool:
-            s_start, s_end = _parse_dt(s.get("start", "")), _parse_dt(s.get("end", ""))
-            if s_start is None or s_end is None:
-                return False
-            return s_start <= start and s_end >= end
-
-        if not any(_covers(s) for s in still_free):
-            return _json(request, {"error": "slot_unavailable"}, status_code=409)
-
-        event = t_cal.calendar_update(
-            acl, host_user, project, event_id,
-            start=start.isoformat(), end=end.isoformat(),
-            _dav=write_dav, _confirmed=True,
-        )
-
-    get_consent_store().update_booking(
-        row["id"], event_id=event_id, meeting_start=int(start.timestamp()),
-        meeting_end=int(end.timestamp()), status="rescheduled",
-    )
-
-    # The Zoom meeting itself isn't moved (no zoom meeting id is stored,
-    # only the resolved join_url — card 85854d2c's follow-up if this turns
-    # out to matter). Google Meet needs nothing: Google preserves
-    # conferenceData on a PATCH that doesn't touch it. Phone needs nothing.
-    # The stored link/number is still shown to the visitor either way.
-    title = event.get("title") or link.get("title_template", "Möte")
-    meeting_detail_line = _format_meeting_detail_line(row.get("meeting_form_provider"), row.get("meeting_form_detail"))
-    _send_reschedule_emails(
-        acl, project, link, title, event, row["visitor_email"], start, end, request.path_params["token"],
-        meeting_detail_line, row.get("meeting_form_detail"),
-    )
-    return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end")})
+        return await _reschedule_booking(request, row)
+    except _Refused as refusal:
+        return refusal.response
 
 
 @_with_cors_on_error

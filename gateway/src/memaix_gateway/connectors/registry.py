@@ -257,22 +257,9 @@ class ConnectorRegistry:
         handled_types: set[str] = set()
 
         if resource_cfg:
-            base_type = resource_cfg.get("type", DEFAULT_TYPES.get(capability, capability))
-            base_spec = self._specs.get((capability, base_type))
-            handled_types.add(base_type)
-
-            if base_spec is not None:
-                if base_spec.auth == "per_user":
-                    results += self._adapters_for_per_user_spec(
-                        base_spec, token_store, user, capability, project, acl, resource_cfg
-                    )
-                else:
-                    results.append((f"{base_spec.type}:{project}", base_spec.factory(acl, project, user, resource_cfg, None)))
-
-            for i, extra_cfg in enumerate(resource_cfg.get("sources") or []):
-                pair = self._adapter_for_extra_source(extra_cfg, base_type, i, token_store, user, capability, project, acl)
-                if pair is not None:
-                    results.append(pair)
+            results += self._base_and_extra_adapters(
+                resource_cfg, handled_types, token_store, project, capability, user, acl
+            )
 
         # Per-user sweep: pick up any linked per-user accounts not already
         # covered by the base type or extra sources above.  This makes Google
@@ -287,6 +274,31 @@ class ConnectorRegistry:
                 spec, token_store, user, capability, project, acl, resource_cfg or {}
             )
 
+        return results
+
+    def _base_and_extra_adapters(
+        self, resource_cfg, handled_types, token_store, project, capability, user, acl
+    ) -> list[tuple[str, object]]:
+        """Adapters from the configured resource: the base spec first, then
+        each entry of resource_cfg['sources']. Adds the base type to
+        handled_types so the per-user sweep does not repeat it."""
+        results: list[tuple[str, object]] = []
+        base_type = resource_cfg.get("type", DEFAULT_TYPES.get(capability, capability))
+        base_spec = self._specs.get((capability, base_type))
+        handled_types.add(base_type)
+
+        if base_spec is not None:
+            if base_spec.auth == "per_user":
+                results += self._adapters_for_per_user_spec(
+                    base_spec, token_store, user, capability, project, acl, resource_cfg
+                )
+            else:
+                results.append((f"{base_spec.type}:{project}", base_spec.factory(acl, project, user, resource_cfg, None)))
+
+        for i, extra_cfg in enumerate(resource_cfg.get("sources") or []):
+            pair = self._adapter_for_extra_source(extra_cfg, base_type, i, token_store, user, capability, project, acl)
+            if pair is not None:
+                results.append(pair)
         return results
 
 

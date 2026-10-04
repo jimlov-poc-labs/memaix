@@ -42,42 +42,48 @@ def _meeting_types_path(acl, project: str, user: str) -> Path:
     return directory / f"{user}.json"
 
 
+def _check_minutes(slug: str, field: str, value) -> None:
+    if not isinstance(value, int) or not (1 <= value <= MAX_DURATION_MIN):
+        raise ValueError(f"{slug!r}: {field} must be an int in 1..{MAX_DURATION_MIN}")
+
+
+def _validate_type(t, slugs: set[str]) -> dict:
+    """Validate one entry and return its normalized copy; records its slug."""
+    if not isinstance(t, dict):
+        raise ValueError(f"each meeting type must be an object, got {t!r}")
+    slug = t.get("slug", "")
+    if not _SLUG_RE.match(slug):
+        raise ValueError(f"invalid slug {slug!r}: must be lowercase alphanumeric/hyphen")
+    if slug in slugs:
+        raise ValueError(f"duplicate slug {slug!r}")
+    slugs.add(slug)
+
+    name = t.get("name", "")
+    if not name:
+        raise ValueError(f"{slug!r}: name is required")
+
+    duration_min = t.get("duration_min")
+    _check_minutes(slug, "duration_min", duration_min)
+
+    interval_min = t.get("interval_min", duration_min)
+    _check_minutes(slug, "interval_min", interval_min)
+
+    return {
+        "slug": slug,
+        "name": name,
+        "duration_min": duration_min,
+        "interval_min": interval_min,
+        "default": bool(t.get("default", False)),
+    }
+
+
 def validate_types(types: list[dict]) -> list[dict]:
     """Raise ValueError if *types* is not a valid list of meeting types.
     Returns a normalized copy: interval_min defaulted to duration_min
     where omitted, and exactly one entry marked default (auto-promoting
     the first if none was marked)."""
     slugs: set[str] = set()
-    out: list[dict] = []
-    for t in types:
-        if not isinstance(t, dict):
-            raise ValueError(f"each meeting type must be an object, got {t!r}")
-        slug = t.get("slug", "")
-        if not _SLUG_RE.match(slug):
-            raise ValueError(f"invalid slug {slug!r}: must be lowercase alphanumeric/hyphen")
-        if slug in slugs:
-            raise ValueError(f"duplicate slug {slug!r}")
-        slugs.add(slug)
-
-        name = t.get("name", "")
-        if not name:
-            raise ValueError(f"{slug!r}: name is required")
-
-        duration_min = t.get("duration_min")
-        if not isinstance(duration_min, int) or not (1 <= duration_min <= MAX_DURATION_MIN):
-            raise ValueError(f"{slug!r}: duration_min must be an int in 1..{MAX_DURATION_MIN}")
-
-        interval_min = t.get("interval_min", duration_min)
-        if not isinstance(interval_min, int) or not (1 <= interval_min <= MAX_DURATION_MIN):
-            raise ValueError(f"{slug!r}: interval_min must be an int in 1..{MAX_DURATION_MIN}")
-
-        out.append({
-            "slug": slug,
-            "name": name,
-            "duration_min": duration_min,
-            "interval_min": interval_min,
-            "default": bool(t.get("default", False)),
-        })
+    out = [_validate_type(t, slugs) for t in types]
 
     defaults = [t for t in out if t["default"]]
     if len(defaults) > 1:

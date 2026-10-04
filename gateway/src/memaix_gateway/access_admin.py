@@ -23,6 +23,7 @@ from .web.acl_writer import AclWriter
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _ADMIN_LOCKED = "a system admin's access cannot be changed here"
+_INVALID_INVITATION = "invalid or expired invitation"
 _RESERVED_USERS = {"admin", "root", "system", "memaix", "anonymous"}
 MIN_PASSWORD_LEN = 12
 
@@ -211,7 +212,7 @@ class AccessAdmin:
     def accept_invite(self, token: str, password: str) -> str:
         found = self._invites.lookup(token)
         if found is None:
-            raise AccessError("invalid or expired invitation")
+            raise AccessError(_INVALID_INVITATION)
         user, is_reset = found
         if not isinstance(password, str) or len(password) < MIN_PASSWORD_LEN:
             raise AccessError(f"password must be at least {MIN_PASSWORD_LEN} characters")
@@ -220,9 +221,9 @@ class AccessAdmin:
         def apply(data: dict) -> None:
             u = data.get("users", {}).get(user)
             if u is None or u.get("disabled") or u.get("admin") is True:
-                raise AccessError("invalid or expired invitation")
+                raise AccessError(_INVALID_INVITATION)
             if u.get("password_hash") and not is_reset:
-                raise AccessError("invalid or expired invitation")
+                raise AccessError(_INVALID_INVITATION)
             u["password_hash"] = hashed
 
         self._writer.update(apply)

@@ -237,6 +237,53 @@ class _PerUserGoogleAdapter:
 # ------------------------------------------------------------------
 
 
+def _ical_uid(component) -> str:
+    return str(getattr(component, "uid", "")).strip()
+
+
+def _ical_datetime(value):
+    """All-day dates become UTC-midnight datetimes; datetimes pass through."""
+    from datetime import date, timezone
+
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    return value
+
+
+def _ical_iso(value) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+def _ical_text(component, attr: str) -> str:
+    return str(getattr(component, attr, "")).strip()
+
+
+def _ical_event(component, index: int, series_uids: set) -> dict:
+    """Map one vobject VEVENT to the adapter's event dict. ``index`` is the
+    event's position, used for the fallback id when the UID is missing."""
+    dtstart = component.dtstart.value
+    dtend = getattr(component, "dtend", None)
+    dtend = dtend.value if dtend else dtstart
+    dtstart = _ical_datetime(dtstart)
+    dtend = _ical_datetime(dtend)
+
+    uid = _ical_uid(component)
+    transp = _ical_text(component, "transp").upper()
+    return {
+        "id": uid or f"ical-{index}",
+        "title": _ical_text(component, "summary"),
+        "start": _ical_iso(dtstart),
+        "end": _ical_iso(dtend),
+        "location": _ical_text(component, "location"),
+        "description": _ical_text(component, "description"),
+        "series_id": uid if uid in series_uids else None,
+        "is_exception": hasattr(component, "recurrence_id"),
+        "source_busy": transp != "TRANSPARENT",
+        "_dtstart": dtstart,
+        "_dtend": dtend,
+    }
+
+
 class _ICalAdapter:
     """Fetches a secret iCal URL and returns events in the time range."""
 
@@ -244,8 +291,6 @@ class _ICalAdapter:
         self._url = ical_url
 
     def _fetch(self) -> list[dict]:
-        from datetime import date, timezone
-
         import requests
         import vobject
 
@@ -264,44 +309,12 @@ class _ICalAdapter:
         # not expand RRULE, so what we see is masters (RRULE) + any explicit
         # exception instances (RECURRENCE-ID) sharing the master's UID. A UID
         # is a series iff any component under it carries either marker.
-        def _uid_of(c) -> str:
-            return str(getattr(c, "uid", "")).strip()
-
         series_uids = {
-            _uid_of(c)
+            _ical_uid(c)
             for c in vevents
-            if _uid_of(c) and (hasattr(c, "rrule") or hasattr(c, "recurrence_id"))
+            if _ical_uid(c) and (hasattr(c, "rrule") or hasattr(c, "recurrence_id"))
         }
-
-        events: list[dict] = []
-        for component in vevents:
-            dtstart = component.dtstart.value
-            dtend = getattr(component, "dtend", None)
-            dtend = dtend.value if dtend else dtstart
-
-            # Normalize date → datetime
-            if isinstance(dtstart, date) and not isinstance(dtstart, datetime):
-                dtstart = datetime(dtstart.year, dtstart.month, dtstart.day, tzinfo=timezone.utc)
-            if isinstance(dtend, date) and not isinstance(dtend, datetime):
-                dtend = datetime(dtend.year, dtend.month, dtend.day, tzinfo=timezone.utc)
-
-            uid = _uid_of(component)
-            transp = str(getattr(component, "transp", "")).strip().upper()
-
-            events.append({
-                "id": uid or f"ical-{len(events)}",
-                "title": str(getattr(component, "summary", "")).strip(),
-                "start": dtstart.isoformat() if isinstance(dtstart, datetime) else str(dtstart),
-                "end": dtend.isoformat() if isinstance(dtend, datetime) else str(dtend),
-                "location": str(getattr(component, "location", "")).strip(),
-                "description": str(getattr(component, "description", "")).strip(),
-                "series_id": uid if uid in series_uids else None,
-                "is_exception": hasattr(component, "recurrence_id"),
-                "source_busy": transp != "TRANSPARENT",
-                "_dtstart": dtstart,
-                "_dtend": dtend,
-            })
-        return events
+        return [_ical_event(c, i, series_uids) for i, c in enumerate(vevents)]
 
     def _in_range(self, event: dict, start: datetime, end: datetime) -> bool:
         from datetime import timezone

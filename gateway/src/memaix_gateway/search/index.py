@@ -13,6 +13,8 @@ from .. import frontmatter as fm
 # Directories/files that must never be indexed (internal state, secrets, VCS).
 _SKIP_DIR_PARTS = {"_system", ".git", "pm"}
 _SKIP_FILE_NAMES = {".memaix.db", ".gitignore"}
+_MEMORY = "memory"
+_BACKLOG = "backlog"
 
 
 def chunk_text(text: str, size: int = 800, overlap: int = 120) -> list[str]:
@@ -72,6 +74,67 @@ def _is_skippable(vault: Path, path: Path) -> bool:
     return any(p in _SKIP_DIR_PARTS for p in parts)
 
 
+def _read_text(path: Path) -> str | None:
+    """File text, or None if it cannot be read as text."""
+    try:
+        return path.read_text()
+    except (UnicodeDecodeError, OSError):
+        return None
+
+
+def _index_memory_dir(store, embedder, project: str, vault: Path) -> tuple[int, int]:
+    memory_dir = vault / _MEMORY
+    chunks = sources = 0
+    if not memory_dir.is_dir():
+        return chunks, sources
+    for p in sorted(memory_dir.rglob("*")):
+        if not p.is_file() or _is_skippable(vault, p):
+            continue
+        text = _read_text(p)
+        if text is None:
+            continue
+        rel = str(p.relative_to(memory_dir))
+        chunks += index_upsert(store, embedder, project, _MEMORY, rel, rel, text)
+        sources += 1
+    return chunks, sources
+
+
+def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int, int]:
+    backlog_dir = vault / _BACKLOG
+    chunks = sources = 0
+    if not backlog_dir.is_dir():
+        return chunks, sources
+    for p in sorted(backlog_dir.glob("*.md")):
+        text = _read_text(p)
+        if text is None:
+            continue
+        meta, body = fm.split(text)
+        title = meta.get("title", p.stem)
+        ref = meta.get("id", p.stem)
+        chunks += index_upsert(store, embedder, project, _BACKLOG, ref, title, f"{title}\n{body}")
+        sources += 1
+    return chunks, sources
+
+
+def _index_other_files(store, embedder, project: str, vault: Path) -> tuple[int, int]:
+    chunks = sources = 0
+    if not vault.is_dir():
+        return chunks, sources
+    for p in sorted(vault.rglob("*")):
+        if not p.is_file() or _is_skippable(vault, p):
+            continue
+        parts = p.relative_to(vault).parts
+        if parts and parts[0] in (_MEMORY, _BACKLOG):
+            continue  # already covered by the memory/backlog passes
+        text = _read_text(p)
+        if text is None:
+            continue
+        rel = str(p.relative_to(vault))
+        chunks += index_upsert(store, embedder, project, "file", rel, rel, text)
+        sources += 1
+    return chunks, sources
+
+
 def reindex_project(store, embedder, acl, project: str) -> dict:
     """Walk a project's vault (memory/, backlog/*.md, other text files) and
     (re)index everything. Returns {"chunks": total, "sources": count}."""
@@ -81,46 +144,8 @@ def reindex_project(store, embedder, acl, project: str) -> dict:
     vault = Path(vault_str)
     total_chunks = 0
     sources = 0
-
-    memory_dir = vault / "memory"
-    if memory_dir.is_dir():
-        for p in sorted(memory_dir.rglob("*")):
-            if not p.is_file() or _is_skippable(vault, p):
-                continue
-            try:
-                text = p.read_text()
-            except (UnicodeDecodeError, OSError):
-                continue
-            rel = str(p.relative_to(memory_dir))
-            total_chunks += index_upsert(store, embedder, project, "memory", rel, rel, text)
-            sources += 1
-
-    backlog_dir = vault / "backlog"
-    if backlog_dir.is_dir():
-        for p in sorted(backlog_dir.glob("*.md")):
-            try:
-                text = p.read_text()
-            except (UnicodeDecodeError, OSError):
-                continue
-            meta, body = fm.split(text)
-            title = meta.get("title", p.stem)
-            ref = meta.get("id", p.stem)
-            total_chunks += index_upsert(store, embedder, project, "backlog", ref, title, f"{title}\n{body}")
-            sources += 1
-
-    if vault.is_dir():
-        for p in sorted(vault.rglob("*")):
-            if not p.is_file() or _is_skippable(vault, p):
-                continue
-            parts = p.relative_to(vault).parts
-            if parts and parts[0] in ("memory", "backlog"):
-                continue  # already covered above
-            try:
-                text = p.read_text()
-            except (UnicodeDecodeError, OSError):
-                continue
-            rel = str(p.relative_to(vault))
-            total_chunks += index_upsert(store, embedder, project, "file", rel, rel, text)
-            sources += 1
-
+    for index_pass in (_index_memory_dir, _index_backlog_dir, _index_other_files):
+        chunks, n = index_pass(store, embedder, project, vault)
+        total_chunks += chunks
+        sources += n
     return {"chunks": total_chunks, "sources": sources}

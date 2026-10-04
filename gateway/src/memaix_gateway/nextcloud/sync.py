@@ -161,6 +161,73 @@ def _memory_note_exists(acl: Acl, user_id: str, project: str, path: str) -> bool
         return False
 
 
+class _NotesSync:
+    """One notes_sync run: the stores involved plus the per-note sync steps."""
+
+    def __init__(self, acl: Acl, user_id: str, project: str, notes, link_store):
+        self.acl = acl
+        self.user_id = user_id
+        self.project = project
+        self.notes = notes
+        self.link_store = link_store
+
+    def _write_memory(self, path: str, content: str) -> None:
+        t_memory.memory_write(self.acl, self.user_id, self.project, path, content)
+
+    def _push_memory_to_notes(self, path: str, nc_id: str) -> None:
+        content = t_memory.memory_read(self.acl, self.user_id, self.project, path)["content"]
+        self.notes.update_note(nc_id, content=content)
+
+    def _restamp(self, path: str, nc_id: str) -> None:
+        self.link_store.set_link(self.project, path, nc_id, _now_iso())
+
+    def pull_new(self, nc_notes: dict, linked: dict) -> list[dict]:
+        """Nextcloud notes without a link become new memory notes."""
+        created: list[dict] = []
+        for nc_id, note in nc_notes.items():
+            if nc_id in linked:
+                continue
+            path = _unique_note_path(
+                self.acl, self.user_id, self.project, _slugify(note["title"], nc_id)
+            )
+            self._write_memory(path, note["content"])
+            self._restamp(path, nc_id)
+            created.append({"note_path": path, "nc_note_id": nc_id})
+        return created
+
+    def _resolve_conflict(self, path: str, nc_id: str, note: dict, memory_ts) -> str:
+        """Both sides changed: the more recently modified one wins (ties -> notes)."""
+        if note["last_modified"] >= _parse_ts(memory_ts):
+            self._write_memory(path, note["content"])
+            return "notes"
+        self._push_memory_to_notes(path, nc_id)
+        return "memory"
+
+    def sync_linked(self, link: dict, nc_id: str, note: dict, result: dict) -> None:
+        """Sync one already-linked note; appends to *result* when something moved."""
+        path = link["note_path"]
+        if not _memory_note_exists(self.acl, self.user_id, self.project, path):
+            return  # deleted on the memaix side — leave the Nextcloud note alone
+
+        baseline = _parse_ts(link.get("synced_at"))
+        note_changed = note["last_modified"] > baseline
+        memory_ts = t_memory._get_store(self.acl, self.project).get_updated_at(path)
+        memory_changed = _parse_ts(memory_ts) > baseline
+
+        if note_changed and memory_changed:
+            winner = self._resolve_conflict(path, nc_id, note, memory_ts)
+            self._restamp(path, nc_id)
+            result["conflicts"].append({"note_path": path, "nc_note_id": nc_id, "winner": winner})
+        elif note_changed:
+            self._write_memory(path, note["content"])
+            self._restamp(path, nc_id)
+            result["updated_from_notes"].append(path)
+        elif memory_changed:
+            self._push_memory_to_notes(path, nc_id)
+            self._restamp(path, nc_id)
+            result["updated_from_memory"].append(path)
+
+
 def notes_sync(acl: Acl, user_id: str, project: str, *, _notes, link_store) -> dict:
     """Sync a Nextcloud Notes account against the project's memory notes.
     Owner only (it mutates both stores). Returns {created, updated_from_notes,
@@ -171,55 +238,18 @@ def notes_sync(acl: Acl, user_id: str, project: str, *, _notes, link_store) -> d
     links = link_store.list_links(project)
     linked_by_nc_id = {link["nc_note_id"]: link for link in links}
 
-    created: list[dict] = []
-    updated_from_notes: list[str] = []
-    updated_from_memory: list[str] = []
-    conflicts: list[dict] = []
-
-    for nc_id, note in nc_notes.items():
-        if nc_id in linked_by_nc_id:
-            continue
-        path = _unique_note_path(acl, user_id, project, _slugify(note["title"], nc_id))
-        t_memory.memory_write(acl, user_id, project, path, note["content"])
-        link_store.set_link(project, path, nc_id, _now_iso())
-        created.append({"note_path": path, "nc_note_id": nc_id})
+    run = _NotesSync(acl, user_id, project, _notes, link_store)
+    result: dict = {
+        "created": run.pull_new(nc_notes, linked_by_nc_id),
+        "updated_from_notes": [],
+        "updated_from_memory": [],
+        "conflicts": [],
+    }
 
     for nc_id, link in linked_by_nc_id.items():
         note = nc_notes.get(nc_id)
         if note is None:
             continue  # deleted on the Nextcloud side — never delete the memory note
-        path = link["note_path"]
-        if not _memory_note_exists(acl, user_id, project, path):
-            continue  # deleted on the memaix side — leave the Nextcloud note alone
+        run.sync_linked(link, nc_id, note, result)
 
-        baseline = _parse_ts(link.get("synced_at"))
-        note_changed = note["last_modified"] > baseline
-        memory_ts = t_memory._get_store(acl, project).get_updated_at(path)
-        memory_changed = _parse_ts(memory_ts) > baseline
-
-        if note_changed and memory_changed:
-            if note["last_modified"] >= _parse_ts(memory_ts):
-                t_memory.memory_write(acl, user_id, project, path, note["content"])
-                winner = "notes"
-            else:
-                content = t_memory.memory_read(acl, user_id, project, path)["content"]
-                _notes.update_note(nc_id, content=content)
-                winner = "memory"
-            link_store.set_link(project, path, nc_id, _now_iso())
-            conflicts.append({"note_path": path, "nc_note_id": nc_id, "winner": winner})
-        elif note_changed:
-            t_memory.memory_write(acl, user_id, project, path, note["content"])
-            link_store.set_link(project, path, nc_id, _now_iso())
-            updated_from_notes.append(path)
-        elif memory_changed:
-            content = t_memory.memory_read(acl, user_id, project, path)["content"]
-            _notes.update_note(nc_id, content=content)
-            link_store.set_link(project, path, nc_id, _now_iso())
-            updated_from_memory.append(path)
-
-    return {
-        "created": created,
-        "updated_from_notes": updated_from_notes,
-        "updated_from_memory": updated_from_memory,
-        "conflicts": conflicts,
-    }
+    return result
