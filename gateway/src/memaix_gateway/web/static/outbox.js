@@ -34,6 +34,28 @@
     modal(box);
   };
 
+  const showLink = (url) => {
+    const box = document.createElement('div');
+    const h = document.createElement('h3');
+    h.textContent = t('web_outbox_link_title');
+    const hint = document.createElement('p');
+    hint.className = 'muted';
+    hint.textContent = t('web_outbox_link_hint');
+    const ta = document.createElement('textarea');
+    ta.readOnly = true;
+    ta.rows = 5;
+    ta.value = `${t('web_outbox_link_message')}\n${url}`;
+    const copy = document.createElement('button');
+    copy.className = 'btn btn-primary';
+    copy.textContent = t('web_outbox_link_copy');
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); document.execCommand('copy'); }
+      toast(t('web_outbox_link_copied'), 'success');
+    });
+    box.append(h, hint, ta, copy);
+    modal(box);
+  };
+
   const decide = async (action, li, kind, reason = '') => {
     try {
       const path = `/app/api/outbox/${encodeURIComponent(action.id)}/${kind}`;
@@ -43,6 +65,8 @@
       toast(kind === 'approve'
         ? (res.ok ? t('web_outbox_approved') : t('web_outbox_failed'))
         : t('web_outbox_rejected'), res.ok === false ? 'error' : 'success');
+      const link = res.result?.invite_url ?? res.result?.reset_url;
+      if (kind === 'approve' && res.ok && link) showLink(link);
       render();
     } catch (e) {
       if (e.status === 409) {

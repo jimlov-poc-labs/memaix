@@ -99,11 +99,11 @@ def api_outbox_approve(request: Request) -> JSONResponse:
             status_code=409,
         )
 
-    from ...outbox.execute import execute_pending
+    from ...outbox.execute import execute_pending, redact_links
 
     result = execute_pending(acl, claimed)
     ok = "error" not in result
-    queue.record_result(action["id"], "executed" if ok else "failed", result)
+    queue.record_result(action["id"], "executed" if ok else "failed", redact_links(result))
     try:
         _audit().log(
             user, action["project"], f"outbox_execute:{action['tool']}", ok,

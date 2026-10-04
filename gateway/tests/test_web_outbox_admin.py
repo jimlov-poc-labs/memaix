@@ -107,6 +107,25 @@ def test_approve_executes_once_and_409_on_race(rig, monkeypatch):
     assert len(events) == 1 and events[0]["ok"] is True
 
 
+def test_approve_returns_invite_link_once_and_does_not_store_it(rig, monkeypatch):
+    client, queue, _, _ = rig
+    aid = queue.enqueue("alice", "proj", "user_invite", {"invitee": "n", "role": "reader", "email": None}, "p")
+    url = "https://mcp.example/app/invite/SECRET"
+    monkeypatch.setattr(
+        "memaix_gateway.outbox.execute._default_dispatch",
+        lambda: {"user_invite": lambda acl, u, p, **kw: {"user": "n", "invite_url": url}},
+    )
+    body = client.post(f"/app/api/outbox/{aid}/approve").json()
+    assert body["result"]["invite_url"] == url
+
+    stored = queue.get(aid)
+    assert stored["status"] == "executed"
+    assert "invite_url" not in stored["result"]
+    assert stored["result"]["link_shown_once"] is True
+    assert stored["result"]["user"] == "n"
+    assert "SECRET" not in client.get(f"/app/api/outbox/{aid}").text
+
+
 def test_reject_records_reason_and_never_executes(rig, monkeypatch):
     client, queue, audit, _ = rig
     aid = queue.enqueue("alice", "proj", "email_send", {"to": "x@y.com"}, "p")
