@@ -2,7 +2,7 @@
 // Unified search page (FEATURE-WEB-UI-PHASE2.md §sök): queries the index and
 // renders cited results {project, source_type, ref, title, snippet, score}.
 
-(async () => {
+async function searchPage() {
   const me = await window.ME;
   if (!me) return;
   const list = document.getElementById('search-results');
@@ -59,4 +59,6 @@
     document.getElementById('search-q').value = initial;
     run(initial);
   }
-})();
+}
+
+await searchPage();

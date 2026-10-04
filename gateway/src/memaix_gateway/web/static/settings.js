@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Settings page: linked accounts + calendar mode (FEATURE-WEB-UI-MVP.md §1.2).
 
-(async () => {
+async function settingsPage() {
   const me = await window.ME;
   if (!me) return;
   const project = new URLSearchParams(location.search).get('project')
@@ -226,10 +226,10 @@
       current.textContent = `${t('web_settings_calendar_active')}: ${select.value}`;
     } catch (err) { toast(err.message, 'error'); }
   });
-})();
+}
 
 // --- Daily brief (Fas D) ---------------------------------------------------
-(async () => {
+async function settingsBrief() {
   const form = document.getElementById('brief-form');
   if (!form) return;
   const enabled = document.getElementById('brief-enabled');
@@ -261,4 +261,6 @@
       toast(t('web_saved'), 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
-})();
+}
+
+await Promise.all([settingsPage(), settingsBrief()]);

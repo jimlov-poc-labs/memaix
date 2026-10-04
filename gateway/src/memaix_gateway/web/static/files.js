@@ -105,5 +105,5 @@ if (me) {
   };
 
   window.addEventListener('hashchange', load);
-  load();
+  await load();
 }

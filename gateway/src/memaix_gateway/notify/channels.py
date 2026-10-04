@@ -28,7 +28,7 @@ class EmailChannel:
         self._project = spec.get("project")
         self._smtp = _smtp
 
-    def send(self, subject: str, markdown: str, text: str) -> None:
+    def send(self, subject: str, markdown: str, text: str) -> None:  # NOSONAR: fixed by the channel interface
         cfg = self._acl.resource(self._project, "mailbox") if self._project else None
         if not cfg:
             raise ValueError(
@@ -112,7 +112,7 @@ class NtfyChannel:
         self._server = server.rstrip("/")
         self._http = _http
 
-    def send(self, subject: str, markdown: str, text: str) -> None:
+    def send(self, subject: str, markdown: str, text: str) -> None:  # NOSONAR: fixed by the channel interface
         http = self._http
         url = f"{self._server}/{self._topic}"
         if http is None:

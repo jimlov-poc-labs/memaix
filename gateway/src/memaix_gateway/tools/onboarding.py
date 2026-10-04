@@ -59,7 +59,7 @@ def _interview_template(vault: Path, cfg: dict | None = None) -> str:
     return DEFAULT_INTERVIEW
 
 
-def build_interview_prompt(user_id: str, vault: Path | None, cfg: dict | None = None) -> str:
+def build_interview_prompt(vault: Path | None, cfg: dict | None = None) -> str:
     """Return the full prompt text for the onboarding_interview MCP prompt."""
     template = _interview_template(vault, cfg) if vault else DEFAULT_INTERVIEW
     outro = (cfg or {}).get("memaix", {}).get("onboarding", {}).get(
@@ -139,7 +139,7 @@ def _git_commit(vault: Path, message: str) -> None:
 _DEFAULT_TOUR_KEYS = ("memory.remember", "mail.triage", "backlog.capture", "brief.daily")
 
 
-def build_tour(user_id: str, profile_text: str, available: list, t, max_items: int = 4) -> dict:
+def build_tour(profile_text: str, available: list, t, max_items: int = 4) -> dict:
     """Rank `available` capabilities against words in `profile_text` (role,
     responsibilities, goals) via Capability.tags and return a short, localized
     "want to try this?" tour. Falls back to a generic starter set when nothing
