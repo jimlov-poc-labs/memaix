@@ -35,7 +35,8 @@
   };
   const friendly = (e) => {
     if (e.status === 403) return t('web_booking_err_forbidden');
-    return `${t('web_booking_err_save')}${e.message ? ` (${e.message})` : ''}`;
+    const detail = e.message ? ` (${e.message})` : '';
+    return `${t('web_booking_err_save')}${detail}`;
   };
   const refresh = async () => {
     state = await api('GET', `/app/api/booking?${q}`);
@@ -161,9 +162,11 @@
     $('date-windows').hidden = $('date-kind').value !== 'open';
   });
 
-  const describeWindows = (windows) => (windows.length === 0
-    ? t('web_booking_date_closed')
-    : `${t('web_booking_date_open_short')} ${windows.map((w) => `${w.start}–${w.end}`).join(', ')}`);
+  const describeWindows = (windows) => {
+    if (windows.length === 0) return t('web_booking_date_closed');
+    const spans = windows.map((w) => `${w.start}–${w.end}`).join(', ');
+    return `${t('web_booking_date_open_short')} ${spans}`;
+  };
 
   const removeButton = (label, onClick) => {
     const b = el('button', { type: 'button', class: 'btn btn-danger', text: t('web_booking_remove'), 'aria-label': `${t('web_booking_remove')} ${label}` });
@@ -174,7 +177,7 @@
   const renderDates = () => {
     const list = $('dates-list');
     list.textContent = '';
-    const days = Object.keys(state.dates).sort();
+    const days = Object.keys(state.dates).sort((a, b) => a.localeCompare(b));
     $('dates-empty').hidden = days.length > 0;
     for (const day of days) {
       const li = el('li', {}, el('span', { class: 'list-text', text: `${day} — ${describeWindows(state.dates[day])}` }));
@@ -223,12 +226,18 @@
 
   const describeBlock = (b) => {
     if (b.weekday) {
-      const parity = b.parity ? `, ${t(`web_booking_parity_${b.parity}`).toLowerCase()}` : '';
+      const parityLabel = b.parity ? t(`web_booking_parity_${b.parity}`).toLowerCase() : '';
+      const parity = parityLabel ? `, ${parityLabel}` : '';
       return `${dayName(b.weekday)} ${b.start}–${b.end}${parity}`;
     }
     const [sd, st] = [b.start.slice(0, 10), b.start.slice(11, 16)];
     const [ed, et] = [b.end.slice(0, 10), b.end.slice(11, 16)];
     return sd === ed ? `${sd} ${st}–${et}` : `${sd} ${st} – ${ed} ${et}`;
+  };
+
+  const removeBlockAt = (index) => {
+    const blocks = state.blocks.filter((_, j) => j !== index);
+    saveWith('once-status', () => post('schedule', { blocks }));
   };
 
   const renderBlocks = () => {
@@ -237,9 +246,7 @@
     $('blocks-empty').hidden = state.blocks.length > 0;
     state.blocks.forEach((b, i) => {
       const li = el('li', {}, el('span', { class: 'list-text', text: describeBlock(b) }));
-      li.append(removeButton(describeBlock(b), () => {
-        saveWith('once-status', () => post('schedule', { blocks: state.blocks.filter((_, j) => j !== i) }));
-      }));
+      li.append(removeButton(describeBlock(b), () => removeBlockAt(i)));
       list.append(li);
     });
   };

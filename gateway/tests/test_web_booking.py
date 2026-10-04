@@ -268,6 +268,36 @@ def test_invalid_schedule_is_400_and_stores_nothing(rig, payload):
     assert state["week"] == {} and state["blocks"] == [] and state["max_per_day"] is None
 
 
+@pytest.mark.parametrize("payload, message", [
+    ({"tz": 5}, "tz must be a text"),
+    ({"dates": []}, "dates: expected an object keyed by date"),
+    ({"max_per_day": True}, "max_per_day must be a whole number"),
+    ({"blocks": [{"start": 1, "end": "x"}]}, "blocks: expected a list of {start, end} objects"),
+])
+def test_structural_errors_name_the_problem(rig, payload, message):
+    client, _, _ = rig
+    resp = _post(client, "schedule", **payload)
+    assert resp.status_code == 400 and resp.json()["error"] == message
+
+
+def test_empty_string_clears_like_null(rig):
+    client, _, _ = rig
+    _post(client, "schedule", max_per_day=4, dates={"2030-05-01": []})
+    assert _post(client, "schedule", max_per_day="", dates="").status_code == 200
+    state = client.get("/app/api/booking?project=proj").json()
+    assert state["max_per_day"] is None and state["dates"] == {}
+
+
+def test_editing_a_type_keeps_a_custom_interval_step(rig):
+    client, _, _ = rig
+    acl = web_routes_mod._get_acl()
+    seeded = [{"slug": "kort", "name": "Kort", "duration_min": 30, "interval_min": 15, "default": True}]
+    assert booking_api.t_cal.calendar_meeting_type_set(acl, "alice", "proj", seeded)["ok"]
+    assert _post(client, "meeting-types", slug="kort", name="Kort", duration_min=45).status_code == 200
+    types = client.get("/app/api/booking?project=proj").json()["meeting_types"]
+    assert [(t["duration_min"], t["interval_min"]) for t in types] == [(45, 15)]
+
+
 def test_invalid_enabled_is_400(rig):
     client, _, _ = rig
     assert _post(client, "enabled", enabled="yes").status_code == 400

@@ -68,35 +68,54 @@ def _check_week(value, label: str) -> None:
         _check_windows(windows, f"{label}.{day}")
 
 
+def _is_window_obj(x) -> bool:
+    return isinstance(x, dict) and isinstance(x.get("start"), str) and isinstance(x.get("end"), str)
+
+
+def _check_weeks_value(value) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("weeks: expected an object with even/odd")
+    for parity, week in value.items():
+        _check_week(week, f"weeks.{parity}")
+
+
+def _check_dates_value(value) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("dates: expected an object keyed by date")
+    for day, windows in value.items():
+        _check_windows(windows, f"dates.{day}")
+
+
+def _check_blocks_value(value) -> None:
+    if not isinstance(value, list) or not all(_is_window_obj(b) for b in value):
+        raise ValueError("blocks: expected a list of {start, end} objects")
+
+
+def _check_max_per_day_value(value) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("max_per_day must be a whole number")
+
+
+_EXTRA_CHECKS = {
+    "weeks": _check_weeks_value,
+    "dates": _check_dates_value,
+    "blocks": _check_blocks_value,
+    "max_per_day": _check_max_per_day_value,
+}
+
+
 def _check_extras(body: dict) -> dict:
     """Structural checks only — range/overlap rules live in working_hours.py.
     Returns the kwargs for calendar_schedule_set; JSON null clears a key."""
     extras: dict = {}
-    for key in ("weeks", "dates", "blocks", "max_per_day"):
+    for key, check in _EXTRA_CHECKS.items():
         if key not in body:
             continue
         value = body[key]
         if value is None or value == "":
             extras[key] = _EXTRA_CLEARED[key]
             continue
-        if key == "weeks":
-            if not isinstance(value, dict):
-                raise ValueError("weeks: expected an object with even/odd")
-            for parity, week in value.items():
-                _check_week(week, f"weeks.{parity}")
-        elif key == "dates":
-            if not isinstance(value, dict):
-                raise ValueError("dates: expected an object keyed by date")
-            for day, windows in value.items():
-                _check_windows(windows, f"dates.{day}")
-        elif key == "blocks":
-            if not isinstance(value, list) or not all(
-                isinstance(b, dict) and isinstance(b.get("start"), str) and isinstance(b.get("end"), str)
-                for b in value
-            ):
-                raise ValueError("blocks: expected a list of {start, end} objects")
-        elif isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("max_per_day must be a whole number")
+        check(value)
         extras[key] = value
     return extras
 
@@ -152,6 +171,32 @@ def api_booking_get(request: Request) -> JSONResponse:
         return _bad(str(exc))
 
 
+def _check_hours_fields(body: dict) -> None:
+    if "week" in body and body["week"] is not None:
+        _check_week(body["week"], "week")
+    if "tz" in body and not isinstance(body["tz"], str):
+        raise ValueError("tz must be a text")
+
+
+def _apply_schedule(acl, user: str, project: str, body: dict, extras: dict) -> JSONResponse | None:
+    """Writes the changed parts; returns an error response for the first
+    failing write, or None when everything was stored."""
+    if "tz" in body or "week" in body:
+        current = t_cal.calendar_working_hours_get(acl, user, project)
+        result = t_cal.calendar_working_hours_set(
+            acl, user, project,
+            body.get("tz") or current.get("tz") or _DEFAULT_TZ,
+            body["week"] if body.get("week") is not None else current.get("week", {}),
+        )
+        if not result.get("ok"):
+            return _fail(result)
+    if extras:
+        result = t_cal.calendar_schedule_set(acl, user, project, **extras)
+        if not result.get("ok"):
+            return _fail(result)
+    return None
+
+
 async def api_booking_schedule_set(request: Request) -> JSONResponse:
     """POST /app/api/booking/schedule {project, tz?, week?, weeks?, dates?, blocks?,
     max_per_day?} — only the keys present are changed; null clears one."""
@@ -165,23 +210,10 @@ async def api_booking_schedule_set(request: Request) -> JSONResponse:
     acl = _get_acl()
     try:
         extras = _check_extras(body)
-        if "week" in body and body["week"] is not None:
-            _check_week(body["week"], "week")
-        if "tz" in body and not isinstance(body["tz"], str):
-            raise ValueError("tz must be a text")
-        if "tz" in body or "week" in body:
-            current = t_cal.calendar_working_hours_get(acl, user, project)
-            result = t_cal.calendar_working_hours_set(
-                acl, user, project,
-                body.get("tz") or current.get("tz") or _DEFAULT_TZ,
-                body["week"] if body.get("week") is not None else current.get("week", {}),
-            )
-            if not result.get("ok"):
-                return _fail(result)
-        if extras:
-            result = t_cal.calendar_schedule_set(acl, user, project, **extras)
-            if not result.get("ok"):
-                return _fail(result)
+        _check_hours_fields(body)
+        failure = _apply_schedule(acl, user, project, body, extras)
+        if failure is not None:
+            return failure
         return JSONResponse(_state(acl, user, project))
     except AccessDenied:
         return _forbidden()
@@ -208,6 +240,26 @@ async def api_booking_enabled_set(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+def _merge_meeting_type(types: list[dict], body: dict, name: str, minutes: int) -> list[dict]:
+    """The full type list with the posted entry added or replaced in place."""
+    existing = next((t for t in types if t["slug"] == body.get("slug")), None)
+    slug = existing["slug"] if existing else _slugify(name, {t["slug"] for t in types})
+    entry = {
+        "slug": slug, "name": name.strip(), "duration_min": minutes,
+        "interval_min": minutes,
+        "default": bool(body.get("default", existing["default"] if existing else False)),
+    }
+    if existing and existing["interval_min"] != existing["duration_min"]:
+        entry["interval_min"] = existing["interval_min"]  # keep a custom step set elsewhere
+    merged = [
+        entry if t["slug"] == slug else (dict(t, default=False) if entry["default"] else t)
+        for t in types
+    ]
+    if not existing:
+        merged.append(entry)
+    return merged
+
+
 async def api_booking_meeting_type_set(request: Request) -> JSONResponse:
     """POST /app/api/booking/meeting-types {project, name, duration_min, slug?, default?}
     — adds a session length, or replaces the one with the given slug."""
@@ -227,21 +279,7 @@ async def api_booking_meeting_type_set(request: Request) -> JSONResponse:
     acl = _get_acl()
     try:
         types = t_cal.calendar_meeting_type_list(acl, user, project)
-        existing = next((t for t in types if t["slug"] == body.get("slug")), None)
-        slug = existing["slug"] if existing else _slugify(name, {t["slug"] for t in types})
-        entry = {
-            "slug": slug, "name": name.strip(), "duration_min": minutes,
-            "interval_min": minutes,
-            "default": bool(body.get("default", existing["default"] if existing else False)),
-        }
-        if existing and existing["interval_min"] != existing["duration_min"]:
-            entry["interval_min"] = existing["interval_min"]  # keep a custom step set elsewhere
-        merged = [
-            entry if t["slug"] == slug else (dict(t, default=False) if entry["default"] else t)
-            for t in types
-        ]
-        if not existing:
-            merged.append(entry)
+        merged = _merge_meeting_type(types, body, name, minutes)
         result = t_cal.calendar_meeting_type_set(acl, user, project, merged)
     except AccessDenied:
         return _forbidden()
