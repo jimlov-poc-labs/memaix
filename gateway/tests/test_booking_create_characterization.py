@@ -238,7 +238,7 @@ def test_happy_path_response_and_every_dependency_call(rig):
         ACL, "proj", rig.link, "Möte med Eva", rig.event, "Eva", "eva@example.com", "Prata",
         START, END, "Europe/Stockholm", "tok123", None,
     ))
-    assert rig.one("manage_url") == ("manage_url", "tok123", None)
+    assert rig.one("manage_url") == ("manage_url", "tok123", rig.link)
 
 
 def test_critical_section_holds_lock_but_email_does_not(rig):
@@ -616,3 +616,10 @@ def test_json_null_body_is_invalid_body(rig):
     resp = rig.client.post("/book/slug1", content=b"null", headers={"content-type": "application/json"})
     assert (resp.status_code, resp.json()) == (400, {"error": "invalid_body"})
     assert "turnstile" not in rig.names()
+
+
+def test_manage_url_uses_frontend_url_when_link_sets_one():
+    from memaix_gateway.booking.routes import _manage_url
+
+    link = {"manage_frontend_url": "https://site.example/boka/"}
+    assert _manage_url("tok", link) == "https://site.example/boka?token=tok"

@@ -765,7 +765,7 @@ async def _create_booking(request: Request, link: dict, client_ip: str) -> JSONR
         req.visitor_tz, manage_token,
         meeting_detail["display_text"] if meeting_detail is not None else None,
     )
-    return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end"), "manage_url": _manage_url(manage_token)})
+    return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end"), "manage_url": _manage_url(manage_token, link)})
 
 
 @_with_cors_on_error

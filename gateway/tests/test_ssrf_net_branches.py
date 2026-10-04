@@ -62,10 +62,16 @@ def test_is_blocked_ip_false_for_public(ip):
     assert _is_blocked_ip(ip) is False
 
 
-def test_is_blocked_ip_cgnat_is_not_blocked():
-    # Locked as-is (potential gap): 100.64.0.0/10 (carrier-grade NAT, also
-    # used by Tailscale) is neither "private" nor "reserved" in the stdlib.
-    assert _is_blocked_ip("100.64.0.1") is False
+@pytest.mark.parametrize(
+    "ip", ["100.64.0.1", "100.127.255.254", "100.100.100.100", "::ffff:100.64.0.1"]
+)
+def test_is_blocked_ip_cgnat_is_blocked(ip):
+    assert _is_blocked_ip(ip) is True
+
+
+@pytest.mark.parametrize("ip", ["100.63.255.255", "100.128.0.0"])
+def test_is_blocked_ip_just_outside_cgnat_is_public(ip):
+    assert _is_blocked_ip(ip) is False
 
 
 # ---- shape checks ---------------------------------------------------------

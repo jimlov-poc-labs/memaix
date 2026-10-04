@@ -21,12 +21,8 @@ URL = "https://calendar.example.com/secret/basic.ics"
 
 
 def _cl(name: str, value: str) -> str:
-    """How the adapter currently renders a property: it calls str() on the
-    vobject ContentLine (not .value), which yields ``<NAME{params}value>``.
-    This is a known bug (ids, titles, locations are wrapped like this and
-    TRANSP is never recognised); the tests lock today's output so the
-    refactor can be proven behaviour-neutral. Fixing it is a separate change."""
-    return f"<{name}{{}}{value}>"
+    """How the adapter renders a property: the vobject ContentLine's .value, stripped."""
+    return value.strip()
 
 
 def _ics(*events: str, extra: str = "") -> str:
@@ -223,12 +219,10 @@ def test_tzid_event_keeps_its_offset(http):
 
 
 @pytest.mark.parametrize("transp,busy", [
-    # Locked as-is (bug): the TRANSP value is read via str(ContentLine), so
-    # "<TRANSP{}TRANSPARENT>" never equals "TRANSPARENT" and every event is busy.
-    ("TRANSPARENT", True), ("transparent", True), (" Transparent ", True),
+    ("TRANSPARENT", False), ("transparent", False), (" Transparent ", False),
     ("OPAQUE", True), ("opaque", True), ("", True),
 ])
-def test_transp_is_currently_ignored_so_events_are_always_busy(transp, busy, http):
+def test_transp_transparent_means_free(transp, busy, http):
     line = f"\r\nTRANSP:{transp}" if transp else ""
     http.resp = _Resp(_ics(f"UID:e1\r\nDTSTART:20260106T100000Z{line}"))
     (ev,) = _ICalAdapter(URL)._fetch()

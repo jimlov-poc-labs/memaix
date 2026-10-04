@@ -237,8 +237,13 @@ class _PerUserGoogleAdapter:
 # ------------------------------------------------------------------
 
 
+def _ical_prop(component, attr: str) -> str:
+    prop = getattr(component, attr, None)
+    return "" if prop is None else str(prop.value).strip()
+
+
 def _ical_uid(component) -> str:
-    return str(getattr(component, "uid", "")).strip()
+    return _ical_prop(component, "uid")
 
 
 def _ical_datetime(value):
@@ -255,7 +260,7 @@ def _ical_iso(value) -> str:
 
 
 def _ical_text(component, attr: str) -> str:
-    return str(getattr(component, attr, "")).strip()
+    return _ical_prop(component, attr)
 
 
 def _ical_event(component, index: int, series_uids: set) -> dict:
