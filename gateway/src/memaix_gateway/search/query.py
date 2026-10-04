@@ -115,6 +115,70 @@ def _memory_status(acl, project: str, ref: str) -> str:
         return "hypotes"
 
 
+def _search_cfg(cfg: dict | None) -> dict:
+    return ((cfg or {}).get("memaix", {}) or {}).get("search", {})
+
+
+def _lexical_hits(store, scoped_by_source: dict[str, list[str]], query: str, limit: int) -> list[dict]:
+    hits: list[dict] = []
+    for st in _SOURCE_TYPES:
+        ps = scoped_by_source[st]
+        if ps:
+            hits.extend(store.fts_search(ps, [st], query, limit * 3))
+    return hits
+
+
+def _semantic_hits(
+    store, embedder, scoped_by_source: dict[str, list[str]], query: str, limit: int, max_candidates: int,
+) -> list[dict]:
+    query_vec = embedder.embed([query])[0]
+    hits: list[dict] = []
+    for st in _SOURCE_TYPES:
+        ps = scoped_by_source[st]
+        if not ps:
+            continue
+        candidates = store.candidates(ps, [st], max_candidates)
+        hits.extend(_cosine_topk(query_vec, candidates, limit * 3))
+    return hits
+
+
+def _email_hits(acl, user: str, projects: list[str] | None, query: str, email_search) -> list[dict]:
+    mail_projects = _scoped_projects(acl, user, projects, "mail")
+    # email_search itself requires 'collaborator' (see tools/email.py) —
+    # 'mail' isn't in _NEED_FOR_SOURCE, so gate it explicitly here.
+    mail_projects = [p for p in mail_projects if _rank(acl.grants(user).get(p)) >= _rank("collaborator")]
+    hits: list[dict] = []
+    for project in mail_projects:
+        if not acl.resource(project, "mailbox"):
+            continue
+        try:
+            msgs = email_search(acl, user, project, query, 5)
+        except Exception:
+            continue
+        for i, m in enumerate(msgs):
+            hits.append({
+                "project": project, "source_type": "email", "ref": str(m.get("id", i)),
+                "title": m.get("subject", ""), "text": m.get("subject", ""),
+            })
+    return hits
+
+
+def _to_result(acl, item: dict) -> dict:
+    hit = {
+        "project": item["project"],
+        "source_type": item["source_type"],
+        "ref": item["ref"],
+        "title": item.get("title", ""),
+        "snippet": (item.get("text") or "")[:200],
+        "score": round(item.get("score", 0.0), 6),
+    }
+    # Minnestrappan: memory-träffar bär sin status så en hypotes aldrig
+    # presenteras som faktum i sökresultat (SELF-IMPROVING-SYSTEM Fas B).
+    if item["source_type"] == "memory":
+        hit["status"] = _memory_status(acl, item["project"], item["ref"])
+    return hit
+
+
 def search_all(
     acl, user: str, cfg: dict | None, store, embedder,
     query: str, projects: list[str] | None = None, limit: int = 8,
@@ -128,70 +192,30 @@ def search_all(
     as email_list). Left None by default (opt-in — no live network calls
     unless the caller wires one up).
     """
-    max_candidates = ((cfg or {}).get("memaix", {}) or {}).get("search", {}).get("max_candidates", 500)
+    search_cfg = _search_cfg(cfg)
+    max_candidates = search_cfg.get("max_candidates", 500)
 
     scoped_by_source = {st: _scoped_projects(acl, user, projects, st) for st in _SOURCE_TYPES}
     all_scoped = sorted({p for ps in scoped_by_source.values() for p in ps})
 
-    lexical_hits: list[dict] = []
-    for st in _SOURCE_TYPES:
-        ps = scoped_by_source[st]
-        if ps:
-            lexical_hits.extend(store.fts_search(ps, [st], query, limit * 3))
+    lexical_hits = _lexical_hits(store, scoped_by_source, query, limit)
 
-    semantic_hits: list[dict] = []
     semantic_used = embedder is not None
+    semantic_hits: list[dict] = []
     if semantic_used:
-        query_vec = embedder.embed([query])[0]
-        for st in _SOURCE_TYPES:
-            ps = scoped_by_source[st]
-            if not ps:
-                continue
-            candidates = store.candidates(ps, [st], max_candidates)
-            semantic_hits.extend(_cosine_topk(query_vec, candidates, limit * 3))
+        semantic_hits = _semantic_hits(store, embedder, scoped_by_source, query, limit, max_candidates)
 
     email_hits: list[dict] = []
     if _email_search is not None:
-        mail_projects = _scoped_projects(acl, user, projects, "mail")
-        # email_search itself requires 'collaborator' (see tools/email.py) —
-        # 'mail' isn't in _NEED_FOR_SOURCE, so gate it explicitly here.
-        mail_projects = [p for p in mail_projects if _rank(acl.grants(user).get(p)) >= _rank("collaborator")]
-        for project in mail_projects:
-            if not acl.resource(project, "mailbox"):
-                continue
-            try:
-                msgs = _email_search(acl, user, project, query, 5)
-            except Exception:
-                continue
-            for i, m in enumerate(msgs):
-                email_hits.append({
-                    "project": project, "source_type": "email", "ref": str(m.get("id", i)),
-                    "title": m.get("subject", ""), "text": m.get("subject", ""),
-                })
+        email_hits = _email_hits(acl, user, projects, query, _email_search)
 
     rank_lists = [lst for lst in (lexical_hits, semantic_hits, email_hits) if lst]
     fused = _reciprocal_rank_fusion(rank_lists) if rank_lists else []
 
-    decay_lambda = ((cfg or {}).get("memaix", {}) or {}).get("search", {}).get("decay_lambda", 0.0)
+    decay_lambda = search_cfg.get("decay_lambda", 0.0)
     if decay_lambda:
         fused = _apply_decay(fused, store, decay_lambda)
 
-    results = []
-    for item in fused:
-        hit = {
-            "project": item["project"],
-            "source_type": item["source_type"],
-            "ref": item["ref"],
-            "title": item.get("title", ""),
-            "snippet": (item.get("text") or "")[:200],
-            "score": round(item.get("score", 0.0), 6),
-        }
-        # Minnestrappan: memory-träffar bär sin status så en hypotes aldrig
-        # presenteras som faktum i sökresultat (SELF-IMPROVING-SYSTEM Fas B).
-        if item["source_type"] == "memory":
-            hit["status"] = _memory_status(acl, item["project"], item["ref"])
-        results.append(hit)
-        if len(results) >= limit:
-            break
-
+    # limit <= 0 returns one hit (the old loop appended before checking the cap).
+    results = [_to_result(acl, item) for item in fused[:max(limit, 1)]]
     return {"results": results, "semantic": semantic_used, "projects_searched": all_scoped}
