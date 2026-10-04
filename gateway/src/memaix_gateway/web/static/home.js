@@ -103,7 +103,7 @@ async function homeDashboard() {
   if (!me) return;
   homeRenderTodo(me);
   const grid = document.getElementById('projects-grid');
-  for (const project of me.projects) grid.append(homeProjectCard(me, project));
+  for (const project of me.projects ?? []) grid.append(homeProjectCard(me, project));
   await homeRenderActivity();
 }
 
@@ -117,7 +117,7 @@ async function homeTimeline() {
   const render = async () => {
     feed.textContent = '';
     let actions = [];
-    try { actions = await api('GET', '/app/api/timeline?limit=20'); } catch { /* off */ }
+    try { actions = (await api('GET', '/app/api/timeline?limit=20')) ?? []; } catch { /* off */ }
     document.getElementById('timeline-empty').hidden = actions.length > 0;
     for (const action of actions) {
       const row = document.createElement('div');
@@ -132,6 +132,7 @@ async function homeTimeline() {
         btn.addEventListener('click', async () => {
           try {
             const res = await api('POST', `/app/api/timeline/${encodeURIComponent(action.id)}/undo`);
+            if (!res) return; // 401: login redirect in flight
             toast(res.ok === false ? (res.error ?? t('web_timeline_undo_failed')) : t('web_timeline_undone'),
                   res.ok === false ? 'error' : 'success');
             render();

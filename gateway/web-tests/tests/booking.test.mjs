@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flush, jsonResponse, loadApp, mockFetch, mountPage, runPage } from './helpers.mjs';
 
 beforeAll(loadApp);
@@ -411,6 +411,51 @@ describe('blocks', () => {
     await flush();
     expect(lastPost(f).blocks.at(-1)).toEqual({ weekday: 'sat', start: '10:00', end: '11:00', parity: 'odd' });
     expect($('repeat-status').textContent).toBe('Sparat');
+  });
+});
+
+describe('unsaved edits survive saving another section', () => {
+  it('keeps half-edited hours when the on/off switch is saved', async () => {
+    state.week = { mon: [{ start: '09:00', end: '17:00' }] };
+    const f = await open();
+    const from = document.querySelector('.week-grid .window-row input[type=time]');
+    input(from, '10:30');
+    $('booking-enabled').checked = true;
+    submit('onoff-form');
+    await flush();
+    expect(lastPost(f, 'enabled')).toEqual({ project: 'alpha', enabled: true });
+    expect(document.querySelector('.week-grid .window-row input[type=time]').value).toBe('10:30');
+    submit('hours-form');
+    await flush();
+    expect(lastPost(f).week.mon).toEqual([{ start: '10:30', end: '17:00' }]);
+  });
+
+  it('keeps an unsaved cap and on/off when the hours are saved, then shows the server hours', async () => {
+    const f = await open();
+    type('booking-cap-input', '7');
+    $('booking-enabled').checked = true;
+    submit('hours-form');
+    await flush();
+    expect($('booking-cap-input').value).toBe('7');
+    expect($('booking-enabled').checked).toBe(true);
+    expect(f.calls.at(-1).key).toBe('GET /app/api/booking');
+  });
+});
+
+describe('session expired while saving', () => {
+  it('shows no toast or status when both the save and the refresh are answered with 401', async () => {
+    let gets = 0;
+    await open({ routes: server({
+      'GET /app/api/booking': () => (gets++ === 0 ? jsonResponse(state) : jsonResponse({}, 401)),
+      'POST /app/api/booking/enabled': () => jsonResponse({}, 401),
+    }) });
+    vi.stubGlobal('window', { location: '' }); // api() assigns window.location on 401; keep jsdom's real one intact
+    $('booking-enabled').checked = true;
+    submit('onoff-form');
+    await flush();
+    expect(gets).toBe(2);
+    expect(toasts()).toEqual([]);
+    expect($('onoff-status').textContent).toBe('');
   });
 });
 

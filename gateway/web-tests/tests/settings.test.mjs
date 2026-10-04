@@ -47,6 +47,13 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+describe('settings: incomplete /app/api/me', () => {
+  it('loads without a projects list', async () => {
+    const f = await open({ me: {} });
+    expect(f.calls.map((c) => c.key)).toContain('GET /app/api/accounts');
+  });
+});
+
 describe('settings: not logged in', () => {
   it('does nothing without a session (brief page still skipped by missing fetch)', async () => {
     mountPage('settings');

@@ -99,6 +99,18 @@ describe('memory: tree', () => {
   });
 });
 
+describe('memory: incomplete /app/api/me', () => {
+  it.each([
+    ['no role_map', { projects: ['alpha'] }],
+    ['no projects', { role_map: {} }],
+    ['neither', {}],
+  ])('still lists notes when the profile has %s', async (_n, me) => {
+    const f = await open({ me });
+    expect(f.calls.map((c) => c.key)).toContain('GET /app/api/memory/notes');
+    expect(links().map((a) => a.textContent)).toEqual(['a.md', 'dir/b.md']);
+  });
+});
+
 describe('memory: viewer', () => {
   it('opens a note, renders its markdown, shows the filename and the history button', async () => {
     const f = await open({ routes: { 'GET /app/api/memory/note': { content: '# Rubrik\n\ntext **fet**' } } });
