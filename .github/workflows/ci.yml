@@ -22,6 +22,16 @@ jobs:
       - name: Testsvit
         working-directory: gateway
         run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gateway/web-tests/package-lock.json
+      - name: Webb-JS-tester (vitest)
+        working-directory: gateway/web-tests
+        run: |
+          npm ci
+          npm test
       - name: Lint (ruff)
         working-directory: gateway
         run: python -m ruff check src/memaix_gateway
