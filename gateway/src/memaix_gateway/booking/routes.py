@@ -1041,6 +1041,75 @@ async def booking_manage_get(request: Request) -> JSONResponse:
     })
 
 
+def _parse_reschedule_window(request: Request, body: dict) -> tuple[datetime, datetime]:
+    """(start, end) from a reschedule body, or raise _Refused for a 400."""
+    start = _parse_dt(str(body.get("start") or ""))
+    end = _parse_dt(str(body.get("end") or ""))
+    if start is None or end is None or end <= start:
+        raise _Refused(_json(request, {"error": "invalid_body"}, status_code=400))
+    duration = end - start
+    if not (timedelta(minutes=_MIN_DURATION_MIN) <= duration <= timedelta(minutes=_MAX_DURATION_MIN)):
+        raise _Refused(_json(request, {"error": "invalid_duration"}, status_code=400))
+    return start, end
+
+
+def _move_event(request, acl, row, start, end, dav, write_dav) -> dict:
+    """Race-critical part of a reschedule: TOCTOU re-check + calendar_update
+    under the per-host lock. Returns the updated event; raises _Refused."""
+    project, host_user, event_id = row["project"], row["host_user"], row["event_id"]
+    with _BOOKING_LOCKS[(project, host_user)]:
+        # Same TOCTOU re-check booking_create does — a reschedule races
+        # other bookers for the new window exactly like a fresh booking.
+        still_free = t_cal.calendar_find_free(
+            acl, host_user, project, int((end - start).total_seconds() // 60),
+            start.isoformat(), (end + timedelta(minutes=1)).isoformat(), _dav=dav,
+            _exclude_event_id=event_id,
+        )
+        if not any(_slot_covers(s, start, end) for s in still_free):
+            raise _Refused(_json(request, {"error": "slot_unavailable"}, status_code=409))
+
+        return t_cal.calendar_update(
+            acl, host_user, project, event_id,
+            start=start.isoformat(), end=end.isoformat(),
+            _dav=write_dav, _confirmed=True,
+        )
+
+
+async def _reschedule_booking(request: Request, row: dict) -> JSONResponse:
+    body = await _read_json_body(request)
+    if not isinstance(body, dict):
+        raise _Refused(_json(request, {"error": "invalid_body"}, status_code=400))
+    start, end = _parse_reschedule_window(request, body)
+
+    link = get_link(row["slug"]) if row["slug"] else None
+    if link is None:
+        raise _Refused(_json(request, {"error": "not_found"}, status_code=404))
+
+    acl = _get_acl()
+    # See booking_create for why the free-check and the write need two
+    # different adapters.
+    dav, write_dav = _resolve_booking_davs(request, row["project"], row["host_user"], acl)
+    event = _move_event(request, acl, row, start, end, dav, write_dav)
+
+    get_consent_store().update_booking(
+        row["id"], event_id=row["event_id"], meeting_start=int(start.timestamp()),
+        meeting_end=int(end.timestamp()), status="rescheduled",
+    )
+
+    # The Zoom meeting itself isn't moved (no zoom meeting id is stored,
+    # only the resolved join_url — card 85854d2c's follow-up if this turns
+    # out to matter). Google Meet needs nothing: Google preserves
+    # conferenceData on a PATCH that doesn't touch it. Phone needs nothing.
+    # The stored link/number is still shown to the visitor either way.
+    title = event.get("title") or link.get("title_template", "Möte")
+    meeting_detail_line = _format_meeting_detail_line(row.get("meeting_form_provider"), row.get("meeting_form_detail"))
+    _send_reschedule_emails(
+        acl, row["project"], link, title, event, row["visitor_email"], start, end, request.path_params["token"],
+        meeting_detail_line, row.get("meeting_form_detail"),
+    )
+    return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end")})
+
+
 @_with_cors_on_error
 async def booking_reschedule(request: Request) -> JSONResponse:
     """POST /booking/{token}/reschedule — {start, end}. The token is the
@@ -1056,76 +1125,9 @@ async def booking_reschedule(request: Request) -> JSONResponse:
         return _json(request, {"error": "already_cancelled"}, status_code=409)
 
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        return _json(request, {"error": "invalid_body"}, status_code=400)
-
-    start = _parse_dt(str(body.get("start") or ""))
-    end = _parse_dt(str(body.get("end") or ""))
-    if start is None or end is None or end <= start:
-        return _json(request, {"error": "invalid_body"}, status_code=400)
-    duration = end - start
-    if not (timedelta(minutes=_MIN_DURATION_MIN) <= duration <= timedelta(minutes=_MAX_DURATION_MIN)):
-        return _json(request, {"error": "invalid_duration"}, status_code=400)
-
-    link = get_link(row["slug"]) if row["slug"] else None
-    if link is None:
-        return _json(request, {"error": "not_found"}, status_code=404)
-
-    acl = _get_acl()
-    project, host_user, event_id = row["project"], row["host_user"], row["event_id"]
-    try:
-        # See booking_create for why the free-check and the write need two
-        # different adapters: _resolve_dav_filtered's merged read-only view
-        # for the former, a real single writable adapter for the latter.
-        dav = _resolve_dav_filtered(project, host_user, acl)
-        write_dav = _resolve_dav(project, host_user, write=True)
-    except CalendarAuthRequired:
-        return _json(request, {"error": "not_found"}, status_code=404)
-
-    with _BOOKING_LOCKS[(project, host_user)]:
-        # Same TOCTOU re-check booking_create does — a reschedule races
-        # other bookers for the new window exactly like a fresh booking.
-        still_free = t_cal.calendar_find_free(
-            acl, host_user, project, int(duration.total_seconds() // 60),
-            start.isoformat(), (end + timedelta(minutes=1)).isoformat(), _dav=dav,
-            _exclude_event_id=event_id,
-        )
-
-        def _covers(s: dict) -> bool:
-            s_start, s_end = _parse_dt(s.get("start", "")), _parse_dt(s.get("end", ""))
-            if s_start is None or s_end is None:
-                return False
-            return s_start <= start and s_end >= end
-
-        if not any(_covers(s) for s in still_free):
-            return _json(request, {"error": "slot_unavailable"}, status_code=409)
-
-        event = t_cal.calendar_update(
-            acl, host_user, project, event_id,
-            start=start.isoformat(), end=end.isoformat(),
-            _dav=write_dav, _confirmed=True,
-        )
-
-    get_consent_store().update_booking(
-        row["id"], event_id=event_id, meeting_start=int(start.timestamp()),
-        meeting_end=int(end.timestamp()), status="rescheduled",
-    )
-
-    # The Zoom meeting itself isn't moved (no zoom meeting id is stored,
-    # only the resolved join_url — card 85854d2c's follow-up if this turns
-    # out to matter). Google Meet needs nothing: Google preserves
-    # conferenceData on a PATCH that doesn't touch it. Phone needs nothing.
-    # The stored link/number is still shown to the visitor either way.
-    title = event.get("title") or link.get("title_template", "Möte")
-    meeting_detail_line = _format_meeting_detail_line(row.get("meeting_form_provider"), row.get("meeting_form_detail"))
-    _send_reschedule_emails(
-        acl, project, link, title, event, row["visitor_email"], start, end, request.path_params["token"],
-        meeting_detail_line, row.get("meeting_form_detail"),
-    )
-    return _json(request, {"ok": True, "start": event.get("start"), "end": event.get("end")})
+        return await _reschedule_booking(request, row)
+    except _Refused as refusal:
+        return refusal.response
 
 
 @_with_cors_on_error
