@@ -470,6 +470,24 @@ def test_booking_page_host_controls_schedule(alice_page):
     assert "mon" in state["week"]
 
 
+def test_booking_page_date_exception_add_and_remove(alice_page):
+    page = alice_page
+    page.goto("/app/booking?project=demo")
+    expect(page.locator("#hours-grids .week-grid")).to_have_count(1)
+
+    page.fill("#date-day", "2031-05-06")
+    page.select_option("#date-kind", "closed")
+    page.locator("#dates-form button[type=submit]").click()
+    expect(page.locator("#dates-list li")).to_have_count(1)
+    state = page.request.get("/app/api/booking?project=demo").json()
+    assert state["dates"] == {"2031-05-06": []}
+
+    page.get_by_role("button", name="Remove 2031-05-06").click()
+    expect(page.locator("#dates-list li")).to_have_count(0)
+    state = page.request.get("/app/api/booking?project=demo").json()
+    assert state["dates"] == {}
+
+
 # ---------------------------------------------------------------------------
 # Mobile layout
 # ---------------------------------------------------------------------------
