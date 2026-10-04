@@ -27,6 +27,7 @@ from email.utils import parsedate_to_datetime
 from typing import Iterable, Protocol, cast
 
 _EPOCH = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+_UID_PREFIX = "UID "
 
 
 def source_address(label: str) -> str:
@@ -172,26 +173,54 @@ class MultiMailBackend:
 
     def fetch(self, criteria: str = "ALL", *, mark_seen: bool = False, limit: int | None = None):
         self.source_errors = []
-        if criteria.startswith("UID "):
-            wanted = criteria[len("UID "):]
-            if self._SEP not in wanted:
-                # No label prefix — can't tell which source owns it. Ask every
-                # source; first match wins (mirrors "search everywhere" rather
-                # than silently returning nothing).
-                for label, adapter in self._sources:
-                    result = list(adapter.fetch(f"UID {wanted}", mark_seen=mark_seen))
-                    if result:
-                        return list(self._labeled(label, result))
-                return []
-            # The FIRST "|": a label never contains one, but the source's own
-            # id may (AllFoldersMailBox ids are "{folder}|{uid}").
-            label, _, real_uid = wanted.partition(self._SEP)
-            for src_label, adapter in self._sources:
-                if src_label == label:
-                    result = list(adapter.fetch(f"UID {real_uid}", mark_seen=mark_seen))
+        if criteria.startswith(_UID_PREFIX):
+            return self._fetch_uid(criteria[len(_UID_PREFIX):], mark_seen)
+        return self._fetch_search(criteria, mark_seen, limit)
+
+    @staticmethod
+    def _fetch_uid_from(adapter: _MailSource, uid: str, mark_seen: bool) -> list:
+        return list(adapter.fetch(f"{_UID_PREFIX}{uid}", mark_seen=mark_seen))
+
+    def _fetch_uid(self, wanted: str, mark_seen: bool) -> list:
+        if self._SEP not in wanted:
+            # No label prefix — can't tell which source owns it. Ask every
+            # source; first match wins (mirrors "search everywhere" rather
+            # than silently returning nothing).
+            for label, adapter in self._sources:
+                result = self._fetch_uid_from(adapter, wanted, mark_seen)
+                if result:
                     return list(self._labeled(label, result))
             return []
+        # The FIRST "|": a label never contains one, but the source's own
+        # id may (AllFoldersMailBox ids are "{folder}|{uid}").
+        label, _, real_uid = wanted.partition(self._SEP)
+        for src_label, adapter in self._sources:
+            if src_label == label:
+                result = self._fetch_uid_from(adapter, real_uid, mark_seen)
+                return list(self._labeled(label, result))
+        return []
 
+    def _fetch_source(self, label: str, adapter: _MailSource, criteria: str, mark_seen: bool, limit) -> list:
+        set_exc = self._set_errors.get(label)
+        if set_exc is not None:
+            raise set_exc
+        return list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
+
+    def _relink_errors(self) -> list[dict]:
+        return [
+            {"source": label, "error": f"needs_relink: {account} måste kopplas om"}
+            for label, account in self._relink_pending
+        ]
+
+    @staticmethod
+    def _partial_errors(label: str, adapter: _MailSource) -> list[dict]:
+        """A source may itself be partial (AllFoldersMailBox: one folder failed)."""
+        return [
+            {"source": f"{label} {err.get('source', '')}".strip(), "error": err.get("error", "")}
+            for err in getattr(adapter, "source_errors", None) or []
+        ]
+
+    def _fetch_search(self, criteria: str, mark_seen: bool, limit: int | None) -> list:
         # Search/list criteria — fan out to every source and merge. Each
         # source returns up to `limit`, and the merge is ordered newest first
         # BEFORE it is cut to `limit`: concatenating and slicing would let
@@ -202,27 +231,19 @@ class MultiMailBackend:
         # `source_errors` (tools/email.py turns that into a warning next to
         # the hits). Only when EVERY source failed is the first error raised.
         merged = []
-        errors: list[dict] = [
-            {"source": label, "error": f"needs_relink: {account} måste kopplas om"}
-            for label, account in self._relink_pending
-        ]
+        errors = self._relink_errors()
         first_exc: Exception | None = None
         failed = 0
         for label, adapter in self._sources:
             try:
-                set_exc = self._set_errors.get(label)
-                if set_exc is not None:
-                    raise set_exc
-                result = list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
+                result = self._fetch_source(label, adapter, criteria, mark_seen, limit)
             # Reported in source_errors, raised if nothing worked.
             except Exception as exc:  # noqa: BLE001
                 first_exc = first_exc or exc
                 failed += 1
                 errors.append({"source": label, "error": str(exc) or type(exc).__name__})
                 continue
-            # A source may itself be partial (AllFoldersMailBox: one folder failed).
-            for err in getattr(adapter, "source_errors", None) or []:
-                errors.append({"source": f"{label} {err.get('source', '')}".strip(), "error": err.get("error", "")})
+            errors.extend(self._partial_errors(label, adapter))
             merged.extend(self._labeled(label, result))
         if first_exc is not None and failed == len(self._sources):
             raise first_exc
