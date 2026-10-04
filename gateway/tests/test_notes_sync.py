@@ -239,3 +239,32 @@ def test_one_call_can_mix_created_and_updates(acl, link_store):
     assert result["updated_from_notes"] == [p_nc]
     assert result["updated_from_memory"] == [p_mx]
     assert result["conflicts"] == []
+
+
+def test_equal_timestamp_to_baseline_is_not_a_change(acl, link_store):
+    _linked_note(acl, link_store, synced_at=_iso(BASELINE))
+    notes = _FakeNotes({"1": {"id": "1", "title": "Ideas", "content": "annan text",
+                               "last_modified": _epoch(BASELINE)}})  # exakt = baseline
+    result = notes_sync(acl, "alice", "proj", _notes=notes, link_store=link_store)
+    assert result == {"created": [], "updated_from_notes": [], "updated_from_memory": [], "conflicts": []}
+    assert t_memory.memory_read(acl, "alice", "proj", "notes/ideas.md")["content"] == "brainstorm list"
+
+
+def test_every_sync_outcome_restamps_the_link_so_it_is_idempotent(acl, link_store):
+    # notes -> memory
+    p1 = _linked_note(acl, link_store, path="notes/a.md", content="a", nc_id="1")
+    # memory -> notes
+    p2 = _linked_note(acl, link_store, path="notes/b.md", content="b", nc_id="2")
+    t_memory.memory_write(acl, "alice", "proj", p2, "b2")
+    _pin_memory(acl, p2, BASELINE + timedelta(days=2))
+    notes = _FakeNotes({
+        "1": {"id": "1", "title": "A", "content": "a-nc", "last_modified": _epoch(BASELINE + timedelta(days=1))},
+        "2": {"id": "2", "title": "B", "content": "b", "last_modified": 0},
+    })
+    first = notes_sync(acl, "alice", "proj", _notes=notes, link_store=link_store)
+    assert first["updated_from_notes"] == [p1] and first["updated_from_memory"] == [p2]
+    stamps = {l["nc_note_id"]: l["synced_at"] for l in link_store.list_links("proj")}
+    assert all(v != _iso(BASELINE) for v in stamps.values())
+    # andra körningen: baseline har flyttats fram -> inget mer att göra
+    second = notes_sync(acl, "alice", "proj", _notes=notes, link_store=link_store)
+    assert second == {"created": [], "updated_from_notes": [], "updated_from_memory": [], "conflicts": []}
