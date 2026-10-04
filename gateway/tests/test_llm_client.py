@@ -200,3 +200,112 @@ def test_google_has_no_tool_support_in_v1(post_via):
     out = c.complete([{"role": "user", "content": "x"}],
                      tools=[{"name": "t", "description": "", "input_schema": {}}])
     assert out["content"] == "svar" and out["tool_calls"] == []
+
+
+# ───────── Karakterisering av _anthropic / _openai_compatible (S3776-sanering) ─────────
+
+
+def test_anthropic_assistant_text_and_calls_become_blocks_in_order(post_via):
+    seen = post_via({"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+                     "usage": {}})
+    c = LLMClient({"provider": "anthropic", "name": "m"}, None)
+    out = c.complete([
+        {"role": "system", "content": "s1"},
+        {"role": "system", "content": "s2"},
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "jag kollar",
+         "tool_calls": [{"id": "1", "name": "x", "args": {"a": 1}},
+                        {"id": "2", "name": "y", "args": {}}]},
+        {"role": "assistant", "content": "ren text"},
+    ])
+    body = seen["body"]
+    assert body["system"] == "s1\ns2"
+    assert body["messages"][0] == {"role": "user", "content": "q"}
+    assert body["messages"][1] == {"role": "assistant", "content": [
+        {"type": "text", "text": "jag kollar"},
+        {"type": "tool_use", "id": "1", "name": "x", "input": {"a": 1}},
+        {"type": "tool_use", "id": "2", "name": "y", "input": {}},
+    ]}
+    assert body["messages"][2] == {"role": "assistant", "content": "ren text"}
+    assert seen["headers"]["x-api-key"] == ""  # saknad nyckel -> tom header
+    assert out == {"content": "ab", "tool_calls": [], "usage": 0}
+
+
+def test_anthropic_without_system_tools_or_content(post_via):
+    seen = post_via({"content": [{"type": "tool_use", "id": "t", "name": "n"}],
+                     "usage": {"input_tokens": "2", "output_tokens": 3}})
+    c = LLMClient({"provider": "anthropic", "name": "m", "endpoint": "http://h:1/"}, "k")
+    out = c.complete([{"role": "user", "content": "q"}], max_tokens=9)
+    assert seen["url"] == "http://h:1/v1/messages"
+    assert "system" not in seen["body"] and "tools" not in seen["body"]
+    assert seen["body"]["max_tokens"] == 9
+    assert out == {"content": None, "tool_calls": [{"id": "t", "name": "n", "args": {}}],
+                   "usage": 5}
+
+
+def test_anthropic_assistant_tool_call_without_text_has_only_tool_blocks(post_via):
+    seen = post_via({})  # tomt svar: inga content/usage
+    c = LLMClient({"provider": "anthropic", "name": "m"}, "k")
+    out = c.complete([
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "name": "x", "args": {}}]},
+    ])
+    assert [b["type"] for b in seen["body"]["messages"][0]["content"]] == ["tool_use"]
+    assert out == {"content": None, "tool_calls": [], "usage": 0}
+
+
+def test_openai_requires_endpoint_for_unknown_provider(post_via):
+    c = LLMClient({"provider": "ollama", "name": "m"}, None)
+    with pytest.raises(LLMError) as exc:
+        c.complete([{"role": "user", "content": "x"}])
+    assert str(exc.value) == "ollama kräver en endpoint-URL"
+
+
+def test_openai_empty_choices_is_error(post_via):
+    post_via({"choices": []})
+    c = LLMClient({"provider": "openai", "name": "m"}, "k")
+    with pytest.raises(LLMError) as exc:
+        c.complete([{"role": "user", "content": "x"}])
+    assert str(exc.value) == "openai: tomt svar (inga choices)"
+    post_via({})
+    with pytest.raises(LLMError):
+        c.complete([{"role": "user", "content": "x"}])
+
+
+def test_openai_tool_call_argument_edge_cases_and_auth(post_via):
+    seen = post_via({
+        "choices": [{"message": {"content": "hej", "tool_calls": [
+            {"id": "1", "function": {"name": "a", "arguments": "inte json"}},
+            {"function": {"name": "b"}},
+            {"id": "3"},
+        ]}}],
+        "usage": {},
+    })
+    c = LLMClient({"provider": "openrouter", "name": "m"}, "k")
+    out = c.complete([
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": "c", "tool_calls": [{"id": "9", "name": "z", "args": {"q": "å"}}]},
+    ], tools=[{"name": "n", "description": "d", "input_schema": {"type": "object"}}])
+    assert seen["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert seen["headers"]["authorization"] == "Bearer k"
+    assert seen["body"]["messages"][1] == {
+        "role": "assistant", "content": "c",
+        "tool_calls": [{"id": "9", "type": "function",
+                        "function": {"name": "z", "arguments": '{"q": "\\u00e5"}'}}]}
+    assert seen["body"]["tools"] == [{"type": "function", "function": {
+        "name": "n", "description": "d", "parameters": {"type": "object"}}}]
+    assert out["content"] == "hej" and out["usage"] == 0
+    assert out["tool_calls"] == [
+        {"id": "1", "name": "a", "args": {}},
+        {"id": "", "name": "b", "args": {}},
+        {"id": "3", "name": "", "args": {}},
+    ]
+
+
+def test_openai_empty_content_becomes_none_and_v1_not_doubled(post_via):
+    seen = post_via({"choices": [{"message": {"content": ""}}], "usage": {"total_tokens": 7}})
+    c = LLMClient({"provider": "vllm", "name": "m", "endpoint": "http://h:8000/v1"}, None)
+    out = c.complete([{"role": "user", "content": "x"}])
+    assert seen["url"] == "http://h:8000/v1/chat/completions"
+    assert "authorization" not in seen["headers"]
+    assert "tools" not in seen["body"]
+    assert out == {"content": None, "tool_calls": [], "usage": 7}

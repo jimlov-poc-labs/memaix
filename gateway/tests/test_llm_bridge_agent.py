@@ -309,3 +309,146 @@ def test_aborted_turn_still_charges_budget(rig, tmp_path):
                  cfg=_cfg(max_rounds=3, max_tokens_per_day=100000),
                  client=_ScriptedClient([endless] * 3), bridge=mk("jimmy"), budget=budget)
     assert budget.spent("jimmy") == 150  # 3 rundor × 50
+
+
+# ───────── Karakterisering av run_turn (Sonar S3776-sanering) ─────────
+
+
+class _StubBridge:
+    """Minimal brygga: spelar upp förutbestämda verktygsutfall."""
+
+    def __init__(self, outcomes=None):
+        self.outcomes = list(outcomes or [])
+        self.calls = []
+
+    def schemas(self):
+        return [{"name": "t", "description": "d", "input_schema": {"type": "object"}}]
+
+    def call(self, name, args):
+        self.calls.append((name, args))
+        return self.outcomes.pop(0)
+
+
+def _call(i="c1", name="t", args=None):
+    return {"id": i, "name": name, "args": args or {}}
+
+
+def test_run_turn_failed_tool_sends_error_body_and_reports_not_ok(tmp_path):
+    client = _ScriptedClient([
+        {"content": "tänker", "usage": 3, "tool_calls": [_call()]},
+        {"content": "klart", "usage": 4, "tool_calls": []},
+    ])
+    bridge = _StubBridge([{"ok": False, "error": "nekad"}])
+    events = []
+    out = run_turn("u1", [{"role": "user", "content": "x"}], cfg=_cfg(),
+                   client=client, bridge=bridge,
+                   budget=DailyBudget(str(tmp_path / "c.db")),
+                   on_event=lambda k, p: events.append((k, p)))
+    assert events == [("tool_start", {"name": "t"}), ("tool_result", {"name": "t", "ok": False})]
+    msgs = out["messages"]
+    # historik utan systemprompt: user, assistant(tool_calls), tool
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
+    assert msgs[1] == {"role": "assistant", "content": "tänker", "tool_calls": [_call()]}
+    assert msgs[2] == {"role": "tool", "call_id": "c1", "name": "t",
+                       "content": '{"error": "nekad"}'}
+    assert out["content"] == "klart" and out["rounds"] == 2
+    assert out["tool_calls"] == 1 and out["tokens"] == 7
+
+
+def test_run_turn_ok_result_is_json_encoded_and_truncated(tmp_path):
+    big = {"ok": True, "result": {"text": "å" * 9000}}
+    client = _ScriptedClient([
+        {"content": None, "tool_calls": [_call()]},  # usage saknas -> 0
+        {"content": None, "usage": 0, "tool_calls": []},
+    ])
+    out = run_turn("u2", [], cfg=_cfg(), client=client, bridge=_StubBridge([big]),
+                   budget=DailyBudget(str(tmp_path / "c.db")))
+    body = out["messages"][-1]["content"]
+    assert len(body) == 8000 and body.startswith('{"text": "å')
+    assert out["content"] == ""  # content None -> tom sträng
+    assert out["tokens"] == 0
+
+
+def test_run_turn_passes_limits_and_tools_to_client(tmp_path):
+    seen = {}
+
+    class _Spy(_ScriptedClient):
+        def complete(self, messages, max_tokens=1024, tools=None):
+            seen["max_tokens"] = max_tokens
+            seen["tools"] = tools
+            return super().complete(messages, max_tokens, tools)
+
+    run_turn("u3", [], cfg=_cfg(max_tokens_per_turn=77), client=_Spy(
+        [{"content": "a", "usage": 1, "tool_calls": []}]),
+        bridge=_StubBridge(), budget=DailyBudget(str(tmp_path / "c.db")))
+    assert seen["max_tokens"] == 77 and seen["tools"][0]["name"] == "t"
+
+
+def test_run_turn_toolless_client_gets_no_tools_and_warning_text(tmp_path):
+    seen = {}
+
+    class _NoTools(_ScriptedClient):
+        supports_tools = False
+
+        def complete(self, messages, max_tokens=1024, tools=None):
+            seen["tools"] = tools
+            return super().complete(messages, max_tokens, tools)
+
+    events = []
+    run_turn("u4", [], cfg=_cfg(), client=_NoTools(
+        [{"content": "a", "usage": 1, "tool_calls": []}]),
+        bridge=_StubBridge(), budget=DailyBudget(str(tmp_path / "c.db")),
+        on_event=lambda k, p: events.append((k, p)))
+    assert seen["tools"] is None
+    assert events == [("warning", {"message": "modellen saknar verktygsstöd i v1 (google) — svarar utan verktyg"})]
+
+
+def test_run_turn_error_messages_and_accounting(tmp_path):
+    budget = DailyBudget(str(tmp_path / "c.db"))
+    budget.add("u5", 100)
+    # dagstak redan nått före start
+    with pytest.raises(LLMError) as exc:
+        run_turn("u5", [], cfg=_cfg(max_tokens_per_day=100), client=_ScriptedClient([]),
+                 bridge=_StubBridge(), budget=budget)
+    assert str(exc.value) == (
+        "dagens token-tak nått (100) — höj model.limits.max_tokens_per_day "
+        "eller vänta till imorgon")
+    # mid-tur-tak
+    heavy = {"content": None, "usage": 60, "tool_calls": [_call()]}
+    ok = {"ok": True, "result": 1}
+    with pytest.raises(LLMError) as exc:
+        run_turn("u5", [], cfg=_cfg(max_tokens_per_day=220),
+                 client=_ScriptedClient([heavy, heavy]),
+                 bridge=_StubBridge([ok, ok]), budget=budget)
+    assert str(exc.value) == (
+        "dagens token-tak nått under turen (220) — "
+        "höj model.limits.max_tokens_per_day eller vänta")
+    assert budget.spent("u5") == 220  # 100 + 2 rundor x 60 bokförda
+    # rundtak
+    with pytest.raises(LLMError) as exc:
+        run_turn("u6", [], cfg=_cfg(max_rounds=2), client=_ScriptedClient(
+            [{"content": None, "usage": 0, "tool_calls": [_call()]}] * 2),
+            bridge=_StubBridge([ok, ok]), budget=budget)
+    assert str(exc.value) == "turen nådde taket på 2 verktygsrundor utan slutsvar"
+    assert budget.spent("u6") == 0  # ingen förbrukning -> ingen bokföring
+
+
+def test_run_turn_multiple_tool_calls_in_one_round_and_brand_in_prompt(tmp_path):
+    client = _ScriptedClient([
+        {"content": None, "usage": 1, "tool_calls": [_call("a", args={"k": 1}), _call("b")]},
+        {"content": "x", "usage": 1, "tool_calls": []},
+    ])
+    bridge = _StubBridge([{"ok": True, "result": "ra"}, {"ok": True, "result": None}])
+    cfg = {"memaix": {"model": {"limits": {}}}, "brand": {"name": "Acme"}}
+    out = run_turn("u7", [], cfg=cfg, client=client, bridge=bridge,
+                   budget=DailyBudget(str(tmp_path / "c.db")))
+    assert bridge.calls == [("t", {"k": 1}), ("t", {})]
+    assert out["tool_calls"] == 2
+    assert [m.get("content") for m in out["messages"] if m["role"] == "tool"] == ['"ra"', "null"]
+    assert client.seen_messages[0][0]["content"].startswith("Du är Acmes assistent. Du hjälper u7")
+
+
+def test_daily_budget_add_clamps_negative_to_zero(tmp_path):
+    b = DailyBudget(str(tmp_path / "c.db"))
+    b.add("n", -5)
+    assert b.spent("n") == 0
