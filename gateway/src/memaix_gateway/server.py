@@ -862,7 +862,9 @@ def onboarding_complete(profile_content: str) -> dict:
     """Store the compiled onboarding profile and mark onboarding done."""
     user = _user()
     _rl(user, "shared")
-    shared_vault = _get_acl().resource("shared", "vault")
+    acl = _get_acl()
+    acl.enforce(user, "shared", "reader")
+    shared_vault = acl.resource("shared", "vault")
     if not shared_vault:
         raise RuntimeError("shared vault not configured")
     result = _audited(

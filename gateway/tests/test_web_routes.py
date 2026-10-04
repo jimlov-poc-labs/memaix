@@ -223,3 +223,29 @@ def test_api_me_maintenance_message_is_capped(rig, tmp_path, monkeypatch):
     (data / "maintenance.json").write_text('{"message": "' + "x" * 1000 + '"}', encoding="utf-8")
     client, _ = rig
     assert len(client.get("/app/api/me").json()["maintenance"]["message"]) == 300
+
+
+class _VaultAcl:
+    def __init__(self, vault):
+        self._vault = vault
+
+    def resource(self, project, kind):
+        return str(self._vault) if project == "shared" and self._vault else None
+
+
+def test_onboarding_missing_reads_shared_vault_only(tmp_path):
+    from memaix_gateway.tools.onboarding import complete_onboarding
+    from memaix_gateway.web.routes import _onboarding_missing
+
+    acl = _VaultAcl(tmp_path)
+    assert _onboarding_missing(acl, "anna", ["acme", "shared"]) is True
+    complete_onboarding("anna", tmp_path, "Profil")
+    assert _onboarding_missing(acl, "anna", ["acme", "shared"]) is False
+    assert _onboarding_missing(acl, "bertil", ["acme", "shared"]) is True
+
+
+def test_onboarding_missing_false_without_shared_grant_or_vault(tmp_path):
+    from memaix_gateway.web.routes import _onboarding_missing
+
+    assert _onboarding_missing(_VaultAcl(tmp_path), "anna", ["acme"]) is False
+    assert _onboarding_missing(_VaultAcl(None), "anna", ["shared"]) is False

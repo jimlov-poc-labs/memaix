@@ -111,3 +111,47 @@ def test_whoami_includes_onboarding_state(tmp_path):
     assert "needs_onboarding" in result
     assert result["needs_onboarding"] is True  # no profile yet
     assert result["user_id"] == "alice"
+
+
+# ---------------------------------------------------------------------------
+# per-user flag
+# ---------------------------------------------------------------------------
+
+
+def test_flag_is_per_user(tmp_path):
+    """One user finishing onboarding must not mark another user as done."""
+    complete_onboarding("anna", tmp_path, "Profil för Anna")
+    assert check_onboarding("anna", tmp_path)["needs_onboarding"] is False
+    other = check_onboarding("bertil", tmp_path)
+    assert other["needs_onboarding"] is True
+    assert other["profile_status"] == "missing"
+
+
+def test_second_user_keeps_first_users_flag(tmp_path):
+    import json
+
+    complete_onboarding("anna", tmp_path, "A")
+    complete_onboarding("bertil", tmp_path, "B")
+    flags = json.loads((tmp_path / "_system" / "onboarding.json").read_text())
+    assert flags["schema"] == 2
+    assert set(flags["users"]) == {"anna", "bertil"}
+    assert check_onboarding("anna", tmp_path)["needs_onboarding"] is False
+
+
+def test_legacy_global_flag_only_counts_for_its_user(tmp_path):
+    import json
+
+    (tmp_path / "_system").mkdir()
+    (tmp_path / "_system" / "onboarding.json").write_text(
+        json.dumps({"schema": 1, "user_id": "anna", "onboarded": True})
+    )
+    assert check_onboarding("anna", tmp_path)["needs_onboarding"] is False
+    assert check_onboarding("bertil", tmp_path)["needs_onboarding"] is True
+    complete_onboarding("bertil", tmp_path, "B")
+    assert check_onboarding("anna", tmp_path)["needs_onboarding"] is False
+
+
+def test_incomplete_marker_overrides_flag(tmp_path):
+    complete_onboarding("anna", tmp_path, "klar")
+    (tmp_path / "shared" / "om-anna.md").write_text("---\nprofil_status: ofullständig\n---\n")
+    assert check_onboarding("anna", tmp_path)["profile_status"] == "incomplete"

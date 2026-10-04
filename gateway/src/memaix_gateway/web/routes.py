@@ -368,19 +368,19 @@ def _pending_outbox_count(acl, user: str) -> int:
 
 
 def _onboarding_missing(acl, user: str, projects: list[str]) -> bool:
-    """True if any visible project's vault says this user still needs onboarding."""
+    """True if the user still needs onboarding. The profile lives in the shared
+    vault, the same place the AI-side whoami reads, so both agree."""
     try:
         from ..tools.onboarding import check_onboarding
 
-        for project in projects:
-            vault = acl.resource(project, "vault")
-            if not vault or not Path(vault).is_dir():
-                continue  # unprovisioned vault ≠ missing onboarding
-            if check_onboarding(user, Path(vault)).get("needs_onboarding"):
-                return True
+        if "shared" not in projects:
+            return False  # cannot complete onboarding without a shared grant
+        vault = acl.resource("shared", "vault")
+        if not vault or not Path(vault).is_dir():
+            return False  # unprovisioned vault ≠ missing onboarding
+        return bool(check_onboarding(user, Path(vault)).get("needs_onboarding"))
     except Exception:
-        pass  # advisory only — never block /app/api/me
-    return False
+        return False  # advisory only — never block /app/api/me
 
 
 # ------------------------------------------------------------------
