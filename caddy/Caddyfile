@@ -7,6 +7,15 @@
     debug
 }
 
+# Under en omstart saknas uppströmstjänsten några sekunder. Caddy väntar och
+# försöker igen i stället för att svara 502 direkt; de flesta avbrott syns då
+# bara som ett långsammare svar. Räcker inte tiden visar handle_errors en
+# vänlig sida.
+(retry_upstream) {
+    lb_try_duration 20s
+    lb_try_interval 500ms
+}
+
 :80 {
     log {
         output stderr
@@ -20,34 +29,63 @@
     # Regex also catches //oauth2//register-style paths.
     @dcr path_regexp dcr (?i)^/+oauth2/+register
     handle @dcr {
-        reverse_proxy gateway:8080
+        reverse_proxy gateway:8080 {
+            import retry_upstream
+        }
     }
 
     # All other Hydra public OAuth endpoints
     handle /oauth2/* {
-        reverse_proxy hydra:4444
+        reverse_proxy hydra:4444 {
+            import retry_upstream
+        }
     }
 
     # OAuth/OIDC discovery
     handle /.well-known/openid-configuration {
-        reverse_proxy hydra:4444
+        reverse_proxy hydra:4444 {
+            import retry_upstream
+        }
     }
     handle /.well-known/jwks.json {
-        reverse_proxy hydra:4444
+        reverse_proxy hydra:4444 {
+            import retry_upstream
+        }
     }
     # /.well-known/oauth-authorization-server is served by the gateway,
     # which proxies Hydra's openid-configuration and injects registration_endpoint.
 
     # Login/consent UI
     handle /login* {
-        reverse_proxy login-app:3000
+        reverse_proxy login-app:3000 {
+            import retry_upstream
+        }
     }
     handle /consent* {
-        reverse_proxy login-app:3000
+        reverse_proxy login-app:3000 {
+            import retry_upstream
+        }
     }
 
     # Allt annat → memaix gateway (MCP + health + account_link-callback)
     handle {
-        reverse_proxy gateway:8080
+        reverse_proxy gateway:8080 {
+            import retry_upstream
+        }
+    }
+
+    handle_errors {
+        @upstream_down expression {err.status_code} in [502, 503, 504]
+        handle @upstream_down {
+            header Retry-After 15
+            header Cache-Control "no-store"
+            @html header Accept *text/html*
+            handle @html {
+                header Content-Type "text/html; charset=utf-8"
+                respond `<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>Memaix</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#1c1917"><h1>Memaix startar om</h1><p>Vi uppdaterar just nu. Det tar normalt under en minut. Sidan laddas om av sig själv.</p><p style="color:#78716c">Memaix is restarting for an update. This page reloads automatically.</p></body></html>` 503
+            }
+            header Content-Type "application/json"
+            respond `{"error":"maintenance","message":"Memaix is restarting, retry shortly","retry_after":15}` 503
+        }
     }
 }

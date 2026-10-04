@@ -351,3 +351,5 @@ body[data-collapsed="true"] .sidebar-foot { display: none; }
 .search-hit { border-bottom: 1px solid var(--border); padding-bottom: .6rem; }
 .mfa-code { width: 90px; padding: .4rem .5rem; background: var(--surface-2); color: var(--text);
   border: 1px solid var(--border); border-radius: 8px; }
+
+.maintenance-banner { background: var(--warning); color: #1a1d27; padding: .5rem 1rem; font-weight: 600; text-align: center; }

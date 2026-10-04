@@ -187,3 +187,39 @@ def test_root_mcp_clients_unaffected():
     # Other paths pass through
     resp = client.get("/anything", headers={"Accept": "text/html"}, follow_redirects=False)
     assert resp.status_code == 401
+
+
+def test_api_me_maintenance_none_by_default(rig, tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMAIX_DATA_DIR", str(tmp_path / "d"))
+    client, _ = rig
+    assert client.get("/app/api/me").json()["maintenance"] is None
+
+
+def test_api_me_maintenance_message_from_file(rig, tmp_path, monkeypatch):
+    data = tmp_path / "d"
+    data.mkdir()
+    monkeypatch.setenv("MEMAIX_DATA_DIR", str(data))
+    (data / "maintenance.json").write_text('{"message": "  Omstart kl 22:00  "}', encoding="utf-8")
+    client, _ = rig
+    assert client.get("/app/api/me").json()["maintenance"] == {"message": "Omstart kl 22:00"}
+
+
+@pytest.mark.parametrize("content", ["not json", "[]", '{"message": ""}', '{"message": "   "}'])
+def test_api_me_maintenance_bad_or_empty_file_is_ignored(rig, tmp_path, monkeypatch, content):
+    data = tmp_path / "d"
+    data.mkdir()
+    monkeypatch.setenv("MEMAIX_DATA_DIR", str(data))
+    (data / "maintenance.json").write_text(content, encoding="utf-8")
+    client, _ = rig
+    resp = client.get("/app/api/me")
+    assert resp.status_code == 200
+    assert resp.json()["maintenance"] is None
+
+
+def test_api_me_maintenance_message_is_capped(rig, tmp_path, monkeypatch):
+    data = tmp_path / "d"
+    data.mkdir()
+    monkeypatch.setenv("MEMAIX_DATA_DIR", str(data))
+    (data / "maintenance.json").write_text('{"message": "' + "x" * 1000 + '"}', encoding="utf-8")
+    client, _ = rig
+    assert len(client.get("/app/api/me").json()["maintenance"]["message"]) == 300

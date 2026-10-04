@@ -302,6 +302,17 @@ def board_redirect(request: Request) -> Response:
 # ------------------------------------------------------------------
 
 
+def _maintenance_notice() -> dict | None:
+    """Operator notice from DATA_DIR/maintenance.json ({"message": "..."}).
+    Absent, unreadable or empty file means no banner — never fails /me."""
+    try:
+        raw = json.loads((_data_dir() / "maintenance.json").read_text(encoding="utf-8"))
+        message = str(raw.get("message", "")).strip()[:300]
+    except (OSError, ValueError, AttributeError):
+        return None
+    return {"message": message} if message else None
+
+
 def api_me(request: Request) -> JSONResponse:
     """GET /app/api/me — user identity + roles + project status. 401 unless
     authenticated. The single source all role-aware page JS builds on."""
@@ -336,6 +347,7 @@ def api_me(request: Request) -> JSONResponse:
             "needs_relink": needs_relink,
             "pending_outbox": _pending_outbox_count(acl, user),
             "onboarding_missing": _onboarding_missing(acl, user, projects),
+            "maintenance": _maintenance_notice(),
         }
     )
 
