@@ -121,3 +121,11 @@ def test_validate_schedule_accepts_full():
                    {"weekday": "mon", "start": "10:00", "end": "12:00", "parity": "even"}],
         "max_per_day": 1,
     })
+
+
+def test_validate_rejects_zero_and_bool_cap():
+    import pytest
+
+    for bad in (0, -1, True):
+        with pytest.raises(ValueError):
+            validate_schedule({"max_per_day": bad})

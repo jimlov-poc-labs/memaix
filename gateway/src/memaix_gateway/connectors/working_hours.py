@@ -148,6 +148,35 @@ def apply_working_hours(free: list[dict], week: dict, tz: str) -> list[dict]:
     return out
 
 
+def _validate_dates(dates: dict) -> None:
+    for day, windows in dates.items():
+        try:
+            date.fromisoformat(day)
+        except ValueError as exc:
+            raise ValueError(f"dates: {day!r} is not YYYY-MM-DD") from exc
+        validate_week({"mon": windows})
+
+
+def _validate_block(block: dict) -> None:
+    if "weekday" in block:
+        if block.get("parity") not in (None, *PARITIES):
+            raise ValueError(f"block parity must be one of {PARITIES}")
+        validate_week({block["weekday"]: [{"start": block["start"], "end": block["end"]}]})
+        return
+    try:
+        b_start = datetime.fromisoformat(block["start"])
+        b_end = datetime.fromisoformat(block["end"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError("single block needs ISO start and end") from exc
+    if b_start.tzinfo is None or b_end.tzinfo is None or b_start >= b_end:
+        raise ValueError("single block needs tz-aware start before end")
+
+
+def _validate_cap(cap) -> None:
+    if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
+        raise ValueError("max_per_day must be a positive integer")
+
+
 def validate_schedule(schedule: dict) -> None:
     """Raise ValueError if the schedule extras (weeks/dates/blocks/
     max_per_day) are malformed."""
@@ -158,28 +187,10 @@ def validate_schedule(schedule: dict) -> None:
         raise ValueError(f"weeks keys must be within {PARITIES}")
     for week in weeks.values():
         validate_week(week)
-    for day, windows in schedule.get("dates", {}).items():
-        try:
-            date.fromisoformat(day)
-        except ValueError as exc:
-            raise ValueError(f"dates: {day!r} is not YYYY-MM-DD") from exc
-        validate_week({"mon": windows})
+    _validate_dates(schedule.get("dates", {}))
     for block in schedule.get("blocks", []):
-        if "weekday" in block:
-            if block.get("parity") not in (None, *PARITIES):
-                raise ValueError(f"block parity must be one of {PARITIES}")
-            validate_week({block["weekday"]: [{"start": block["start"], "end": block["end"]}]})
-        else:
-            try:
-                b_start = datetime.fromisoformat(block["start"])
-                b_end = datetime.fromisoformat(block["end"])
-            except (KeyError, ValueError) as exc:
-                raise ValueError("single block needs ISO start and end") from exc
-            if b_start.tzinfo is None or b_end.tzinfo is None or b_start >= b_end:
-                raise ValueError("single block needs tz-aware start before end")
-    cap = schedule.get("max_per_day")
-    if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
-        raise ValueError("max_per_day must be a positive integer")
+        _validate_block(block)
+    _validate_cap(schedule.get("max_per_day"))
 
 
 def _parity(day: date) -> str:
