@@ -115,3 +115,134 @@ def test_reindex_project_no_vault_raises(tmp_path, acl):
     acl2 = Acl(users={"alice": {"grants": {"x": "owner"}}}, projects={"x": {}})
     with pytest.raises(ValueError):
         reindex_project(EmbeddingStore.for_path(tmp_path / "never.db"), None, acl2, "x")
+
+
+# ---------------------------------------------------------------------------
+# Karakteriseringstester (Sonar S3776-saneringen av reindex_project).
+# ---------------------------------------------------------------------------
+
+def _rows(store):
+    conn = __import__("sqlite3").connect(str(store._path))
+    try:
+        return sorted(conn.execute(
+            "SELECT source_type, ref, title, COUNT(*) FROM chunks GROUP BY source_type, ref, title"
+        ).fetchall())
+    finally:
+        conn.close()
+
+
+def _acl_for(vault):
+    return Acl(users={"alice": {"grants": {"proj": "owner"}}}, projects={"proj": {"vault": str(vault)}})
+
+
+def test_reindex_error_message_and_empty_vault_value(tmp_path, store):
+    acl = Acl(users={}, projects={"x": {"vault": ""}})
+    with pytest.raises(ValueError) as exc:
+        reindex_project(store, None, acl, "x")
+    assert str(exc.value) == "project 'x' has no vault configured"
+    with pytest.raises(ValueError):
+        reindex_project(store, None, acl, "unknown-project")
+
+
+def test_reindex_vault_path_that_does_not_exist_returns_zero(tmp_path, store):
+    result = reindex_project(store, None, _acl_for(tmp_path / "nope"), "proj")
+    assert result == {"chunks": 0, "sources": 0}
+    assert _rows(store) == []
+
+
+def test_reindex_memory_refs_nested_hidden_pm_and_unreadable(tmp_path, store):
+    v = tmp_path / "v"
+    (v / "memory" / "sub").mkdir(parents=True)
+    (v / "memory" / "pm").mkdir()
+    (v / "memory" / "_system").mkdir()
+    (v / "memory" / "a.md").write_text("alpha")
+    (v / "memory" / "sub" / "b.md").write_text("beta")
+    (v / "memory" / ".hidden.md").write_text("hidden")
+    (v / "memory" / "pm" / "plan.md").write_text("pm data")
+    (v / "memory" / "_system" / "s.md").write_text("system data")
+    (v / "memory" / "bin.md").write_bytes(b"\xff\xfe\xfa\x00")
+    locked = v / "memory" / "locked.md"
+    locked.write_text("locked")
+    locked.chmod(0)
+    empty = v / "memory" / "empty.md"
+    empty.write_text("   ")
+    try:
+        result = reindex_project(store, None, _acl_for(v), "proj")
+    finally:
+        locked.chmod(0o644)
+    # tom fil räknas som källa men ger 0 chunks; ej läsbara/skippable hoppas över
+    assert result == {"chunks": 2, "sources": 3}
+    assert _rows(store) == [
+        ("memory", "a.md", "a.md", 1),
+        ("memory", "sub/b.md", "sub/b.md", 1),
+    ]
+
+
+def test_reindex_backlog_frontmatter_and_fallbacks(tmp_path, store):
+    v = tmp_path / "v"
+    (v / "backlog").mkdir(parents=True)
+    (v / "backlog" / "card1.md").write_text("---\nid: BL-1\ntitle: Titel ett\n---\nbody ett\n")
+    (v / "backlog" / "plain.md").write_text("bara text")
+    (v / "backlog" / "notes.txt").write_text("ignoreras")
+    (v / "backlog" / "bin.md").write_bytes(b"\xff\xfe\xfa\x00")
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result == {"chunks": 2, "sources": 2}
+    assert _rows(store) == [
+        ("backlog", "BL-1", "Titel ett", 1),
+        ("backlog", "plain", "plain", 1),
+    ]
+    hits = store.fts_search(["proj"], ["backlog"], "ett", 10)
+    assert {h["ref"] for h in hits} == {"BL-1"}
+    assert "Titel ett\nbody ett" in hits[0]["text"]
+
+
+def test_reindex_files_skip_rules_and_unreadable(tmp_path, store):
+    v = tmp_path / "v"
+    for d in ("memory", "backlog", "_system", "pm", ".git", "docs/pm", "docs/deep"):
+        (v / d).mkdir(parents=True)
+    (v / "readme.txt").write_text("readme")
+    (v / "docs" / "deep" / "guide.txt").write_text("guide")
+    (v / "docs" / "pm" / "x.txt").write_text("skip pm")
+    (v / "memory" / "m.md").write_text("mem")
+    (v / "backlog" / "other.txt").write_text("not indexed anywhere")
+    (v / "_system" / "s.json").write_text("{}")
+    (v / "pm" / "p.md").write_text("pm")
+    (v / ".git" / "config").write_text("git")
+    (v / ".memaix.db").write_text("db")
+    (v / ".gitignore").write_text("ignored")
+    (v / ".dot").write_text("dot")
+    (v / "bin.dat").write_bytes(b"\xff\xfe\xfa\x00")
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result == {"chunks": 3, "sources": 3}
+    assert _rows(store) == [
+        ("file", "docs/deep/guide.txt", "docs/deep/guide.txt", 1),
+        ("file", "readme.txt", "readme.txt", 1),
+        ("memory", "m.md", "m.md", 1),
+    ]
+
+
+def test_reindex_without_memory_or_backlog_dirs_still_indexes_files(tmp_path, store):
+    v = tmp_path / "v"
+    v.mkdir()
+    (v / "only.txt").write_text("only file")
+    assert reindex_project(store, None, _acl_for(v), "proj") == {"chunks": 1, "sources": 1}
+
+
+def test_reindex_chunks_total_counts_multi_chunk_documents(tmp_path, store):
+    v = tmp_path / "v"
+    (v / "memory").mkdir(parents=True)
+    (v / "memory" / "long.md").write_text("line\n" * 400)  # 2000 tecken -> flera chunks
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result["sources"] == 1
+    assert result["chunks"] > 1
+    assert result["chunks"] == _rows(store)[0][3]
+
+
+def test_reindex_is_idempotent(tmp_path, store):
+    v = tmp_path / "v"
+    (v / "memory").mkdir(parents=True)
+    (v / "memory" / "a.md").write_text("alpha")
+    first = reindex_project(store, None, _acl_for(v), "proj")
+    second = reindex_project(store, None, _acl_for(v), "proj")
+    assert first == second == {"chunks": 1, "sources": 1}
+    assert _rows(store) == [("memory", "a.md", "a.md", 1)]

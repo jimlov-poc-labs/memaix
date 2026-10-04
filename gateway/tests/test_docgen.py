@@ -120,3 +120,55 @@ def test_pm_report_sections_status_bundles_all_present_keys():
     sections = pm_report_sections(report)
     headings = [s["heading"] for s in sections]
     assert headings == ["Milestones", "Variance", "RAID"]
+
+
+# ───────── Karakterisering (Sonar S3776-sanering av pm_report_sections) ─────────
+
+
+def test_pm_report_sections_exact_output_for_every_branch():
+    report = {
+        "milestones": [
+            {"name": "Beta", "target_date": "2025-01-01", "overdue": True},
+            {"name": "GA", "target_date": None, "overdue": False},
+        ],
+        "variance": {"ok": True, "tasks": [
+            {"title": "A", "percent_complete": 50, "hours_logged": 4, "estimate_hours": 8, "slippage_days": 3},
+            {"title": "B", "percent_complete": 0, "hours_logged": 0, "estimate_hours": 2, "slippage_days": 0},
+            {"title": "C", "percent_complete": 10, "hours_logged": 1, "estimate_hours": 2},
+        ]},
+        "raid": {"entries": [
+            {"type": "Risk", "severity": "high", "summary": "s1"},
+            {"type": "Issue", "severity": None, "summary": "s2"},
+            {"type": "Assumption", "summary": "s3"},
+        ]},
+        "utilization": {"period_start": "P0", "period_end": "P1", "resources": [
+            {"name": "Anna", "utilization_pct": 50.0, "allocated_hours": 8.0, "capacity_hours": 16.0}]},
+    }
+    assert pm_report_sections(report) == [
+        {"heading": "Milestones", "paragraphs": ["Beta: 2025-01-01 — OVERDUE", "GA: no target date"]},
+        {"heading": "Variance", "paragraphs": [
+            "A: 50% complete, 4h logged vs 8h estimated, 3 day(s) behind",
+            "B: 0% complete, 0h logged vs 2h estimated",
+            "C: 10% complete, 1h logged vs 2h estimated"]},
+        {"heading": "RAID", "paragraphs": ["[Risk/high] s1", "[Issue/n/a] s2", "[Assumption/n/a] s3"]},
+        {"heading": "Utilization (P0 to P1)", "paragraphs": ["Anna: 50.0% (8.0h / 16.0h)"]},
+    ]
+
+
+def test_pm_report_sections_empty_fallbacks_and_defaults():
+    assert pm_report_sections({}) == []
+    assert pm_report_sections({"milestones": []}) == [{"heading": "Milestones", "paragraphs": ["No milestones."]}]
+    assert pm_report_sections({"variance": {"ok": True, "tasks": []}}) == [
+        {"heading": "Variance", "paragraphs": ["No tasks in the baseline."]}]
+    assert pm_report_sections({"variance": {}}) == [
+        {"heading": "Variance", "paragraphs": ["No baseline yet."]}]
+    assert pm_report_sections({"raid": {}}) == [{"heading": "RAID", "paragraphs": ["No open RAID entries."]}]
+    assert pm_report_sections({"utilization": {"period_start": "a", "period_end": "b", "resources": []}}) == [
+        {"heading": "Utilization (a to b)", "paragraphs": ["No resources in this scenario."]}]
+
+
+def test_pm_report_sections_section_order_is_fixed_regardless_of_key_order():
+    report = {"utilization": {"period_start": "a", "period_end": "b", "resources": []},
+              "raid": {}, "variance": {}, "milestones": []}
+    assert [s["heading"] for s in pm_report_sections(report)] == [
+        "Milestones", "Variance", "RAID", "Utilization (a to b)"]

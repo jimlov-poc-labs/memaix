@@ -2987,6 +2987,38 @@ def _ensure_fresh_google_mail_token(user: str) -> None:
             store.mark_needs_relink(user, "google", account["account"])
 
 
+def _is_sa_resource(sa_res) -> bool:
+    """True when the project's ``calendar_sa`` resource is a service-account config."""
+    return isinstance(sa_res, dict) and sa_res.get("auth") == "service_account"
+
+
+def _load_sa_info(sa_res: dict, project: str) -> dict:
+    """Read the service-account credentials a ``calendar_sa`` resource points at.
+
+    ``service_account_ref`` is ``env:<VAR>`` (JSON in an env var) or
+    ``file:<path>``. Anything unreadable or malformed becomes a
+    CalendarAuthRequired naming the project.
+    """
+    import json
+
+    try:
+        ref = sa_res["service_account_ref"]
+        if ref.startswith("env:"):
+            env_var = ref[4:]
+            sa_json = os.environ.get(env_var, "")
+            if not sa_json:
+                raise CalendarAuthRequired(f"Env-var {env_var} saknas för SA-kalender")
+            return json.loads(sa_json)
+        if ref.startswith("file:"):
+            with open(ref[5:]) as f:
+                return json.load(f)
+        raise CalendarAuthRequired(f"Okänd service_account_ref: {ref}")
+    except CalendarAuthRequired:
+        raise
+    except (ValueError, FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as exc:
+        raise CalendarAuthRequired(f"SA-konfigfel för {project}: {exc}") from exc
+
+
 def _resolve_calendar_dav(project: str, user: str, *, write: bool = False):
     """Return a calendar adapter for the project/user.
 
@@ -3013,104 +3045,78 @@ def _resolve_calendar_dav(project: str, user: str, *, write: bool = False):
     require_per_user = isinstance(cal_cfg, dict) and cal_cfg.get("auth") == "per_user"
     public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", "")
     all_accounts = store.list_accounts(user)
+    normal_args = (acl, cfg, store, project, user, all_accounts, require_per_user, public_url)
 
     # 0. Service account (domain-wide delegation) — merged with the normal
     # per-user adapter when both resolve, so the SA's org calendars appear
     # alongside whatever the user has linked. Runs before OAuth on purpose.
     sa_res = acl.resource(project, "calendar_sa")
-    if isinstance(sa_res, dict) and sa_res.get("auth") == "service_account":
-        if write:
-            # SA adapter can't write and merging it in would only ever
-            # produce a read-only _MultiCalendarAdapter — go straight to
-            # the normal/fallback adapter instead of resolving the SA.
-            return _resolve_normal_calendar_dav(
-                acl, cfg, store, project, user, all_accounts, require_per_user, public_url
-            )
-        import json
-        import os
-        try:
-            ref = sa_res["service_account_ref"]
-            if ref.startswith("env:"):
-                env_var = ref[4:]
-                sa_json = os.environ.get(env_var, "")
-                if not sa_json:
-                    raise CalendarAuthRequired(f"Env-var {env_var} saknas för SA-kalender")
-                sa_info = json.loads(sa_json)
-            elif ref.startswith("file:"):
-                with open(ref[5:]) as f:
-                    sa_info = json.load(f)
-            else:
-                raise CalendarAuthRequired(f"Okänd service_account_ref: {ref}")
-        except CalendarAuthRequired:
-            raise
-        except (ValueError, FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as exc:
-            raise CalendarAuthRequired(f"SA-konfigfel för {project}: {exc}") from exc
-        sa_adapter = _ServiceAccountGoogleCalendarAdapter(sa_info, sa_res["impersonate"])
+    if not _is_sa_resource(sa_res) or write:
+        # Write callers: the SA adapter can't write and merging it in would
+        # only ever produce a read-only _MultiCalendarAdapter — go straight
+        # to the normal/fallback adapter instead of resolving the SA.
+        return _resolve_normal_calendar_dav(*normal_args)
+
+    sa_info = _load_sa_info(sa_res, project)
+    sa_adapter = _ServiceAccountGoogleCalendarAdapter(sa_info, sa_res["impersonate"])
+    try:
+        normal_adapter = _resolve_normal_calendar_dav(*normal_args)
+    except CalendarAuthRequired:
         normal_adapter = None
-        try:
-            normal_adapter = _resolve_normal_calendar_dav(
-                acl, cfg, store, project, user, all_accounts, require_per_user, public_url
-            )
-        except CalendarAuthRequired:
-            normal_adapter = None
-        if normal_adapter is not None:
-            return _MultiCalendarAdapter([sa_adapter, normal_adapter])
-        return sa_adapter
+    if normal_adapter is not None:
+        return _MultiCalendarAdapter([sa_adapter, normal_adapter])
+    return sa_adapter
 
-    return _resolve_normal_calendar_dav(
-        acl, cfg, store, project, user, all_accounts, require_per_user, public_url
+
+def _first_account(all_accounts: list, provider: str):
+    """Account id of the first linked account for *provider*, or None."""
+    return next((a["account"] for a in all_accounts if a["provider"] == provider), None)
+
+
+def _google_oauth_adapter(cfg, store, user: str, account_email: str):
+    """Per-user Google adapter, refreshing an expired token; None if unusable."""
+    token_data = store.load_one(user, "google", account_email)
+    if not token_data:
+        return None
+    import time
+
+    access_token = token_data.get("access_token")
+    expires_at = token_data.get("expires_at") or (
+        token_data.get("created_at", 0) + token_data.get("expires_in", 3600)
     )
+    if not access_token or (isinstance(expires_at, (int, float)) and expires_at - 60 < time.time()):
+        access_token = _refresh_google_token(cfg, store, user, account_email, token_data)
+        if not access_token:
+            store.mark_needs_relink(user, "google", account_email)
+    if access_token:
+        return _PerUserGoogleAdapter(access_token)
+    return None
 
 
-def _resolve_normal_calendar_dav(
-    acl, cfg, store, project, user, all_accounts, require_per_user, public_url
-):
-    # 1. OAuth (Google)
-    google_accounts = [a for a in all_accounts if a["provider"] == "google"]
-    if google_accounts:
-        account_email = google_accounts[0]["account"]
-        token_data = store.load_one(user, "google", account_email)
-        if token_data:
-            import time
-            access_token = token_data.get("access_token")
-            expires_at = token_data.get("expires_at") or (
-                token_data.get("created_at", 0) + token_data.get("expires_in", 3600)
-            )
-            if not access_token or (
-                isinstance(expires_at, (int, float)) and expires_at - 60 < time.time()
-            ):
-                access_token = _refresh_google_token(cfg, store, user, account_email, token_data)
-                if not access_token:
-                    store.mark_needs_relink(user, "google", account_email)
-            if access_token:
-                return _PerUserGoogleAdapter(access_token)
+def _ical_adapter(store, user: str, account: str):
+    token_data = store.load_one(user, "ical_secret", account)
+    if token_data and token_data.get("ical_url"):
+        return _ICalAdapter(token_data["ical_url"])
+    return None
 
-    # 2. iCal secret URL
-    ical_accounts = [a for a in all_accounts if a["provider"] == "ical_secret"]
-    if ical_accounts:
-        token_data = store.load_one(user, "ical_secret", ical_accounts[0]["account"])
-        if token_data and token_data.get("ical_url"):
-            return _ICalAdapter(token_data["ical_url"])
 
-    # 3. FreeBusy
-    fb_accounts = [a for a in all_accounts if a["provider"] == "free_busy"]
-    if fb_accounts:
-        token_data = store.load_one(user, "free_busy", fb_accounts[0]["account"])
-        api_key = cfg.get("memaix", {}).get("google_api_key", "")
-        if token_data and token_data.get("calendar_id") and api_key:
-            return _FreeBusyAdapter(token_data["calendar_id"], api_key)
+def _free_busy_adapter(cfg, store, user: str, account: str):
+    token_data = store.load_one(user, "free_busy", account)
+    api_key = cfg.get("memaix", {}).get("google_api_key", "")
+    if token_data and token_data.get("calendar_id") and api_key:
+        return _FreeBusyAdapter(token_data["calendar_id"], api_key)
+    return None
 
-    if not require_per_user:
-        return None  # use static CalDAV from acl.yaml
 
-    # Nothing configured — raise with all three setup options
+def _calendar_auth_required(acl, user: str, public_url: str) -> CalendarAuthRequired:
+    """The "nothing configured" error, listing all three setup options."""
     oauth_link = ""
     if public_url:
         try:
             oauth_link = t_account.account_link(acl, user, "google", public_url)["link_url"]
         except Exception:
             pass
-    raise CalendarAuthRequired(
+    return CalendarAuthRequired(
         link_url=oauth_link,
         options=[
             {
@@ -3130,6 +3136,37 @@ def _resolve_normal_calendar_dav(
             },
         ],
     )
+
+
+def _resolve_normal_calendar_dav(
+    acl, cfg, store, project, user, all_accounts, require_per_user, public_url
+):
+    # 1. OAuth (Google)
+    google = _first_account(all_accounts, "google")
+    if google is not None:
+        adapter = _google_oauth_adapter(cfg, store, user, google)
+        if adapter is not None:
+            return adapter
+
+    # 2. iCal secret URL
+    ical = _first_account(all_accounts, "ical_secret")
+    if ical is not None:
+        adapter = _ical_adapter(store, user, ical)
+        if adapter is not None:
+            return adapter
+
+    # 3. FreeBusy
+    free_busy = _first_account(all_accounts, "free_busy")
+    if free_busy is not None:
+        adapter = _free_busy_adapter(cfg, store, user, free_busy)
+        if adapter is not None:
+            return adapter
+
+    if not require_per_user:
+        return None  # use static CalDAV from acl.yaml
+
+    # Nothing configured — raise with all three setup options
+    raise _calendar_auth_required(acl, user, public_url)
 
 
 def build_http_app():
