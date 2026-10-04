@@ -7,7 +7,7 @@ async function memoryPage() {
   if (!me) return;
   const project = new URLSearchParams(location.search).get('project')
         ?? localStorage.getItem('memaix_project') ?? (me.projects ?? [])[0] ?? '';
-  const role = me.is_admin ? 'admin' : ((me.role_map ?? {})[project] ?? '');
+  const role = me.is_admin ? 'admin' : (me.role_map?.[project] ?? '');
   const canRevert = role === 'owner' || role === 'admin';
 
   const tree = document.getElementById('memory-tree');
