@@ -144,11 +144,8 @@ def _resolve_dav_filtered(project: str, user: str, acl) -> object:
     to _resolve_dav when no vault is configured (SourceSelectionStore
     needs a vault path to persist state).
     """
-    import json
-    import os
-
     from ..connectors.calendar_sources import SourceSelectionStore, resolve_effective_sources
-    from ..server import _get_token_store
+    from ..server import _get_token_store, _is_sa_resource, _load_sa_info
     from ..tools.calendar import (
         _MultiCalendarAdapter,
         _ServiceAccountGoogleCalendarAdapter,
@@ -164,28 +161,8 @@ def _resolve_dav_filtered(project: str, user: str, acl) -> object:
     adapters: list = []
 
     sa_res = acl.resource(project, "calendar_sa")
-    if (
-        isinstance(sa_res, dict)
-        and sa_res.get("auth") == "service_account"
-        and "calendar_sa" not in disabled
-    ):
-        try:
-            ref = sa_res["service_account_ref"]
-            if ref.startswith("env:"):
-                env_var = ref[4:]
-                sa_json = os.environ.get(env_var, "")
-                if not sa_json:
-                    raise CalendarAuthRequired(f"Env-var {env_var} saknas för SA-kalender")
-                sa_info = json.loads(sa_json)
-            elif ref.startswith("file:"):
-                with open(ref[5:]) as f:
-                    sa_info = json.load(f)
-            else:
-                raise CalendarAuthRequired(f"Okänd service_account_ref: {ref}")
-        except CalendarAuthRequired:
-            raise
-        except (ValueError, FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as exc:
-            raise CalendarAuthRequired(f"SA-konfigfel för {project}: {exc}") from exc
+    if _is_sa_resource(sa_res) and "calendar_sa" not in disabled:
+        sa_info = _load_sa_info(sa_res, project)
         adapters.append(_ServiceAccountGoogleCalendarAdapter(sa_info, sa_res["impersonate"]))
 
     token_store = _get_token_store()
