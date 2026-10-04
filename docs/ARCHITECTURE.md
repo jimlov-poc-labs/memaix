@@ -313,7 +313,7 @@ Hemligheter refereras aldrig direkt utan via `*_ref` med schema `env:` / `file:`
 
 ### `.env` — variabelnamn (se `.env.example`, 36 rader)
 
-- **Tunnel:** `CLOUDFLARE_TUNNEL_TOKEN`
+- **Tunnel:** token i `cloudflared-secrets/tunnel.token`
 - **Hydra:** `HYDRA_DB_PASSWORD`, `HYDRA_SYSTEM_SECRET`, `HYDRA_PUBLIC_URL`,
   `HYDRA_LOGIN_URL`, `HYDRA_CONSENT_URL`
 - **Gateway:** `TOKEN_MASTER_KEY` (obligatorisk i HTTP-läge — gatewayen startar inte utan

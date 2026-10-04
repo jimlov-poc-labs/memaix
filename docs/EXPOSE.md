@@ -19,7 +19,7 @@ eller från din enhet (Claude Desktop, lokal klient). Här är alla rimliga alte
    Create tunnel → Cloudflared.
 2. Peka tunnel-hostname (`mcp.dindomän.se`) → `http://localhost:80` (eller `http://caddy:80` om
    du kör i Docker-nätverket).
-3. Kopiera tunnel-token och ange det vid `make init` (lagras i `.env` som `CLOUDFLARE_TUNNEL_TOKEN`).
+3. Kopiera tunnel-token och ange det vid `make init` (lagras i `cloudflared-secrets/tunnel.token`).
 4. **Stäng av "Block AI Bots"** för hostnamnet: Security → Bots → "Do not block (allow crawlers)".
    Bobrs blockeras Anthropics IP-intervall (160.79.x.x).
 

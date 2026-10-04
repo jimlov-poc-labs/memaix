@@ -36,8 +36,8 @@ provisionerar inget — du pekar `acl.yaml` mot befintliga backends själv).
 > Validera occ-/OCS-stegen mot din Nextcloud-version första gången. Det är installations-
 > automation, inte en svart låda — allt syns i `scripts/bootstrap.py`.
 
-Återstår manuellt oavsett väg: skapa Cloudflare-tunneln och lägg `CLOUDFLARE_TUNNEL_TOKEN` i
-`.env` (kan inte automatiseras utan Cloudflare-API-credentials), samt koppla in AI-klienten.
+Återstår manuellt oavsett väg: skapa Cloudflare-tunneln och lägg tunnel-token i
+`cloudflared-secrets/tunnel.token` (kan inte automatiseras utan Cloudflare-API-credentials), samt koppla in AI-klienten.
 
 ## Manuell väg (steg för steg)
 
@@ -58,7 +58,7 @@ provisionerar inget — du pekar `acl.yaml` mot befintliga backends själv).
 
 3. **Exponera publikt**
    - **Cloudflare-tunnel:** skapa en tunnel, peka hostname → `http://gateway:8080`, lägg
-     `CLOUDFLARE_TUNNEL_TOKEN` i `.env`. **Lägg ingen Access framför** och **stäng av Bot Fight
+     tunnel-token i `cloudflared-secrets/tunnel.token`. **Lägg ingen Access framför** och **stäng av Bot Fight
      Mode** för hostnamnet (se SECURITY.md).
    - **Egen reverse proxy:** sätt `tunnel.provider: none` och terminera TLS själv (Caddy/nginx).
 
