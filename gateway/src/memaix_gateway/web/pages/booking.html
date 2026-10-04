@@ -1,0 +1,140 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<h1 class="page-title" data-i18n="web_booking_title">Booking</h1>
+<p class="muted" data-i18n="web_booking_intro">Here you decide when people can book time with you. Changes apply right away.</p>
+<div class="booking-page">
+
+  <section class="card" id="booking-onoff" aria-labelledby="bk-onoff-h">
+    <h2 id="bk-onoff-h" data-i18n="web_booking_onoff_title">Accept bookings</h2>
+    <div class="notice" id="booking-nocal" hidden>
+      <span data-i18n="web_booking_nocal">You have no calendar connected yet. Choose "Memaix own calendar" under</span>
+      <a href="/app/settings" data-i18n="web_nav_settings">Settings</a>.
+    </div>
+    <form id="onoff-form" class="settings-form">
+      <label class="check"><input type="checkbox" id="booking-enabled"> <span data-i18n="web_booking_enabled">Let people book time with me</span></label>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
+        <span class="save-status" id="onoff-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" id="booking-hours" aria-labelledby="bk-hours-h">
+    <h2 id="bk-hours-h" data-i18n="web_booking_hours_title">Weekly hours</h2>
+    <p class="muted" data-i18n="web_booking_hours_help">Add the times you can be booked on each weekday. A day without any times is closed. If you add no times at all, people can book at any time.</p>
+    <form id="hours-form" class="settings-form">
+      <label for="booking-tz" data-i18n="web_booking_tz">Time zone</label>
+      <input type="text" id="booking-tz" placeholder="Europe/Stockholm" autocomplete="off" required>
+      <label class="check"><input type="checkbox" id="booking-alt-weeks"> <span data-i18n="web_booking_alt_weeks">Different times on even and odd weeks</span></label>
+      <div id="hours-grids" class="hours-grids"></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
+        <span class="save-status" id="hours-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" id="booking-dates" aria-labelledby="bk-dates-h">
+    <h2 id="bk-dates-h" data-i18n="web_booking_dates_title">Closed days / extra days</h2>
+    <p class="muted" data-i18n="web_booking_dates_help">Close a single day (holiday, trip) or open a day with its own times. This overrides your weekly hours for that date.</p>
+    <ul id="dates-list" class="plain-list"></ul>
+    <div class="empty-state" id="dates-empty" hidden data-i18n="web_booking_dates_empty">No special days.</div>
+    <form id="dates-form" class="settings-form">
+      <label for="date-day" data-i18n="web_booking_date">Date</label>
+      <input type="date" id="date-day" required>
+      <label for="date-kind" data-i18n="web_booking_date_kind">What happens that day?</label>
+      <select id="date-kind">
+        <option value="closed" data-i18n="web_booking_date_closed">Closed all day</option>
+        <option value="open" data-i18n="web_booking_date_open">Open only at these times</option>
+      </select>
+      <div id="date-windows" class="window-list" hidden></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_booking_add">Add</button>
+        <span class="save-status" id="dates-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" id="booking-blocks" aria-labelledby="bk-blocks-h">
+    <h2 id="bk-blocks-h" data-i18n="web_booking_blocks_title">Block time</h2>
+    <p class="muted" data-i18n="web_booking_blocks_help">Keep specific times free of bookings, once or on a repeating weekday.</p>
+    <ul id="blocks-list" class="plain-list"></ul>
+    <div class="empty-state" id="blocks-empty" hidden data-i18n="web_booking_blocks_empty">Nothing blocked.</div>
+    <form id="block-once-form" class="settings-form">
+      <h3 data-i18n="web_booking_block_once">One-time block</h3>
+      <div class="field-row">
+        <label for="once-start-date" data-i18n="web_booking_from">From</label>
+        <input type="date" id="once-start-date" required>
+        <input type="time" id="once-start-time" required aria-label="From time">
+      </div>
+      <div class="field-row">
+        <label for="once-end-date" data-i18n="web_booking_to">To</label>
+        <input type="date" id="once-end-date" required>
+        <input type="time" id="once-end-time" required aria-label="To time">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_booking_add">Add</button>
+        <span class="save-status" id="once-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+    <form id="block-repeat-form" class="settings-form">
+      <h3 data-i18n="web_booking_block_repeat">Repeating block</h3>
+      <div class="field-row">
+        <label for="rep-weekday" data-i18n="web_booking_weekday">Weekday</label>
+        <select id="rep-weekday"></select>
+      </div>
+      <div class="field-row">
+        <label for="rep-start" data-i18n="web_booking_from">From</label>
+        <input type="time" id="rep-start" required>
+        <label for="rep-end" data-i18n="web_booking_to">To</label>
+        <input type="time" id="rep-end" required>
+      </div>
+      <div class="field-row">
+        <label for="rep-parity" data-i18n="web_booking_parity">Which weeks?</label>
+        <select id="rep-parity">
+          <option value="" data-i18n="web_booking_parity_every">Every week</option>
+          <option value="even" data-i18n="web_booking_parity_even">Even weeks</option>
+          <option value="odd" data-i18n="web_booking_parity_odd">Odd weeks</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_booking_add">Add</button>
+        <span class="save-status" id="repeat-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" id="booking-cap" aria-labelledby="bk-cap-h">
+    <h2 id="bk-cap-h" data-i18n="web_booking_cap_title">Max bookings per day</h2>
+    <form id="cap-form" class="settings-form">
+      <label for="booking-cap-input" data-i18n="web_booking_cap_label">Most bookings in one day (leave empty for no limit)</label>
+      <input type="number" id="booking-cap-input" min="1" step="1" inputmode="numeric">
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
+        <span class="save-status" id="cap-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" id="booking-types" aria-labelledby="bk-types-h">
+    <h2 id="bk-types-h" data-i18n="web_booking_types_title">Session lengths</h2>
+    <p class="muted" data-i18n="web_booking_types_help">The meeting lengths people can choose from. One of them is the standard choice.</p>
+    <ul id="types-list" class="plain-list"></ul>
+    <div class="empty-state" id="types-empty" hidden data-i18n="web_booking_types_empty">No session lengths yet.</div>
+    <form id="type-form" class="settings-form">
+      <h3 id="type-form-title" data-i18n="web_booking_type_new">New session length</h3>
+      <input type="hidden" id="type-slug">
+      <label for="type-name" data-i18n="web_booking_type_name">Name</label>
+      <input type="text" id="type-name" maxlength="80" required>
+      <label for="type-minutes" data-i18n="web_booking_type_minutes">Length in minutes</label>
+      <input type="number" id="type-minutes" min="1" max="43200" step="1" inputmode="numeric" required>
+      <label class="check"><input type="checkbox" id="type-default"> <span data-i18n="web_booking_type_default">This is the standard choice</span></label>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
+        <button class="btn" type="button" id="type-cancel" hidden data-i18n="web_booking_cancel">Cancel</button>
+        <span class="save-status" id="type-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+</div>
+<script src="/app/static/booking.js" defer></script>

@@ -51,7 +51,7 @@ EXPECTED_END = [
     ("/booking/{token}/cancel", ["POST"], "booking_cancel"),
     ("/booking/{token}/cancel", ["OPTIONS"], "booking_options"),
 ]
-EXPECTED_ROUTE_COUNT = 80
+EXPECTED_ROUTE_COUNT = 85
 HYDRA = "http://hydra:4444"
 ISSUER = "https://i.example"
 

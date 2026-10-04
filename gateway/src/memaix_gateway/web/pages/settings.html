@@ -36,10 +36,12 @@
         <option value="oauth" data-i18n="web_calmode_oauth">OAuth — use linked Google account</option>
         <option value="ical_secret" data-i18n="web_calmode_ical">Secret iCal URL (read-only)</option>
         <option value="free_busy" data-i18n="web_calmode_freebusy">Free/busy only</option>
+        <option value="native" data-i18n="web_calmode_native">Memaix own calendar — no external calendar needed</option>
         <option value="none" data-i18n="web_calmode_none">None — remove calendar link</option>
       </select>
       <input type="url" id="calendar-ical-url" placeholder="https://calendar.google.com/calendar/ical/…" hidden aria-label="Calendar iCal URL">
       <input type="text" id="calendar-calendar-id" placeholder="your@calendar.id" hidden aria-label="Calendar ID">
+      <p class="muted" id="calendar-native-hint" hidden><span data-i18n="web_calmode_native_hint">Set your bookable times under</span> <a href="/app/booking" data-i18n="web_nav_booking">Booking</a>.</p>
       <button class="btn btn-primary" type="submit" data-i18n="web_save">Save</button>
     </form>
   </div>
