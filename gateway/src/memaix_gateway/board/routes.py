@@ -291,14 +291,14 @@ def _resolve_sprint(
     if sprint_filter == "active":
         if not detected_active:
             return None, None
-        items = next((sp["items"] for sp in sprints if sp["id"] == detected_active), [])
-        return detected_active, set(items)
+        active_items = next((sp["items"] for sp in sprints if sp["id"] == detected_active), [])
+        return detected_active, set(active_items)
     for sp in sprints:
         if sp["id"] == sprint_filter:
-            items = set(sp["items"])
-            if not items:
+            keep = set(sp["items"])
+            if not keep:
                 raise LookupError(sprint_filter)
-            return sp["id"], items
+            return sp["id"], keep
     raise LookupError(sprint_filter)
 
 
