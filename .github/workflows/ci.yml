@@ -1,7 +1,10 @@
 # Memaix CI. GitHub Actions-format — kör även på Forgejo/Gitea Actions (samma YAML).
 name: ci
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   checks:
