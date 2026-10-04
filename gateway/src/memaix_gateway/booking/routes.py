@@ -511,8 +511,15 @@ async def booking_config(request: Request) -> JSONResponse:
 
     cfg = config.load().get("memaix", {}).get("booking", {})
     forms = t_cal.calendar_meeting_form_list(_get_acl(), link["user"], link["project"])
+    types = t_cal.calendar_meeting_type_list(_get_acl(), link["user"], link["project"])
+    default_type = next((t for t in types if t.get("default")), types[0] if types else None)
     return _json(request, {
-        "duration_min": _clamp_duration(int(link.get("duration_min", 30))),
+        "duration_min": _clamp_duration(int((default_type or link).get("duration_min", 30))),
+        "meeting_types": [
+            {"slug": t["slug"], "name": t["name"], "duration_min": t["duration_min"],
+             "default": t is default_type}
+            for t in types
+        ],
         "granularity_min": _clamp_granularity(link.get("granularity_min")),
         "timezone": _host_timezone(link),
         "max_days_ahead": link.get("max_days_ahead"),
@@ -581,6 +588,12 @@ async def booking_create(request: Request) -> JSONResponse:
     enabled = t_cal.calendar_booking_enabled_get(acl, host_user, project)
     if not enabled.get("enabled"):
         return _json(request, {"error": "not_found"}, status_code=404)
+
+    # Session lengths the host defined are the only lengths bookable; no
+    # configured types keeps the old behaviour (any length in range).
+    types = t_cal.calendar_meeting_type_list(acl, host_user, project)
+    if types and int(duration.total_seconds() // 60) not in {t["duration_min"] for t in types}:
+        return _json(request, {"error": "invalid_duration"}, status_code=400)
 
     # Meeting forms (card 85854d2c): an empty list means the host never
     # configured any, which is identical to the pre-feature behaviour —

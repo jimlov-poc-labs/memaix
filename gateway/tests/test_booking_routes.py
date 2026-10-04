@@ -1235,3 +1235,66 @@ def test_create_booking_google_meet_missing_meet_url_rolls_back_event(rig, monke
     assert resp.json()["error"] == "meeting_form_unavailable"
     assert not any(e["start"] == _dt(4).isoformat() for e in dav._events)
     assert len(dav.deleted_ids) == 1
+
+
+def _set_types(acl, project, user, types):
+    from memaix_gateway.connectors.meeting_types import MeetingTypesStore
+
+    return MeetingTypesStore(acl, project, user).set(types)
+
+
+def test_config_lists_session_lengths_and_defaults_duration_to_default_type(rig):
+    client, _dav = rig
+    from memaix_gateway import server as server_mod
+
+    _set_types(server_mod._acl, "proj", "alice", [
+        {"slug": "kort", "name": "30 min", "duration_min": 30},
+        {"slug": "lang", "name": "2 timmar", "duration_min": 120, "default": True},
+    ])
+    body = client.get("/book/alice-30/config").json()
+    assert body["duration_min"] == 120
+    assert [(t["slug"], t["default"]) for t in body["meeting_types"]] == [("kort", False), ("lang", True)]
+
+
+def test_create_booking_rejects_length_not_among_host_session_lengths(rig):
+    client, dav = rig
+    from memaix_gateway import server as server_mod
+
+    _set_types(server_mod._acl, "proj", "alice", [{"slug": "kort", "name": "30 min", "duration_min": 30}])
+    resp = client.post(
+        "/book/alice-30",
+        json={
+            "start": _dt(21).isoformat(), "end": _dt(21, 45).isoformat(),
+            "name": "Bob", "email": "bob@example.com", "turnstile_token": "tok", "consent": True,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_duration"
+    assert not dav._events or all(e["start"] != _dt(21).isoformat() for e in dav._events)
+
+
+def test_second_booking_same_day_is_refused_when_day_cap_reached(rig, monkeypatch, tmp_path):
+    import memaix_gateway.booking.routes as booking_routes_mod
+    from memaix_gateway.booking import consent_store as cs
+    from memaix_gateway import server as server_mod
+    from memaix_gateway.connectors.working_hours import WorkingHoursStore
+
+    store = cs.ConsentStore(tmp_path / "cap-consent.db")
+    monkeypatch.setattr(booking_routes_mod, "get_consent_store", lambda: store)
+    monkeypatch.setattr(cs, "_store", store)
+    client, _dav = rig
+    WorkingHoursStore(server_mod._acl, "proj", "alice").set_extras(max_per_day=1)
+
+    def book(hour):
+        return client.post(
+            "/book/alice-30",
+            json={
+                "start": _dt(hour).isoformat(), "end": _dt(hour, 30).isoformat(),
+                "name": "Bob", "email": "bob@example.com", "turnstile_token": "tok", "consent": True,
+            },
+        )
+
+    assert book(21).status_code == 200
+    second = book(22)
+    assert second.status_code == 409
+    assert second.json()["error"] == "slot_unavailable"

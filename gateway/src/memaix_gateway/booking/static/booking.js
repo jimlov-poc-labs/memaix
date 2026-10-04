@@ -39,6 +39,7 @@
       email: 'Email',
       purpose: 'What would you like to talk about? (optional)',
       form: 'How should we meet?',
+      length: 'Session length',
       back: 'Back',
       confirm: 'Confirm',
       booking: 'Booking…',
@@ -57,6 +58,7 @@
         captcha_failed: 'Captcha check failed — please try again.',
         rate_limited: 'Too many attempts — please wait a moment and try again.',
         consent_required: 'You need to agree to the data storage to book a meeting.',
+        invalid_duration: 'That session length is not available — pick another.',
         invalid_meeting_form: 'That meeting option is no longer available — pick another.',
         meeting_form_unavailable: "We couldn't set up the meeting link — please try again shortly.",
         network: 'Something went wrong — please try again shortly.',
@@ -71,6 +73,7 @@
       email: 'E-post',
       purpose: 'Vad vill du prata om? (frivilligt)',
       form: 'Hur ska vi ses?',
+      length: 'Sessionslängd',
       back: 'Tillbaka',
       confirm: 'Boka',
       booking: 'Bokar…',
@@ -89,6 +92,7 @@
         captcha_failed: 'Captcha-kontrollen misslyckades — försök igen.',
         rate_limited: 'För många försök — vänta en stund och försök igen.',
         consent_required: 'Du behöver godkänna lagringen för att kunna boka.',
+        invalid_duration: 'Den sessionslängden finns inte — välj en annan.',
         invalid_meeting_form: 'Det mötesalternativet finns inte längre — välj ett annat.',
         meeting_form_unavailable: 'Vi kunde inte skapa möteslänken — försök igen om en stund.',
         network: 'Något gick fel — försök igen om en stund.',
@@ -268,6 +272,11 @@
     thead.appendChild(headRow);
     table.appendChild(thead);
     table.appendChild(tbody);
+    var lengthSelect = el('select');
+    var lengthField = field(T.length, lengthSelect, 'mxb-' + Math.random().toString(36).slice(2, 8) + '-length');
+    lengthField.classList.add('mxb-hidden');
+    lengthSelect.addEventListener('change', function () { reload(); });
+    panes.picking.appendChild(lengthField);
     panes.picking.appendChild(table);
 
     // ---- form ----
@@ -396,7 +405,20 @@
           cfg = body;
           if (body.consent_text) consentText.textContent = body.consent_text;
           renderMeetingForms(body.meeting_forms || []);
+          renderSessionLengths(body.meeting_types || []);
         });
+    }
+
+    function renderSessionLengths(types) {
+      lengthSelect.replaceChildren();
+      if (types.length < 2) return;
+      types.forEach(function (t) {
+        var opt = el('option', null, t.name);
+        opt.value = String(t.duration_min);
+        if (t['default']) opt.selected = true;
+        lengthSelect.appendChild(opt);
+      });
+      lengthField.classList.remove('mxb-hidden');
     }
 
     function renderMeetingForms(forms) {
@@ -424,6 +446,7 @@
       var url = gateway + '/book/' + encodeURIComponent(slug) + '/times' +
         '?within_start=' + encodeURIComponent(from.toISOString()) +
         '&within_end=' + encodeURIComponent(to.toISOString());
+      if (lengthSelect.value) url += '&duration_min=' + encodeURIComponent(lengthSelect.value);
 
       return fetch(url).then(json).then(function (body) {
         times = body.times || [];
