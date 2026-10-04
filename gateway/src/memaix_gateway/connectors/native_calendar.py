@@ -57,6 +57,9 @@ class NativeCalendarAdapter:
         attendees: list[str] | None = None, location: str | None = None,
         description: str | None = None, want_conference: bool = False,
     ) -> dict:
+        # Native calendar has no conference concept — accepted for duck-type
+        # compatibility with the other adapters and ignored.
+        del want_conference
         event = {
             "id": uid, "title": title, "start": start.isoformat(), "end": end.isoformat(),
             "location": location or "", "description": description or "",

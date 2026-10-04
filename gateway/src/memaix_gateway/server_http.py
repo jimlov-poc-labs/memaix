@@ -193,7 +193,7 @@ async def _dcr_vidare(request: Request, method: str, url: str) -> JSONResponse:
     issuer = _issuer_or_default()
     resource_urls = [f"{issuer}/", issuer]
     existing = body.get("audience") or []
-    body["audience"] = list({*existing, *resource_urls})
+    body["audience"] = [*{*existing, *resource_urls}]
 
     headers = {"Content-Type": "application/json"}
     if method == "PUT":
