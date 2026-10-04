@@ -119,7 +119,8 @@ def _purge_expired(now: int) -> None:
         del _pending_states[k]
 
 
-def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict:  # NOSONAR: uniform tool signature (acl, user_id, ...)
+# uniform tool signature (acl, user_id, ...)
+def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict:  # NOSONAR
     """Generate a link URL for the given provider.
 
     For OAuth providers (PROVIDERS) this is an authorization-code state URL
@@ -187,7 +188,8 @@ def account_link_imap(
     return {"ok": True, "provider": "imap", "account": account_email}
 
 
-def account_list(acl: Acl, user_id: str, store: TokenStore) -> list[dict]:  # NOSONAR: uniform tool signature (acl, user_id, ...)
+# uniform tool signature (acl, user_id, ...)
+def account_list(acl: Acl, user_id: str, store: TokenStore) -> list[dict]:  # NOSONAR
     """List linked accounts for the calling user.
 
     Each account carries a `scopes_by_capability` map ({capability:
@@ -260,7 +262,8 @@ def account_scope_set(
 
 
 def account_scope_list(
-    acl: Acl,  # NOSONAR: uniform tool signature (acl, user_id, ...)
+    # uniform tool signature (acl, user_id, ...)
+    acl: Acl,  # NOSONAR
     user_id: str,
     store: TokenStore,
     provider: str | None = None,
@@ -275,7 +278,8 @@ def account_scope_list(
 
 
 def account_unlink(
-    acl: Acl,  # NOSONAR: uniform tool signature (acl, user_id, ...)
+    # uniform tool signature (acl, user_id, ...)
+    acl: Acl,  # NOSONAR
     user_id: str,
     provider: str,
     account: str,
