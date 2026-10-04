@@ -68,46 +68,53 @@ def render_odt(title: str, sections: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+def _milestone_section(milestones: list) -> dict:
+    paras = [
+        f"{m['name']}: {m['target_date'] or 'no target date'}"
+        + (" — OVERDUE" if m["overdue"] else "")
+        for m in milestones
+    ] or ["No milestones."]
+    return {"heading": "Milestones", "paragraphs": paras}
+
+
+def _variance_section(variance: dict) -> dict:
+    if not variance.get("ok"):
+        return {"heading": "Variance", "paragraphs": [variance.get("error", "No baseline yet.")]}
+    paras = [
+        f"{t['title']}: {t['percent_complete']}% complete, "
+        f"{t['hours_logged']}h logged vs {t['estimate_hours']}h estimated"
+        + (f", {t['slippage_days']} day(s) behind" if t.get("slippage_days") else "")
+        for t in variance["tasks"]
+    ] or ["No tasks in the baseline."]
+    return {"heading": "Variance", "paragraphs": paras}
+
+
+def _raid_section(raid: dict) -> dict:
+    paras = [
+        f"[{e['type']}/{e.get('severity') or 'n/a'}] {e['summary']}"
+        for e in raid.get("entries", [])
+    ] or ["No open RAID entries."]
+    return {"heading": "RAID", "paragraphs": paras}
+
+
+def _utilization_section(util: dict) -> dict:
+    paras = [
+        f"{r['name']}: {r['utilization_pct']}% ({r['allocated_hours']}h / {r['capacity_hours']}h)"
+        for r in util["resources"]
+    ] or ["No resources in this scenario."]
+    return {"heading": f"Utilization ({util['period_start']} to {util['period_end']})", "paragraphs": paras}
+
+
+# Fixed order = the order sections appear in the report.
+_PM_SECTION_BUILDERS = (
+    ("milestones", _milestone_section),
+    ("variance", _variance_section),
+    ("raid", _raid_section),
+    ("utilization", _utilization_section),
+)
+
+
 def pm_report_sections(report: dict) -> list[dict]:
     """Convert tools/pm_engine.py's pm_report() output into render_odt()'s
     section shape — a straight re-formatting, no new computation."""
-    sections: list[dict] = []
-
-    if "milestones" in report:
-        paras = [
-            f"{m['name']}: {m['target_date'] or 'no target date'}"
-            + (" — OVERDUE" if m["overdue"] else "")
-            for m in report["milestones"]
-        ] or ["No milestones."]
-        sections.append({"heading": "Milestones", "paragraphs": paras})
-
-    if "variance" in report:
-        variance = report["variance"]
-        if not variance.get("ok"):
-            sections.append({"heading": "Variance", "paragraphs": [variance.get("error", "No baseline yet.")]})
-        else:
-            paras = [
-                f"{t['title']}: {t['percent_complete']}% complete, "
-                f"{t['hours_logged']}h logged vs {t['estimate_hours']}h estimated"
-                + (f", {t['slippage_days']} day(s) behind" if t.get("slippage_days") else "")
-                for t in variance["tasks"]
-            ] or ["No tasks in the baseline."]
-            sections.append({"heading": "Variance", "paragraphs": paras})
-
-    if "raid" in report:
-        raid = report["raid"]
-        paras = [
-            f"[{e['type']}/{e.get('severity') or 'n/a'}] {e['summary']}"
-            for e in raid.get("entries", [])
-        ] or ["No open RAID entries."]
-        sections.append({"heading": "RAID", "paragraphs": paras})
-
-    if "utilization" in report:
-        util = report["utilization"]
-        paras = [
-            f"{r['name']}: {r['utilization_pct']}% ({r['allocated_hours']}h / {r['capacity_hours']}h)"
-            for r in util["resources"]
-        ] or ["No resources in this scenario."]
-        sections.append({"heading": f"Utilization ({util['period_start']} to {util['period_end']})", "paragraphs": paras})
-
-    return sections
+    return [build(report[key]) for key, build in _PM_SECTION_BUILDERS if key in report]
