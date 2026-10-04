@@ -36,7 +36,16 @@ jobs:
           key: sonar-${{ runner.os }}-${{ hashFiles('**/sonar-project.properties') }}
           restore-keys: sonar-${{ runner.os }}-
 
+      # "Ny kod" i Sonar räknas från föregående projectVersion. Följer versionen
+      # senaste release-taggen nollställs den vid varje release i stället för
+      # att vara evig.
+      - name: Läs senaste releaseversion
+        id: ver
+        run: echo "version=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//' || true)" >> "$GITHUB_OUTPUT"
+
       - uses: SonarSource/sonarqube-scan-action@v8
+        with:
+          args: -Dsonar.projectVersion=${{ steps.ver.outputs.version || '1.0' }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonar.jimlov.se
