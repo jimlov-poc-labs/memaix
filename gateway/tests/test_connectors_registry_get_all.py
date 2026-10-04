@@ -204,3 +204,199 @@ def test_get_all_per_user_sweep_works_without_resource_cfg():
     )
     result = registry.get_all(acl, store, "acme", "calendar", "alice")
     assert result == [("google:a@gmail.com", "google")]
+
+
+# ---------------------------------------------------------------------------
+# Karakteriseringstester (Sonar S3776-saneringen av get_all): förgreningarna
+# som de äldre testerna inte nådde, plus kvirkar som låses.
+# ---------------------------------------------------------------------------
+
+def _spec(type_, auth, capability="calendar", provider=None):
+    return ConnectorSpec(
+        type=type_, capability=capability, auth=auth, provider=provider,
+        factory=lambda acl, project, user, cfg, token: (type_, cfg.get("url"), token),
+    )
+
+
+def _google_store(*emails, scopes=None):
+    return _FakeTokenStore(
+        accounts={"alice": [{"provider": "google", "account": e} for e in emails]},
+        tokens={("alice", "google", e): {"email": e} for e in emails},
+        scopes=scopes,
+    )
+
+
+def test_get_all_extras_only_when_base_type_has_no_spec():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    acl = _acl({"type": "nosuch", "sources": [{"type": "caldav", "url": "u1"}]})
+    # base spec saknas -> inga basadaptrar, men extrakällan löses ändå
+    assert reg.get_all(acl, _FakeTokenStore(), "acme", "calendar", "alice") == [
+        ("caldav:0", ("caldav", "u1", None))
+    ]
+
+
+def test_get_all_extra_inherits_base_type_and_label_index_counts_skipped():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    acl = _acl({
+        "type": "caldav", "url": "base",
+        "sources": [
+            {"type": "unknown", "url": "skipped"},
+            {"url": "u1"},
+            {"url": "u2", "label": "Work"},
+            {"url": "u3", "label": ""},
+        ],
+    })
+    result = reg.get_all(acl, _FakeTokenStore(), "acme", "calendar", "alice")
+    assert result == [
+        ("caldav:acme", ("caldav", "base", None)),
+        ("caldav:1", ("caldav", "u1", None)),
+        ("Work", ("caldav", "u2", None)),
+        ("caldav:3", ("caldav", "u3", None)),
+    ]
+
+
+def test_get_all_sources_none_or_missing_is_ignored():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    for cfg in ({"type": "caldav", "sources": None}, {"type": "caldav", "sources": []}, {"type": "caldav"}):
+        assert len(reg.get_all(_acl(cfg), _FakeTokenStore(), "acme", "calendar", "alice")) == 1
+
+
+def test_get_all_extra_per_user_uses_first_scoped_account_only():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    reg.register(_spec("google", "per_user"))
+    acl = _acl({"type": "caldav", "url": "b", "sources": [{"type": "google", "label": "G"}]})
+    store = _google_store("a@x", "b@x")
+    result = reg.get_all(acl, store, "acme", "calendar", "alice")
+    # extrakällan ger bara första kontot; svepet tar sedan alla (google var inte hanterad)
+    assert result == [
+        ("caldav:acme", ("caldav", "b", None)),
+        ("G", ("google", None, {"email": "a@x"})),
+        ("google:a@x", ("google", "b", {"email": "a@x"})),
+        ("google:b@x", ("google", "b", {"email": "b@x"})),
+    ]
+
+
+def test_get_all_extra_per_user_skipped_without_account_or_token():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    reg.register(_spec("google", "per_user"))
+    acl = _acl({"type": "caldav", "url": "b", "sources": [{"type": "google"}]})
+    # inga konton alls
+    assert reg.get_all(acl, _FakeTokenStore(), "acme", "calendar", "alice") == [
+        ("caldav:acme", ("caldav", "b", None))
+    ]
+    # konto utan token
+    store = _FakeTokenStore(accounts={"alice": [{"provider": "google", "account": "a@x"}]})
+    assert reg.get_all(acl, store, "acme", "calendar", "alice") == [("caldav:acme", ("caldav", "b", None))]
+
+
+def test_get_all_extra_per_user_respects_scope():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    reg.register(_spec("google", "per_user"))
+    acl = _acl({"type": "caldav", "url": "b", "sources": [{"type": "google"}]})
+    store = _google_store("a@x", scopes={("google", "a@x", "calendar"): ["other"]})
+    assert reg.get_all(acl, store, "acme", "calendar", "alice") == [("caldav:acme", ("caldav", "b", None))]
+    store = _google_store("a@x", scopes={("google", "a@x", "calendar"): ["acme"]})
+    assert len(reg.get_all(acl, store, "acme", "calendar", "alice")) == 3
+
+
+def test_get_all_base_per_user_skips_accounts_without_token_and_unscoped():
+    reg = ConnectorRegistry()
+    reg.register(_spec("google", "per_user"))
+    acl = _acl({"type": "google"})
+    store = _FakeTokenStore(
+        accounts={"alice": [
+            {"provider": "google", "account": "none@x"},
+            {"provider": "google", "account": "ok@x"},
+            {"provider": "google", "account": "hidden@x"},
+            {"provider": "other", "account": "o@x"},
+        ]},
+        tokens={
+            ("alice", "google", "ok@x"): {"email": "ok@x"},
+            ("alice", "google", "hidden@x"): {"email": "hidden@x"},
+        },
+        scopes={
+            ("google", "none@x", "calendar"): ["acme"],
+            ("google", "ok@x", "calendar"): ["*"],
+            ("google", "hidden@x", "calendar"): ["elsewhere"],
+        },
+    )
+    assert reg.get_all(acl, store, "acme", "calendar", "alice") == [
+        ("google:ok@x", ("google", None, {"email": "ok@x"}))
+    ]
+
+
+def test_get_all_sweep_without_resource_cfg_passes_empty_cfg():
+    reg = ConnectorRegistry()
+    reg.register(_spec("google", "per_user"))
+    reg.register(_spec("caldav", "shared"))
+    acl = Acl(users={"alice": {"grants": {"acme": "owner"}}}, projects={"acme": {"vault": "/x"}})
+    result = reg.get_all(acl, _google_store("a@x"), "acme", "calendar", "alice")
+    # shared-typer sveps aldrig; per_user ger adapter med tom cfg
+    assert result == [("google:a@x", ("google", None, {"email": "a@x"}))]
+
+
+def test_get_all_sweep_skips_other_capability_and_handled_base_type():
+    reg = ConnectorRegistry()
+    reg.register(_spec("google", "per_user"))
+    reg.register(_spec("ical", "per_user"))
+    reg.register(_spec("imap", "per_user", capability="mail"))
+    acl = _acl({"type": "google"})
+    store = _FakeTokenStore(
+        accounts={"alice": [
+            {"provider": "google", "account": "a@x"},
+            {"provider": "ical", "account": "secret"},
+        ]},
+        tokens={("alice", "google", "a@x"): {"e": 1}, ("alice", "ical", "secret"): {"e": 2}},
+    )
+    result = reg.get_all(acl, store, "acme", "calendar", "alice")
+    # google hanteras en gång (bas), ical via svep, mail-specen ignoreras
+    assert [label for label, _ in result] == ["google:a@x", "ical:secret"]
+
+
+def test_get_all_extra_plus_sweep_can_duplicate_a_type_today():
+    """Kvirk som låses (ändra inte): en per_user-typ som bara finns som extrakälla
+    läggs inte i handled_types, så svepet ger den en gång till."""
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    reg.register(_spec("ical", "per_user"))
+    acl = _acl({"type": "caldav", "url": "b", "sources": [{"type": "ical", "label": "X"}]})
+    store = _FakeTokenStore(
+        accounts={"alice": [{"provider": "ical", "account": "s"}]},
+        tokens={("alice", "ical", "s"): {"t": 1}},
+    )
+    labels = [label for label, _ in reg.get_all(acl, store, "acme", "calendar", "alice")]
+    assert labels == ["caldav:acme", "X", "ical:s"]
+
+
+def test_get_all_provider_override_is_used_for_accounts():
+    reg = ConnectorRegistry()
+    reg.register(_spec("gcal", "per_user", provider="google"))
+    acl = _acl({"type": "gcal"})
+    result = reg.get_all(acl, _google_store("a@x"), "acme", "calendar", "alice")
+    assert result == [("gcal:a@x", ("gcal", None, {"email": "a@x"}))]
+
+
+def test_get_all_mail_uses_mailbox_key_and_imap_default_type():
+    reg = ConnectorRegistry()
+    reg.register(_spec("imap", "shared", capability="mail"))
+    acl = Acl(
+        users={"alice": {"grants": {"acme": "owner"}}},
+        projects={"acme": {"vault": "/x", "mailbox": {"url": "m"}}},
+    )
+    assert reg.get_all(acl, _FakeTokenStore(), "acme", "mail", "alice") == [
+        ("imap:acme", ("imap", "m", None))
+    ]
+
+
+def test_get_all_calendar_default_type_is_caldav():
+    reg = ConnectorRegistry()
+    reg.register(_spec("caldav", "shared"))
+    assert reg.get_all(_acl({"url": "u"}), _FakeTokenStore(), "acme", "calendar", "alice") == [
+        ("caldav:acme", ("caldav", "u", None))
+    ]

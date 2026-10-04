@@ -40,49 +40,55 @@ def _meeting_forms_path(acl, project: str, user: str) -> Path:
     return directory / f"{user}.json"
 
 
+def _form_config(slug: str, provider: str, f: dict) -> dict:
+    """Normalized config for one form: only phone forms carry host config."""
+    if provider != "phone":
+        # google_meet/zoom generate their link per booking — nothing
+        # host-configurable beyond the label.
+        return {}
+    config = dict(f.get("config") or {})
+    phone_number = str(config.get("phone_number") or "").strip()
+    if not phone_number:
+        raise ValueError(f"{slug!r}: phone form requires config.phone_number")
+    config["phone_number"] = phone_number
+    return config
+
+
+def _validate_form(f, slugs: set[str]) -> dict:
+    """Validate one entry and return its normalized copy; records its slug."""
+    if not isinstance(f, dict):
+        raise ValueError(f"each meeting form must be an object, got {f!r}")
+    slug = f.get("slug", "")
+    if not _SLUG_RE.match(slug):
+        raise ValueError(f"invalid slug {slug!r}: must be lowercase alphanumeric/hyphen")
+    if slug in slugs:
+        raise ValueError(f"duplicate slug {slug!r}")
+    slugs.add(slug)
+
+    provider = f.get("provider", "")
+    if provider not in KNOWN_PROVIDERS:
+        raise ValueError(f"{slug!r}: unknown provider {provider!r}, must be one of {sorted(KNOWN_PROVIDERS)}")
+
+    label = f.get("label", "")
+    if not label:
+        raise ValueError(f"{slug!r}: label is required")
+
+    return {
+        "slug": slug,
+        "provider": provider,
+        "label": label,
+        "config": _form_config(slug, provider, f),
+        "default": bool(f.get("default", False)),
+    }
+
+
 def validate_forms(forms: list[dict]) -> list[dict]:
     """Raise ValueError if *forms* is not a valid list of meeting forms.
     Returns a normalized copy with exactly one entry marked default
     (auto-promoting the first if none was marked), same contract as
     meeting_types.validate_types."""
     slugs: set[str] = set()
-    out: list[dict] = []
-    for f in forms:
-        if not isinstance(f, dict):
-            raise ValueError(f"each meeting form must be an object, got {f!r}")
-        slug = f.get("slug", "")
-        if not _SLUG_RE.match(slug):
-            raise ValueError(f"invalid slug {slug!r}: must be lowercase alphanumeric/hyphen")
-        if slug in slugs:
-            raise ValueError(f"duplicate slug {slug!r}")
-        slugs.add(slug)
-
-        provider = f.get("provider", "")
-        if provider not in KNOWN_PROVIDERS:
-            raise ValueError(f"{slug!r}: unknown provider {provider!r}, must be one of {sorted(KNOWN_PROVIDERS)}")
-
-        label = f.get("label", "")
-        if not label:
-            raise ValueError(f"{slug!r}: label is required")
-
-        config = dict(f.get("config") or {})
-        if provider == "phone":
-            phone_number = str(config.get("phone_number") or "").strip()
-            if not phone_number:
-                raise ValueError(f"{slug!r}: phone form requires config.phone_number")
-            config["phone_number"] = phone_number
-        else:
-            # google_meet/zoom generate their link per booking — nothing
-            # host-configurable beyond the label.
-            config = {}
-
-        out.append({
-            "slug": slug,
-            "provider": provider,
-            "label": label,
-            "config": config,
-            "default": bool(f.get("default", False)),
-        })
+    out = [_validate_form(f, slugs) for f in forms]
 
     defaults = [f for f in out if f["default"]]
     if len(defaults) > 1:
