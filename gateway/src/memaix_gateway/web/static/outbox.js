@@ -49,8 +49,12 @@
     copy.className = 'btn btn-primary';
     copy.textContent = t('web_outbox_link_copy');
     copy.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); document.execCommand('copy'); }
-      toast(t('web_outbox_link_copied'), 'success');
+      try {
+        await navigator.clipboard.writeText(ta.value);
+        toast(t('web_outbox_link_copied'), 'success');
+      } catch {
+        ta.select();
+      }
     });
     box.append(h, hint, ta, copy);
     modal(box);
