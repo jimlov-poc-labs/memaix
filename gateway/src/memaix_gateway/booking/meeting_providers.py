@@ -44,7 +44,7 @@ class MeetingDetail(TypedDict):
 
 
 class _PhoneProvider:
-    def resolve(self, acl, project, host_user, form_config, **kw) -> MeetingDetail:  # NOSONAR: parameters are fixed by the shared provider interface
+    def resolve(self, acl, project, host_user, form_config, **kw) -> MeetingDetail:  # NOSONAR: fixed by provider interface
         phone_number = form_config.get("phone_number")
         if not phone_number:
             raise MeetingProviderError("phone form has no phone_number configured")
@@ -55,7 +55,7 @@ class _PhoneProvider:
 
 
 class _GoogleMeetProvider:
-    def resolve(self, acl, project, host_user, form_config, *, calendar_event=None, **kw) -> MeetingDetail:  # NOSONAR: parameters are fixed by the shared provider interface
+    def resolve(self, acl, project, host_user, form_config, *, calendar_event=None, **kw) -> MeetingDetail:  # NOSONAR: fixed by provider interface
         meet_url = (calendar_event or {}).get("meet_url")
         if not meet_url:
             raise MeetingProviderError(
@@ -69,7 +69,7 @@ class _GoogleMeetProvider:
 
 
 class _ZoomProvider:
-    def resolve(self, acl, project, host_user, form_config, *, start, end, title, **kw) -> MeetingDetail:  # NOSONAR: parameters are fixed by the shared provider interface
+    def resolve(self, acl, project, host_user, form_config, *, start, end, title, **kw) -> MeetingDetail:  # NOSONAR: fixed by provider interface
         from .. import config
         from .zoom_client import ZoomAPIError, ZoomAuthError, create_zoom_meeting, get_access_token
 
