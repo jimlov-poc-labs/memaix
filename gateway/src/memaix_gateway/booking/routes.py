@@ -489,8 +489,15 @@ async def booking_config(request: Request) -> JSONResponse:
 
     cfg = config.load().get("memaix", {}).get("booking", {})
     forms = t_cal.calendar_meeting_form_list(_get_acl(), link["user"], link["project"])
+    types = t_cal.calendar_meeting_type_list(_get_acl(), link["user"], link["project"])
+    default_type = next((t for t in types if t.get("default")), types[0] if types else None)
     return _json(request, {
-        "duration_min": _clamp_duration(int(link.get("duration_min", 30))),
+        "duration_min": _clamp_duration(int((default_type or link).get("duration_min", 30))),
+        "meeting_types": [
+            {"slug": t["slug"], "name": t["name"], "duration_min": t["duration_min"],
+             "default": t is default_type}
+            for t in types
+        ],
         "granularity_min": _clamp_granularity(link.get("granularity_min")),
         "timezone": _host_timezone(link),
         "max_days_ahead": link.get("max_days_ahead"),
@@ -666,7 +673,7 @@ def _resolve_google_meet_detail(request, acl, project, host_user, meeting_form, 
 
 def _book_slot(request, acl, link, project, host_user, req, meeting_form, dav, write_dav):
     """The race-critical section: TOCTOU re-check + calendar_create under the
-    per-host lock. Returns (event, title, meeting_detail); raises _Refused."""
+    per-host lock. Returns (event, title, meeting_detail, manage_token); raises _Refused."""
     is_google_meet = meeting_form is not None and meeting_form["provider"] == "google_meet"
     with _BOOKING_LOCKS[(project, host_user)]:
         # TOCTOU re-check, wrapped with calendar_create in the per-host-user
@@ -700,7 +707,11 @@ def _book_slot(request, acl, link, project, host_user, req, meeting_form, dav, w
             meeting_detail = _resolve_google_meet_detail(
                 request, acl, project, host_user, meeting_form, req, title, event, write_dav,
             )
-    return event, title, meeting_detail
+
+        # Recorded inside the lock: the per-day cap counts these rows, so the
+        # next booker must see this one before the lock is released.
+        manage_token = _record_booking(request, project, host_user, req, event, meeting_form, meeting_detail)
+    return event, title, meeting_detail, manage_token
 
 
 def _record_booking(request, project, host_user, req, event, meeting_form, meeting_detail) -> str:
@@ -733,14 +744,19 @@ async def _create_booking(request: Request, link: dict, client_ip: str) -> JSONR
     if not enabled.get("enabled"):
         raise _Refused(_json(request, {"error": "not_found"}, status_code=404))
 
+    # Session lengths the host defined are the only lengths bookable; no
+    # configured types keeps the old behaviour (any length in range).
+    types = t_cal.calendar_meeting_type_list(acl, host_user, project)
+    if types and int((req.end - req.start).total_seconds() // 60) not in {t["duration_min"] for t in types}:
+        raise _Refused(_json(request, {"error": "invalid_duration"}, status_code=400))
+
     forms = t_cal.calendar_meeting_form_list(acl, host_user, project)
     meeting_form = _select_meeting_form(request, forms, req.meeting_form_slug)
     dav, write_dav = _resolve_booking_davs(request, project, host_user, acl)
 
-    event, title, meeting_detail = _book_slot(
+    event, title, meeting_detail, manage_token = _book_slot(
         request, acl, link, project, host_user, req, meeting_form, dav, write_dav,
     )
-    manage_token = _record_booking(request, project, host_user, req, event, meeting_form, meeting_detail)
     # Lock released above — the booking is already committed to the
     # calendar, so email delivery is not part of the race-critical section
     # and its latency must never hold up the next booker for this host.

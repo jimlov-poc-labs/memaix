@@ -118,3 +118,50 @@ def test_calendar_find_free_unaffected_when_no_schedule_configured(acl):
         _dav=dav,
     )
     assert slots == [{"start": "2026-01-10T00:00:00+00:00", "end": "2026-01-11T00:00:00+00:00"}]
+
+
+def test_schedule_set_and_find_free_respects_parity_and_blocks(acl):
+    from memaix_gateway.tools.calendar import calendar_schedule_set
+
+    evening = [{"start": "17:00", "end": "22:00"}]
+    calendar_working_hours_set(acl, "carol", "proj", "Europe/Stockholm", {})
+    res = calendar_schedule_set(
+        acl, "carol", "proj",
+        weeks={"even": {"mon": evening}, "odd": {}},
+        blocks=[{"start": "2026-01-05T17:00:00+01:00", "end": "2026-01-05T18:00:00+01:00"}],
+    )
+    assert res["ok"] and res["weeks"]["even"]["mon"] == evening
+    free = calendar_find_free(
+        acl, "carol", "proj", 60, "2026-01-05T00:00:00+00:00", "2026-01-13T00:00:00+00:00", _dav=_MockDav()
+    )
+    assert free == [{"start": "2026-01-05T17:00:00+00:00", "end": "2026-01-05T21:00:00+00:00"}]
+
+
+def test_schedule_set_clear_and_reject(acl):
+    from memaix_gateway.tools.calendar import calendar_schedule_set
+
+    assert calendar_schedule_set(acl, "carol", "proj", max_per_day=1)["max_per_day"] == 1
+    assert "max_per_day" not in calendar_schedule_set(acl, "carol", "proj", max_per_day=0)
+    assert calendar_schedule_set(acl, "carol", "proj", dates={"bad": []})["ok"] is False
+    with pytest.raises(AccessDenied):
+        calendar_schedule_set(acl, "bob", "proj", max_per_day=1)
+
+
+def test_max_per_day_hides_rest_of_booked_day(acl, tmp_path, monkeypatch):
+    from memaix_gateway.booking import consent_store as cs
+    from memaix_gateway.tools.calendar import calendar_schedule_set
+
+    monkeypatch.setattr(cs, "_store", cs.ConsentStore(tmp_path / "c.db"))
+    window = [{"start": "09:00", "end": "17:00"}]
+    calendar_working_hours_set(acl, "carol", "proj", "Europe/Stockholm", {"mon": window, "tue": window})
+    calendar_schedule_set(acl, "carol", "proj", max_per_day=1)
+    mon_start = int(datetime(2026, 1, 5, 9, tzinfo=timezone.utc).timestamp())
+    store = cs.get_consent_store()
+    store.record(project="proj", host_user="carol", event_id="e1", visitor_email="v@x.se",
+                 consent_text="ok", consent_at=1, meeting_end=mon_start + 7200, meeting_start=mon_start)
+    args = (acl, "carol", "proj", 60, "2026-01-05T00:00:00+00:00", "2026-01-07T00:00:00+00:00")
+    days = {s["start"][:10] for s in calendar_find_free(*args, _dav=_MockDav())}
+    assert days == {"2026-01-06"}
+    # moving the booking itself must not be blocked by its own day
+    days = {s["start"][:10] for s in calendar_find_free(*args, _dav=_MockDav(), _exclude_event_id="e1")}
+    assert days == {"2026-01-05", "2026-01-06"}

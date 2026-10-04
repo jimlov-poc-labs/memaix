@@ -750,9 +750,34 @@ def calendar_find_free(
         from ..connectors.working_hours import WorkingHoursStore, apply_working_hours
 
         hours = WorkingHoursStore(acl, project, user_id).get()
-        free = apply_working_hours(free, hours.get("week", {}), hours.get("tz", ""))
+        if any(hours.get(k) for k in ("weeks", "dates", "blocks")):
+            from ..connectors.working_hours import apply_schedule
+
+            free = apply_schedule(free, hours)
+        else:
+            free = apply_working_hours(free, hours.get("week", {}), hours.get("tz", ""))
+        free = _apply_booking_cap(free, hours, project, user_id, _exclude_event_id)
         free = [slot for slot in free if _parse_dt(slot["end"]) - _parse_dt(slot["start"]) >= duration]
     return free
+
+
+def _apply_booking_cap(free, hours, project, user_id, exclude_event_id):
+    cap, tz = hours.get("max_per_day"), hours.get("tz")
+    if not cap or not tz or not free:
+        return free
+    from collections import Counter
+    from zoneinfo import ZoneInfo
+
+    from ..booking.consent_store import get_consent_store
+    from ..connectors.aggregate import to_utc
+    from ..connectors.working_hours import apply_day_cap
+
+    zone = ZoneInfo(tz)
+    lo = int(min(to_utc(s["start"]) for s in free).timestamp()) - 86400
+    hi = int(max(to_utc(s["end"]) for s in free).timestamp()) + 86400
+    starts = get_consent_store().active_starts(project, user_id, lo, hi, exclude_event_id)
+    per_day = Counter(datetime.fromtimestamp(t, zone).date() for t in starts)
+    return apply_day_cap(free, tz, dict(per_day), cap)
 
 
 def calendar_free_busy(
@@ -1057,6 +1082,35 @@ def calendar_working_hours_set(acl: Acl, user_id: str, project: str, tz: str, we
     return {"ok": True, "tz": tz, "week": week}
 
 
+def calendar_schedule_set(
+    acl: Acl, user_id: str, project: str, *,
+    weeks: dict | None = None, dates: dict | None = None,
+    blocks: list | None = None, max_per_day: int | None = None,
+) -> dict:
+    """Extend the bookable schedule beyond the plain weekly hours: *weeks*
+    {"even": week, "odd": week} (ISO week parity), *dates*
+    {"YYYY-MM-DD": [windows]} (empty list locks that day, windows release
+    it), *blocks* (single {start, end} ISO-with-offset, or recurring
+    {weekday, start, end, parity?}) and *max_per_day* (bookings per local
+    day, then the rest of the day disappears). None leaves a key as it
+    is; an empty value ({} / [] / 0) clears it. Only ever narrows what
+    calendar_find_free returns."""
+    acl.enforce(user_id, project, "collaborator")
+    from ..connectors.working_hours import WorkingHoursStore
+
+    updates = {}
+    for key, value in (("weeks", weeks), ("dates", dates), ("blocks", blocks), ("max_per_day", max_per_day)):
+        if value is not None:
+            updates[key] = value or None
+    try:
+        saved = WorkingHoursStore(acl, project, user_id).set_extras(**updates)
+    except (ValueError, KeyError) as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # unresolvable tz etc.
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **saved}
+
+
 def calendar_booking_enabled_get(acl: Acl, user_id: str, project: str) -> dict:
     """Whether the meeting booker is switched on for this user — card
     9e035c73. {"enabled": False} if never configured; off by default."""
@@ -1305,13 +1359,21 @@ def setup_mode(
         return {"ok": True, "mode": "free_busy", "calendar_id": calendar_id,
                 "note": "Kräver att google_api_key finns i memaix.yaml och att din kalender är publik"}
 
+    if mode == "native":
+        from ..connectors.native_calendar import NATIVE_PROVIDER, native_path
+
+        native_path(acl, project, user_id)  # fails early if the project has no vault
+        store.store(user_id, NATIVE_PROVIDER, NATIVE_PROVIDER, {"enabled": True})
+        return {"ok": True, "mode": "native",
+                "note": "Memaix egen kalender: bokningar sparas i Memaix, tider blockeras via calendar_schedule_set"}
+
     if mode == "none":
-        for provider, account in [("ical_secret", "ical_secret"), ("free_busy", "free_busy")]:
+        for provider, account in [("ical_secret", "ical_secret"), ("free_busy", "free_busy"), ("native", "native")]:
             store.delete(user_id, provider, account)
         return {"ok": True, "mode": "none",
                 "note": "Kalender-koppling borttagen (OAuth-token behåller du via account_unlink)"}
 
-    return {"ok": False, "error": f"Okänt mode: {mode!r}. Välj oauth, ical_secret, free_busy eller none"}
+    return {"ok": False, "error": f"Okänt mode: {mode!r}. Välj oauth, ical_secret, free_busy, native eller none"}
 
 
 def get_status(user_id: str, project: str, acl: Acl, store) -> dict:
@@ -1326,6 +1388,7 @@ def get_status(user_id: str, project: str, acl: Acl, store) -> dict:
     google = [a for a in all_accounts if a["provider"] == "google"]
     ical = [a for a in all_accounts if a["provider"] == "ical_secret"]
     fb = [a for a in all_accounts if a["provider"] == "free_busy"]
+    native = [a for a in all_accounts if a["provider"] == "native"]
 
     active = "none"
     details: dict = {}
@@ -1339,10 +1402,13 @@ def get_status(user_id: str, project: str, acl: Acl, store) -> dict:
         active = "free_busy"
         token_data = store.load_one(user_id, "free_busy", "free_busy") or {}
         details = {"calendar_id": token_data.get("calendar_id", ""), "status": fb[0]["status"]}
+    elif native:
+        active = "native"
+        details = {"status": native[0]["status"]}
 
     return {
         "active_mode": active,
         "details": details,
-        "available_modes": ["oauth", "ical_secret", "free_busy"],
+        "available_modes": ["oauth", "ical_secret", "free_busy", "native"],
     }
 

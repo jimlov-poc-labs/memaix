@@ -2060,6 +2060,7 @@ def calendar_setup(
     mode='oauth'       — link via Google OAuth (full read+write). Returns a link_url to open.
     mode='ical_secret' — supply your Google Calendar secret iCal URL (read-only).
     mode='free_busy'   — supply your Google calendar_id (read-only, no event titles).
+    mode='native'      — Memaix' own calendar (no external account; bookings are stored in Memaix).
     mode='none'        — remove calendar configuration for this project.
     """
     user = _user()
@@ -2688,6 +2689,27 @@ def calendar_working_hours_set(project: str, tz: str, week: dict) -> dict:
 
 
 @mcp.tool()
+def calendar_schedule_set(
+    project: str, weeks: dict | None = None, dates: dict | None = None,
+    blocks: list | None = None, max_per_day: int | None = None,
+) -> dict:
+    """Extend the bookable schedule: *weeks* {"even": week, "odd": week}
+    (ISO week parity, each a calendar_working_hours_set-style week),
+    *dates* {"YYYY-MM-DD": [{start, end}]} (empty list locks the day),
+    *blocks* (single {start, end} ISO with offset, or recurring
+    {weekday, start, end, parity?}), *max_per_day* (bookings per local day).
+    Omit a key to leave it; pass {} / [] / 0 to clear it. Only narrows."""
+    user = _user()
+    _rl(user, project)
+    return _audited(
+        user, project, "calendar_schedule_set",
+        t_cal.calendar_schedule_set,
+        _get_acl(), user, project,
+        weeks=weeks, dates=dates, blocks=blocks, max_per_day=max_per_day,
+    )
+
+
+@mcp.tool()
 def calendar_booking_enabled_get(project: str) -> dict:
     """Whether the meeting booker is on for this user — memaix-src card
     9e035c73. Off by default."""
@@ -3161,6 +3183,12 @@ def _resolve_normal_calendar_dav(
         adapter = _free_busy_adapter(cfg, store, user, free_busy)
         if adapter is not None:
             return adapter
+
+    # 4. Memaix' own calendar
+    if any(a["provider"] == "native" for a in all_accounts):
+        from .connectors.native_calendar import NativeCalendarAdapter, native_path
+
+        return NativeCalendarAdapter(native_path(acl, project, user))
 
     if not require_per_user:
         return None  # use static CalDAV from acl.yaml

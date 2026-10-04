@@ -152,6 +152,7 @@ def rig(monkeypatch):
     monkeypatch.setattr(routes_mod, "time", SimpleNamespace(time=lambda: NOW))
     monkeypatch.setattr(t_cal, "calendar_booking_enabled_get", enabled_get)
     monkeypatch.setattr(t_cal, "calendar_meeting_form_list", form_list)
+    monkeypatch.setattr(t_cal, "calendar_meeting_type_list", lambda *a, **k: [])
     monkeypatch.setattr(t_cal, "calendar_find_free", find_free)
     monkeypatch.setattr(t_cal, "calendar_create", create)
     monkeypatch.setattr(t_cal, "calendar_delete", delete)
