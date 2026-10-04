@@ -31,11 +31,18 @@ class BlockedURLError(ValueError):
     """Raised when a user-supplied URL targets a non-public / disallowed host."""
 
 
+# Carrier-grade NAT (also Tailscale): neither "private" nor "reserved" in the stdlib.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_blocked_ip(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return True  # unparseable → block
+    v4 = addr.ipv4_mapped if addr.version == 6 else addr
+    if v4 is not None and v4 in _CGNAT:
+        return True
     return (
         addr.is_loopback
         or addr.is_private
