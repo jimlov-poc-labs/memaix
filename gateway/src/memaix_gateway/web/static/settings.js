@@ -95,51 +95,64 @@
     return wrap;
   };
 
+  const accountDot = (acc) => {
+    if (acc.readonly) return '🔵';
+    return acc.status === 'active' ? '🟢' : '🟡';
+  };
+
+  const accountUnlinkButton = (acc) => {
+    const unlink = document.createElement('button');
+    unlink.className = 'btn btn-danger';
+    unlink.textContent = t('web_settings_unlink');
+    unlink.addEventListener('click', async () => {
+      try {
+        await api('DELETE', `/app/api/accounts/${encodeURIComponent(acc.provider)}?account=${encodeURIComponent(acc.account)}`);
+        toast(t('web_settings_unlinked'), 'success');
+        renderAccounts();
+      } catch (e) { toast(e.message, 'error'); }
+    });
+    return unlink;
+  };
+
+  const accountHead = (acc) => {
+    const head = document.createElement('div');
+    head.className = 'account-head';
+    const dot = document.createElement('span');
+    dot.textContent = accountDot(acc);
+    const label = document.createElement('span');
+    label.className = 'account-label';
+    const providerLabel = acc.provider === 'imap' ? 'IMAP' : acc.provider;
+    const projectSuffix = acc.project ? ` (${acc.project})` : '';
+    label.textContent = `${providerLabel} · ${acc.account}${projectSuffix}`;
+    head.append(dot, label);
+    if (acc.status === 'needs_relink') {
+      const note = document.createElement('span');
+      note.className = 'muted';
+      note.textContent = t('web_settings_needs_relink');
+      head.append(note);
+    }
+    if (!acc.readonly) head.append(accountUnlinkButton(acc));
+    return head;
+  };
+
+  const accountItem = (acc) => {
+    const li = document.createElement('li');
+    li.className = 'account-item';
+    li.append(accountHead(acc));
+    // Shared acl.yaml mailboxes belong to the project, not to the user —
+    // there is nothing for the user to scope, so no grid is drawn.
+    if (!acc.readonly && (acc.capabilities ?? []).length > 0) {
+      li.append(renderScopes(acc));
+    }
+    return li;
+  };
+
   const renderAccounts = async () => {
     list.textContent = '';
     let accounts = [];
     try { accounts = await api('GET', '/app/api/accounts'); } catch { /* keep empty */ }
     document.getElementById('accounts-empty').hidden = accounts.length > 0;
-    for (const acc of accounts) {
-      const li = document.createElement('li');
-      li.className = 'account-item';
-      const head = document.createElement('div');
-      head.className = 'account-head';
-      const dot = document.createElement('span');
-      dot.textContent = acc.readonly ? '🔵' : (acc.status === 'active' ? '🟢' : '🟡');
-      const label = document.createElement('span');
-      label.className = 'account-label';
-      const providerLabel = acc.provider === 'imap' ? 'IMAP' : acc.provider;
-      const projectSuffix = acc.project ? ` (${acc.project})` : '';
-      label.textContent = `${providerLabel} · ${acc.account}${projectSuffix}`;
-      head.append(dot, label);
-      if (acc.status === 'needs_relink') {
-        const note = document.createElement('span');
-        note.className = 'muted';
-        note.textContent = t('web_settings_needs_relink');
-        head.append(note);
-      }
-      if (!acc.readonly) {
-        const unlink = document.createElement('button');
-        unlink.className = 'btn btn-danger';
-        unlink.textContent = t('web_settings_unlink');
-        unlink.addEventListener('click', async () => {
-          try {
-            await api('DELETE', `/app/api/accounts/${encodeURIComponent(acc.provider)}?account=${encodeURIComponent(acc.account)}`);
-            toast(t('web_settings_unlinked'), 'success');
-            renderAccounts();
-          } catch (e) { toast(e.message, 'error'); }
-        });
-        head.append(unlink);
-      }
-      li.append(head);
-      // Shared acl.yaml mailboxes belong to the project, not to the user —
-      // there is nothing for the user to scope, so no grid is drawn.
-      if (!acc.readonly && (acc.capabilities ?? []).length > 0) {
-        li.append(renderScopes(acc));
-      }
-      list.append(li);
-    }
+    for (const acc of accounts) list.append(accountItem(acc));
   };
   renderAccounts();
 

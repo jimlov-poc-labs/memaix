@@ -2,68 +2,88 @@
 // Home dashboard: to-do card, project grid, activity feed
 // (FEATURE-WEB-UI-FOUNDATION.md §4.5). All DOM built with createElement.
 
-(async () => {
-  const me = await window.ME;
-  if (!me) return;
+function homeAddTodo(todo, label, href, btnLabel) {
+  const li = document.createElement('li');
+  const span = document.createElement('span');
+  span.textContent = label;
+  const a = document.createElement('a');
+  a.className = 'btn';
+  a.href = href;
+  a.textContent = btnLabel;
+  li.append(span, a);
+  todo.append(li);
+}
 
-  // --- To do card -------------------------------------------------------
+function homeRenderTodo(me) {
   const todo = document.getElementById('todo-list');
-  const addTodo = (label, href, btnLabel) => {
-    const li = document.createElement('li');
-    const span = document.createElement('span');
-    span.textContent = label;
-    const a = document.createElement('a');
-    a.className = 'btn';
-    a.href = href;
-    a.textContent = btnLabel;
-    li.append(span, a);
-    todo.append(li);
-  };
   if (me.pending_outbox > 0) {
-    addTodo(`${me.pending_outbox} ${t('web_todo_outbox')}`, '/app/outbox', t('web_todo_outbox_go'));
+    homeAddTodo(todo, `${me.pending_outbox} ${t('web_todo_outbox')}`, '/app/outbox', t('web_todo_outbox_go'));
   }
   for (const provider of me.needs_relink) {
-    addTodo(`${provider}: ${t('web_todo_relink')}`, '/app/settings#accounts', t('web_todo_relink_go'));
+    homeAddTodo(todo, `${provider}: ${t('web_todo_relink')}`, '/app/settings#accounts', t('web_todo_relink_go'));
   }
   if (me.onboarding_missing) {
-    addTodo(t('web_todo_onboarding'), '/app/settings', t('web_todo_onboarding_go'));
+    homeAddTodo(todo, t('web_todo_onboarding'), '/app/settings', t('web_todo_onboarding_go'));
   }
   document.getElementById('todo-empty').hidden = todo.children.length > 0;
+}
 
-  // --- Project grid -------------------------------------------------------
-  const grid = document.getElementById('projects-grid');
-  for (const project of me.projects) {
-    const card = document.createElement('div');
-    card.className = 'card project-card';
+function homeProjectRole(me, project) {
+  if (me.is_admin) return 'admin';
+  return me.role_map[project] ?? '';
+}
 
-    const h3 = document.createElement('h3');
-    h3.textContent = project;
+function homeProjectCard(me, project) {
+  const card = document.createElement('div');
+  card.className = 'card project-card';
 
-    const chip = document.createElement('span');
-    const role = me.is_admin ? 'admin' : (me.role_map[project] ?? '');
-    chip.className = `role-chip role-${role}`;
-    chip.textContent = role;
+  const h3 = document.createElement('h3');
+  h3.textContent = project;
 
-    const count = document.createElement('div');
-    count.className = 'muted';
-    const spin = document.createElement('span');
-    spin.className = 'spinner';
-    count.append(spin);
+  const chip = document.createElement('span');
+  const role = homeProjectRole(me, project);
+  chip.className = `role-chip role-${role}`;
+  chip.textContent = role;
 
-    const open = document.createElement('a');
-    open.href = '/app/board?project=' + encodeURIComponent(project);
-    open.textContent = t('web_open_board') + ' →';
+  const count = document.createElement('div');
+  count.className = 'muted';
+  const spin = document.createElement('span');
+  spin.className = 'spinner';
+  count.append(spin);
 
-    card.append(h3, chip, count, open);
-    grid.append(card);
+  const open = document.createElement('a');
+  open.href = '/app/board?project=' + encodeURIComponent(project);
+  open.textContent = t('web_open_board') + ' →';
 
-    // Card count fetched lazily per project.
-    api('GET', '/board/api/board?project=' + encodeURIComponent(project))
-      .then((b) => { count.textContent = `${b.total_cards} ${t('web_cards')}`; })
-      .catch(() => { count.textContent = ''; });
+  card.append(h3, chip, count, open);
+
+  // Card count fetched lazily per project.
+  api('GET', '/board/api/board?project=' + encodeURIComponent(project))
+    .then((b) => { count.textContent = `${b.total_cards} ${t('web_cards')}`; })
+    .catch(() => { count.textContent = ''; });
+  return card;
+}
+
+function homeActivityRows(ev) {
+  const row = document.createElement('div');
+  row.className = 'act-row';
+  const mark = document.createElement('span');
+  mark.className = ev.ok ? 'act-ok' : 'act-fail';
+  mark.textContent = ev.ok ? '✓' : '✗';
+  const text = document.createElement('span');
+  text.textContent = `${ev.tool} · ${ev.project} · ${relTime(ev.ts)}`;
+  row.append(mark, text);
+  const rows = [row];
+  if (ev.detail) {
+    const detail = document.createElement('div');
+    detail.className = 'mono muted act-detail';
+    detail.textContent = ev.detail;
+    rows.push(detail);
   }
+  return rows;
+}
 
-  // --- Activity feed ------------------------------------------------------
+async function homeRenderActivity() {
   const feed = document.getElementById('activity-feed');
   try {
     const data = await api('GET', '/board/api/activity');
@@ -74,24 +94,17 @@
       empty.textContent = t('web_activity_empty');
       feed.append(empty);
     }
-    for (const ev of events) {
-      const row = document.createElement('div');
-      row.className = 'act-row';
-      const mark = document.createElement('span');
-      mark.className = ev.ok ? 'act-ok' : 'act-fail';
-      mark.textContent = ev.ok ? '✓' : '✗';
-      const text = document.createElement('span');
-      text.textContent = `${ev.tool} · ${ev.project} · ${relTime(ev.ts)}`;
-      row.append(mark, text);
-      feed.append(row);
-      if (ev.detail) {
-        const detail = document.createElement('div');
-        detail.className = 'mono muted act-detail';
-        detail.textContent = ev.detail;
-        feed.append(detail);
-      }
-    }
+    for (const ev of events) feed.append(...homeActivityRows(ev));
   } catch { /* activity unavailable — dashboard still renders */ }
+}
+
+(async () => {
+  const me = await window.ME;
+  if (!me) return;
+  homeRenderTodo(me);
+  const grid = document.getElementById('projects-grid');
+  for (const project of me.projects) grid.append(homeProjectCard(me, project));
+  await homeRenderActivity();
 })();
 
 // --- Action timeline with undo (Fas D) --------------------------------------
