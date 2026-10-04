@@ -1220,8 +1220,9 @@ def _maybe_queue(acl, user_id: str, project: str, tool: str, args: dict, *, _out
     return {"pending": True, "action_id": action_id, "note": "Väntar på godkännande i utkorgen"}
 
 
-def calendar_create(  # NOSONAR: tool API plus test-injection hooks
-    acl: Acl,
+# tool API plus test-injection hooks keep this parameter list long
+def calendar_create(
+    acl: Acl,  # NOSONAR
     user_id: str,
     project: str,
     title: str,
