@@ -21,3 +21,14 @@ server:
 # captcha är obligatoriskt, inte valfritt, för den publika ytan.
 # booking:
 #   turnstile_secret_ref: "env:TURNSTILE_SECRET"
+
+# nextcloud_provision: ett eget Nextcloud-konto per projekt (valfritt). Med
+# detta block skapar project_create även användaren `memaix-<projekt>` via
+# OCS-API:t och kopplar den som projektets `files:`-resurs (syns på /app/files).
+# Lösenordet genereras och sparas i <config-katalogen>/secrets/nc-<projekt>
+# (läge 0600), refererat som `file:`.
+# nextcloud_provision:
+#   url: "http://nextcloud:8081"
+#   admin_user: "memaix-provisioner"
+#   admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"
+#   quota: "2GB"           # valfritt, standard 2GB

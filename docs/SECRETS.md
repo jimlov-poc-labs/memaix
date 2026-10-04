@@ -24,6 +24,12 @@ backup-nycklar) **utan** att de hamnar i repot, i loggar eller i klartext i drif
 
 Bakåtkompatibelt: ett bart namn utan prefix tolkas som `env:` (nuvarande beteende).
 
+**Per-projekt Nextcloud-hemligheter använder `file:`-schemat.** Med `nextcloud_provision` i
+`memaix.yaml` skapar `project_create` ett eget Nextcloud-konto per projekt. Det genererade lösenordet
+skrivs till `<config-katalogen>/secrets/nc-<projekt>` (katalog `0700`, fil `0600`, skrivs aldrig över)
+och refereras i `acl.yaml` som `password_ref: "file:<sökväg>"`. Admin-lösenordet för
+provisioneringen anges separat via `admin_password_ref`. Lösenordet returneras och loggas aldrig.
+
 ## Kryptering i vila (om värdet lagras lokalt)
 - Lagras en hemlighet i SQLite/fil → kryptera blobben (libsodium/age sealed box) med en **KEK som inte
   ligger bredvid datan** (envelope encryption via KMS/Vault). Bara ciphertext i vila.

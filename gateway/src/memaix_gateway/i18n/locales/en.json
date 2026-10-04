@@ -483,5 +483,14 @@
   "web_booking_min": "min",
   "web_booking_err_save": "Could not save. Check the times and try again.",
   "web_booking_err_forbidden": "You do not have permission to change the booking settings.",
-  "web_booking_err_need_time": "Add at least one time, or choose Closed all day."
+  "web_booking_err_need_time": "Add at least one time, or choose Closed all day.",
+  "web_nav_files": "Files",
+  "web_files_title": "Files",
+  "web_files_intro": "The project's own files. Click a file to download it.",
+  "web_files_root": "Files",
+  "web_files_empty": "This folder is empty.",
+  "web_files_none": "This project has no file area yet.",
+  "web_files_err_forbidden": "You do not have permission to see these files.",
+  "web_files_err_notfound": "That folder or file no longer exists.",
+  "web_files_err_load": "Could not load the files. Try again in a moment."
 }
