@@ -98,17 +98,17 @@ async function homeRenderActivity() {
   } catch { /* activity unavailable — dashboard still renders */ }
 }
 
-(async () => {
+async function homeDashboard() {
   const me = await window.ME;
   if (!me) return;
   homeRenderTodo(me);
   const grid = document.getElementById('projects-grid');
   for (const project of me.projects) grid.append(homeProjectCard(me, project));
   await homeRenderActivity();
-})();
+}
 
 // --- Action timeline with undo (Fas D) --------------------------------------
-(async () => {
+async function homeTimeline() {
   const feed = document.getElementById('timeline-feed');
   if (!feed) return;
   const me = await window.ME;
@@ -146,4 +146,6 @@ async function homeRenderActivity() {
     }
   };
   render();
-})();
+}
+
+await Promise.all([homeDashboard(), homeTimeline()]);

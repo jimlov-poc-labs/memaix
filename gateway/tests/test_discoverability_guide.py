@@ -111,8 +111,8 @@ def test_build_tour_ranks_by_profile_tags():
     from memaix_gateway.acl import Acl
 
     acl = Acl(users={"alice": {"grants": {"proj": "owner"}}}, projects={"proj": {"vault": "/tmp/whatever"}})
-    available, _ = available_for(acl, "alice", [], {})
-    tour = build_tour("alice", "Jag är projektledare och jobbar med backlog och sprintplanering.", available, _t)
+    available, _ = available_for(acl, "alice", [])
+    tour = build_tour("Jag är projektledare och jobbar med backlog och sprintplanering.", available, _t)
     keys = [s["capability_key"] for s in tour["suggestions"]]
     assert keys[0] in ("pm.sprint_plan", "backlog.capture", "backlog.review")
 
@@ -121,8 +121,8 @@ def test_build_tour_falls_back_to_defaults_for_empty_profile():
     from memaix_gateway.acl import Acl
 
     acl = Acl(users={"alice": {"grants": {"proj": "owner"}}}, projects={"proj": {"vault": "/tmp/whatever"}})
-    available, _ = available_for(acl, "alice", [], {})
-    tour = build_tour("alice", "", available, _t)
+    available, _ = available_for(acl, "alice", [])
+    tour = build_tour("", available, _t)
     keys = {s["capability_key"] for s in tour["suggestions"]}
     assert "memory.remember" in keys or "backlog.capture" in keys
 
@@ -131,8 +131,8 @@ def test_build_tour_examples_are_executable_strings():
     from memaix_gateway.acl import Acl
 
     acl = Acl(users={"alice": {"grants": {"proj": "owner"}}}, projects={"proj": {"vault": "/tmp/whatever"}})
-    available, _ = available_for(acl, "alice", [], {})
-    tour = build_tour("alice", "", available, _t, max_items=2)
+    available, _ = available_for(acl, "alice", [])
+    tour = build_tour("", available, _t, max_items=2)
     assert len(tour["suggestions"]) <= 2
     for s in tour["suggestions"]:
         assert isinstance(s["example"], str) and s["example"]

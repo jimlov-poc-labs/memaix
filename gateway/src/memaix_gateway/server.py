@@ -304,7 +304,7 @@ def _audited(user: str, project: str, tool: str, fn, *args, idempotency_key: str
         _get_audit().log(user, project, tool, True)
         _maybe_record_timeline(user, project, tool, args[3:], kwargs, result)
         _maybe_index_for_search(user, project, tool, args[3:], kwargs, result)
-        _maybe_publish_internal_event(user, project, tool, args[3:], kwargs, result)
+        _maybe_publish_internal_event(project, tool, args[3:], kwargs, result)
         if idempotency_key and isinstance(result, dict):
             _get_idempotency().record(user, tool, idempotency_key, result)
         return result
@@ -622,7 +622,7 @@ def _capabilities_data(area: str | None = None) -> dict:
     acl = _get_acl()
     cfg = config.load()
     t = _translator_for_config(cfg)
-    available, locked = available_for(acl, user, _get_accounts(user), cfg)
+    available, locked = available_for(acl, user, _get_accounts(user))
 
     if area is None:
         grouped = group_by_area(available)
@@ -676,7 +676,7 @@ INTERNAL_EVENT_HANDLERS = {
 }
 
 
-def _maybe_publish_internal_event(user: str, project: str, tool: str, tail: tuple, kwargs: dict, result) -> None:
+def _maybe_publish_internal_event(project: str, tool: str, tail: tuple, kwargs: dict, result) -> None:
     """Best-effort internal-trigger publication — must never break the tool call itself."""
     handler = INTERNAL_EVENT_HANDLERS.get(tool)
     if handler is None:
@@ -850,11 +850,11 @@ def whoami() -> dict:
 @mcp.prompt()
 def onboarding_interview() -> str:
     """Run the new-user onboarding interview and store the resulting profile."""
-    user = _user()
+    _user()  # raises when unauthenticated
     cfg = config.load()
     shared_vault = _get_acl().resource("shared", "vault")
     vault = Path(shared_vault) if shared_vault else None
-    return t_onboarding.build_interview_prompt(user, vault, cfg)
+    return t_onboarding.build_interview_prompt(vault, cfg)
 
 
 @mcp.tool()
@@ -882,8 +882,8 @@ def _build_tour_for_user(user: str, profile_text: str) -> dict:
 
     cfg = config.load()
     t = _translator_for_config(cfg)
-    available, _locked = available_for(_get_acl(), user, _get_accounts(user), cfg)
-    return t_onboarding.build_tour(user, profile_text, available, t)
+    available, _locked = available_for(_get_acl(), user, _get_accounts(user))
+    return t_onboarding.build_tour(profile_text, available, t)
 
 
 @mcp.tool()
@@ -1563,7 +1563,7 @@ def next_suggestion(last_tool: str) -> dict:
     user = _user()
     cfg = config.load()
     t = _translator_for_config(cfg)
-    available, _locked = available_for(_get_acl(), user, _get_accounts(user), cfg)
+    available, _locked = available_for(_get_acl(), user, _get_accounts(user))
     result = suggest(user, last_tool, available, _get_nudge_state(), now=time.time())
     if result is None:
         return {}

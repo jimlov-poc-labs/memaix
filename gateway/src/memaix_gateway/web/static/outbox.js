@@ -4,7 +4,7 @@
 // (FEATURE-WEB-UI-OUTBOX-AND-ADMIN.md §1). The server only returns actions
 // this user may approve, so everything rendered is actionable.
 
-(async () => {
+async function outboxPage() {
   const me = await window.ME;
   if (!me) return;
   const list = document.getElementById('outbox-list');
@@ -66,9 +66,9 @@
       const body = kind === 'reject' ? { reason } : null;
       li.style.opacity = '.4';
       const res = await api('POST', path, body);
-      toast(kind === 'approve'
-        ? (res.ok ? t('web_outbox_approved') : t('web_outbox_failed'))
-        : t('web_outbox_rejected'), res.ok === false ? 'error' : 'success');
+      let message = t('web_outbox_rejected');
+      if (kind === 'approve') message = res.ok ? t('web_outbox_approved') : t('web_outbox_failed');
+      toast(message, res.ok === false ? 'error' : 'success');
       const link = res.result?.invite_url ?? res.result?.reset_url;
       if (kind === 'approve' && res.ok && link) showLink(link);
       render();
@@ -169,4 +169,6 @@
   });
 
   render();
-})();
+}
+
+await outboxPage();

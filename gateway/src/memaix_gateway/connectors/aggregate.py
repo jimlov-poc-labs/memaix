@@ -80,7 +80,8 @@ def busy_from_backend(backend, label: str, start: datetime, end: datetime) -> li
     skipped rather than failing the whole source."""
     try:
         events = backend.list_events(start, end)
-    except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately broad, see docstring.
         raise CalendarSourceError(label, exc) from exc
 
     out: list[BusyInterval] = []
@@ -102,7 +103,8 @@ def events_from_backend(backend, label: str, start: datetime, end: datetime) -> 
     unparseable start or end) is skipped, same as busy_from_backend."""
     try:
         events = backend.list_events(start, end)
-    except Exception as exc:  # noqa: BLE001 - deliberately broad, see busy_from_backend
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately broad, see busy_from_backend.
         raise CalendarSourceError(label, exc) from exc
 
     out: list[CalendarEvent] = []

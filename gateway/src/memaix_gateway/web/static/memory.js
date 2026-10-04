@@ -2,7 +2,7 @@
 // Memory explorer: note tree, viewer (mdView), search, history drawer with
 // owner-gated revert (FEATURE-WEB-UI-MVP.md §1.4–1.5).
 
-(async () => {
+async function memoryPage() {
   const me = await window.ME;
   if (!me) return;
   const project = new URLSearchParams(location.search).get('project')
@@ -117,4 +117,6 @@
       drawer.setAttribute('open', '');
     } catch (e) { toast(e.message, 'error'); }
   });
-})();
+}
+
+await memoryPage();

@@ -80,7 +80,7 @@ def _account_providers(accounts: list[dict] | None) -> set[str]:
 
 
 def available_for(
-    acl, user_id: str, accounts: list[dict] | None = None, cfg: dict | None = None
+    acl, user_id: str, accounts: list[dict] | None = None
 ) -> tuple[list[Capability], list[dict]]:
     """Split the registry into (available, locked) for this user.
 

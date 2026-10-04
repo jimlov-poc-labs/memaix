@@ -276,7 +276,7 @@ if (window.parent !== window) document.body.classList.add('embedded');
   </div>
 </div>
 
-<script>
+<script type="module">
 'use strict';
 var I18N=window.I18N||{};
 function t(k){return I18N[k]||k;}
@@ -368,7 +368,7 @@ function inlineNodes(parent,txt){
 function api(url,opts,silentAuth){
   opts=opts||{};opts.credentials='include';
   return fetch(url,opts).then(function(r){
-    if(r.status===401){if(!silentAuth)handle401();return null;}
+    if(r.status===401){if(!silentAuth){handle401();}return null;}
     return r;
   });
 }
@@ -417,7 +417,7 @@ function fillProjects(projects){
   }
   var urlProject=new URLSearchParams(location.search).get('project');
   var saved=urlProject||localStorage.getItem('mb_proj');
-  projects.forEach(function(p){var o=el('option','',p);o.value=p;if(p===saved)o.selected=true;sel.appendChild(o);});
+  projects.forEach(function(p){var o=el('option','',p);o.value=p;if(p===saved){o.selected=true;}sel.appendChild(o);});
   _project=sel.value;
   if(urlProject)localStorage.setItem('mb_proj',_project);
   loadSprints().then(loadBoard);startActivity();
@@ -433,7 +433,7 @@ function loadSprints(){
       if(d.active){var a=el('option','',t('board_active_sprint'));a.value='active';sel.appendChild(a);}
       (d.sprints||[]).forEach(function(sp){
         var o=el('option','',sp.id+(sp.goal?' — '+sp.goal:'')+'  ('+sp.item_count+')');
-        o.value=sp.id;if(sp.id===cur)o.selected=true;sel.appendChild(o);
+        o.value=sp.id;if(sp.id===cur){o.selected=true;}sel.appendChild(o);
       });
       _sprint=sel.value;
     });
@@ -492,7 +492,7 @@ function buildCard(card){
   if(card.sprint)meta.appendChild(el('span','sprint-badge',card.sprint));
   if(card.estimate!=null)meta.appendChild(el('span','est-badge',card.estimate+'p'));
   if(card.assignee){var a=el('span','assignee-badge','@'+card.assignee);
-    if(card.assignee===_user)a.className='assignee-badge assignee-mine';meta.appendChild(a);}
+    if(card.assignee===_user){a.className='assignee-badge assignee-mine';}meta.appendChild(a);}
   div.appendChild(meta);div.appendChild(el('div','card-id',card.id));
   div.addEventListener('click',function(){openModal(card.id);});
   if(_mineOnly&&card.assignee!==_user)div.classList.add('dimmed');
@@ -534,7 +534,7 @@ function doMove(id,from,to,targetBody){
       toast(t('board_move_error'),true);
       cardEl.dataset.status=from;
       var orig=document.querySelector('.col-body[data-status="'+from+'"]');
-      if(orig){var e2=orig.querySelector('.empty-col');if(e2)e2.remove();orig.appendChild(cardEl);}
+      if(orig){var e2=orig.querySelector('.empty-col');if(e2){e2.remove();}orig.appendChild(cardEl);}
       updateCount(from);updateCount(to);return;
     }
     toast(t('board_moved_to')+' '+to);
@@ -588,7 +588,7 @@ function renderModal(id,item){
 function closeModal(){gid('modal-overlay').style.display='none';}
 
 function startActivity(){stopActivity();pollActivity();_activityTimer=setInterval(pollActivity,5000);}
-function stopActivity(){if(_activityTimer)clearInterval(_activityTimer);_activityTimer=null;}
+function stopActivity(){if(_activityTimer){clearInterval(_activityTimer);}_activityTimer=null;}
 
 function pollActivity(){
   var url='/board/api/activity';var params=[];
@@ -628,7 +628,7 @@ function prependActivity(events){
     row.appendChild(bd);div.appendChild(row);frag.appendChild(div);
   });
   list.insertBefore(frag,list.firstChild);
-  while(list.children.length>50)list.removeChild(list.lastChild);
+  while(list.children.length>50)list.lastChild.remove();
 }
 
 
@@ -666,11 +666,11 @@ gid('sprint-select').addEventListener('change',function(){_sprint=gid('sprint-se
 
 
 function applyTheme(dark){
-  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   var btn = gid('theme-btn');
   if(btn) btn.innerHTML = dark ? '&#x263D;' : '&#x263C;';
   // Sync to shell (same origin)
-  try{window.parent.document.documentElement.setAttribute('data-theme',dark?'dark':'light');
+  try{window.parent.document.documentElement.dataset.theme=dark?'dark':'light';
     var pb=window.parent.document.getElementById('theme-btn');
     if(pb)pb.textContent=dark?'\u263D':'\u263C';}catch(e){}
 }
@@ -681,7 +681,7 @@ function applyTheme(dark){
 })();
 
 gid('theme-btn').addEventListener('click',function(){
-  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var isDark = document.documentElement.dataset.theme === 'dark';
   applyTheme(!isDark);
   localStorage.setItem('mb_theme', isDark ? 'light' : 'dark');
 });
@@ -691,9 +691,13 @@ gid('activity-toggle-btn').addEventListener('click',function(){
 });
 gid('activity-close-btn').addEventListener('click',function(){setActivityVisible(false);});
 
-fetch('/board/api/projects',{credentials:'include'}).then(function(r){
-  if(r.ok)r.json().then(function(d){_user=d.user;gid('login-gate').style.display='none';gid('board-shell').hidden=false;gid('user-badge').textContent=_user;fillProjects(d.projects);});
-}).catch(function(){});
+try{
+  var pr=await fetch('/board/api/projects',{credentials:'include'});
+  if(pr.ok){
+    var d=await pr.json();
+    _user=d.user;gid('login-gate').style.display='none';gid('board-shell').hidden=false;gid('user-badge').textContent=_user;fillProjects(d.projects);
+  }
+}catch(e){/* not logged in: the login gate stays up */}
 </script>
 </body>
 </html>

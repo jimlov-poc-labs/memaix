@@ -2,7 +2,7 @@
 // Admin read views: users / projects / audit / system
 // (FEATURE-WEB-UI-OUTBOX-AND-ADMIN.md §1.3). All tables are DOM-built.
 
-(async () => {
+async function adminViews() {
   const me = await window.ME;
   if (!me) return;
   if (!me.is_admin) {
@@ -209,10 +209,10 @@
     box.append(save, document.createTextNode(' '), test);
     document.getElementById('admin-system').append(box);
   } catch (e) { toast(e.message, 'error'); }
-})();
+}
 
 // --- MFA + write operations (Fas D) -----------------------------------------
-(async () => {
+async function adminWrite() {
   const me = await window.ME;
   if (!me || !me.is_admin) return;
 
@@ -310,4 +310,6 @@
     });
     bar.append(btn);
   }
-})();
+}
+
+await Promise.all([adminViews(), adminWrite()]);

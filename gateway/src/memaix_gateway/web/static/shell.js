@@ -10,20 +10,21 @@
   const _applyTheme = (dark) => {
     const value = dark ? 'dark' : 'light';
     const glyph = dark ? '\u263D' : '\u263C';
-    document.documentElement.setAttribute('data-theme', value);
+    document.documentElement.dataset.theme = value;
     const btn = document.getElementById('theme-btn');
     if (btn) btn.textContent = glyph;
     const frame = document.querySelector('iframe.board-frame');
     try {
-      frame?.contentDocument?.documentElement.setAttribute('data-theme', value);
-      const fbtn = frame?.contentDocument?.getElementById('theme-btn');
+      const frameDoc = frame?.contentDocument;
+      if (frameDoc) frameDoc.documentElement.dataset.theme = value;
+      const fbtn = frameDoc?.getElementById('theme-btn');
       if (fbtn) fbtn.textContent = glyph;
     } catch { /* iframe not ready yet \u2014 its own init reads localStorage */ }
   };
   // The iframe may not have parsed when the toggle fires, and it re-parses on
   // every board navigation, so re-apply on load rather than only on click.
   document.querySelector('iframe.board-frame')?.addEventListener('load', () => {
-    _applyTheme(document.documentElement.getAttribute('data-theme') === 'dark');
+    _applyTheme(document.documentElement.dataset.theme === 'dark');
   });
   (() => {
     const saved = localStorage.getItem('mb_theme');
@@ -31,7 +32,7 @@
     _applyTheme(prefersDark);
   })();
   document.getElementById('theme-btn')?.addEventListener('click', () => {
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const isDark = document.documentElement.dataset.theme === 'dark';
     _applyTheme(!isDark);
     localStorage.setItem('mb_theme', isDark ? 'light' : 'dark');
   });

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app/static/app.css">
-<script>!function(){var t=localStorage.getItem("mb_theme"),d=t==="dark";document.documentElement.setAttribute("data-theme",d?"dark":"light")}();</script>
+<script>!function(){var t=localStorage.getItem("mb_theme"),d=t==="dark";document.documentElement.dataset.theme=d?"dark":"light"}();</script>
 <script src="/app/static/app.js" defer></script>
 <script src="/app/static/shell.js" defer></script>
 <!--MEMAIX_I18N-->
@@ -20,7 +20,7 @@
       <span class="logo">&#x2B21; <span class="nav-label">memaix</span></span>
       <button class="icon-btn" id="sidebar-toggle" title="Toggle sidebar">&#x25B8;</button>
     </div>
-    <nav class="sidebar-nav">
+    <nav class="sidebar-nav" aria-label="Primary">
       <a href="/app" class="nav-link nav-home">&#x1F3E0; <span class="nav-label" data-i18n="web_nav_home">Home</span></a>
       <a href="/app/board" class="nav-link nav-board">&#x1F4CB; <span class="nav-label" data-i18n="web_nav_board">Board</span></a>
       <a href="/app/outbox" class="nav-link nav-outbox">&#x1F4E4; <span class="nav-label" data-i18n="web_nav_outbox">Outbox</span>
@@ -52,7 +52,7 @@
     </main>
   </div>
 </div>
-<nav class="tab-bar">
+<nav class="tab-bar" aria-label="Mobile">
   <a href="/app" class="tab nav-home">&#x1F3E0;<span data-i18n="web_nav_home">Home</span></a>
   <a href="/app/board" class="tab nav-board">&#x1F4CB;<span data-i18n="web_nav_board">Board</span></a>
   <a href="/app/outbox" class="tab nav-outbox">&#x1F4E4;<span data-i18n="web_nav_outbox">Outbox</span></a>
