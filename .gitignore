@@ -42,3 +42,7 @@ build/
 # Wizardens utdata. Inga hemligheter, men lokalt för installationen.
 setup-complete.html
 .setup-result.json
+
+# web-tests
+gateway/web-tests/node_modules/
+gateway/web-tests/coverage/

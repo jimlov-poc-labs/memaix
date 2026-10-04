@@ -26,6 +26,18 @@ jobs:
           pip install -e "gateway/[dev]"
           pytest gateway/tests/ --cov=gateway/src/memaix_gateway --cov-report=xml:coverage.xml
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: gateway/web-tests/package-lock.json
+
+      - name: Run web JS tests with coverage
+        working-directory: gateway/web-tests
+        run: |
+          npm ci
+          npm run coverage
+
       # The scanner's JRE and analyzer plugins land in ~/.sonar/cache. The
       # scanner verifies each against the server's checksum and downloads it
       # again on mismatch, so a restored cache only saves the transfer.
