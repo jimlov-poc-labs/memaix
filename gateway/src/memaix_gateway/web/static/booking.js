@@ -2,9 +2,8 @@
 // Booking page: the host controls hours, closed days, blocks, daily cap and
 // session lengths. All writes go through /app/api/booking/*.
 
-(async () => {
-  const me = await window.ME;
-  if (!me) return;
+const me = await window.ME;
+if (me) {
   const project = new URLSearchParams(location.search).get('project')
         ?? localStorage.getItem('memaix_project') ?? me.projects[0] ?? '';
   const q = `project=${encodeURIComponent(project)}`;
@@ -348,4 +347,4 @@
   } catch (e) {
     toast(friendly(e), 'error');
   }
-})();
+}
