@@ -472,3 +472,13 @@ def test_nonpositive_limit_quirks(store, acl):
         index_upsert(store, None, "proj", "memory", f"n{i}.md", f"n{i}.md", "common word")
     assert search_all(acl, "alice", None, store, None, "common", limit=0)["results"] == []
     assert len(search_all(acl, "alice", None, store, None, "common", limit=-5)["results"]) == 1
+
+
+def test_lexical_store_not_queried_for_source_without_scope(store):
+    """Reader har ingen file/nc_file-räckvidd: FTS-lagret ska inte ens frågas."""
+    acl = _multi_acl()
+    calls = []
+    real = store.fts_search
+    store.fts_search = lambda ps, sts, qry, lim: (calls.append((tuple(ps), tuple(sts))), real(ps, sts, qry, lim))[1]
+    search_all(acl, "bob", None, store, None, "x")
+    assert calls == [(("proj",), ("memory",)), (("proj",), ("backlog",))]
