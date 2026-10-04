@@ -5,7 +5,7 @@ async function settingsPage() {
   const me = await window.ME;
   if (!me) return;
   const project = new URLSearchParams(location.search).get('project')
-        ?? localStorage.getItem('memaix_project') ?? me.projects[0] ?? '';
+        ?? localStorage.getItem('memaix_project') ?? (me.projects ?? [])[0] ?? '';
 
   // --- Linked accounts --------------------------------------------------
   const list = document.getElementById('accounts-list');

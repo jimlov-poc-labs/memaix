@@ -37,14 +37,17 @@ if (me) {
     const detail = e.message ? ` (${e.message})` : '';
     return `${t('web_booking_err_save')}${detail}`;
   };
-  const refresh = async () => {
-    state = await api('GET', `/app/api/booking?${q}`);
-    renderAll();
+  const refresh = async (savedStatusId = null) => {
+    const fresh = await api('GET', `/app/api/booking?${q}`);
+    if (!fresh) return false; // 401: login redirect in flight
+    state = fresh;
+    renderAll(savedStatusId);
+    return true;
   };
   const saveWith = async (statusId, fn) => {
     try {
       await fn();
-      await refresh();
+      if (!(await refresh(statusId))) return;
       report(statusId, true, t('web_saved'));
     } catch (e) {
       report(statusId, false, friendly(e));
@@ -331,11 +334,14 @@ if (me) {
   });
 
   // --- Render everything from `state` --------------------------------------
-  const renderAll = () => {
-    $('booking-enabled').checked = state.enabled;
+  // Form fields are only reset from the server for the section that was just
+  // saved (or on first load), so unsaved edits elsewhere survive a save.
+  const renderAll = (saved = null) => {
+    const own = (statusId) => saved === null || saved === statusId;
+    if (own('onoff-status')) $('booking-enabled').checked = state.enabled;
     $('booking-nocal').hidden = state.calendar_mode !== 'none';
-    $('booking-cap-input').value = state.max_per_day ?? '';
-    renderHours();
+    if (own('cap-status')) $('booking-cap-input').value = state.max_per_day ?? '';
+    if (own('hours-status')) renderHours();
     renderDates();
     renderBlocks();
     renderTypes();

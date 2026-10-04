@@ -75,6 +75,11 @@ describe('home page', () => {
     });
   });
 
+  it('renders without a projects list in the profile', async () => {
+    await open({ me: { ...baseMe(), projects: undefined } });
+    expect(document.querySelectorAll('#projects-grid > *')).toHaveLength(0);
+  });
+
   describe('project cards', () => {
     it('renders a card per project with role chip, board link and lazy card count', async () => {
       const f = await open({
@@ -171,6 +176,25 @@ describe('home page', () => {
       await open({ routes: { 'GET /app/api/timeline': () => jsonResponse({}, 500) } });
       expect(feed().children).toHaveLength(0);
       expect(document.getElementById('timeline-empty').hidden).toBe(false);
+    });
+
+    it('treats a 401 (login redirect in flight) as empty without errors', async () => {
+      await open({ routes: { 'GET /app/api/timeline': () => jsonResponse({}, 401) } });
+      expect(feed().children).toHaveLength(0);
+      expect(document.getElementById('timeline-empty').hidden).toBe(false);
+    });
+
+    it('undo answered with 401 shows no stray toast', async () => {
+      const f = await open({
+        routes: {
+          'GET /app/api/timeline': [act()],
+          'POST /app/api/timeline/a1/undo': () => jsonResponse({}, 401),
+        },
+      });
+      feed().querySelector('button').click();
+      await flush();
+      expect(f.calls.some((c) => c.key.startsWith('POST'))).toBe(true);
+      expect(toasts()).toEqual([]);
     });
 
     it('renders summary or tool, falls back across timestamp fields, escapes text', async () => {
