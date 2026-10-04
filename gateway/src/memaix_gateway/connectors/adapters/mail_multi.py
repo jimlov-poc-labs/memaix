@@ -100,7 +100,8 @@ class _MultiMailFolderProxy:
         for label, adapter in self._backend._sources:
             try:
                 adapter.folder.set(name)
-            except Exception as exc:  # noqa: BLE001 - reported by the next fetch, see MultiMailBackend.fetch
+            # Reported by the next fetch, see MultiMailBackend.fetch.
+            except Exception as exc:  # noqa: BLE001
                 self._backend._set_errors[label] = exc
 
 
@@ -213,7 +214,8 @@ class MultiMailBackend:
                 if set_exc is not None:
                     raise set_exc
                 result = list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
-            except Exception as exc:  # noqa: BLE001 - reported in source_errors, raised if nothing worked
+            # Reported in source_errors, raised if nothing worked.
+            except Exception as exc:  # noqa: BLE001
                 first_exc = first_exc or exc
                 failed += 1
                 errors.append({"source": label, "error": str(exc) or type(exc).__name__})
