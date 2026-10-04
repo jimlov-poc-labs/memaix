@@ -24,6 +24,13 @@ def nc_files_read(acl: Acl, user_id: str, project: str, path: str, *, _files) ->
     return _files.read_file(path)
 
 
+def nc_files_download(acl: Acl, user_id: str, project: str, path: str, *, _files) -> bytes:
+    """Raw file bytes for the web UI's download — not an MCP tool. Any member
+    may download, same as reading the project's files in the web UI."""
+    acl.enforce(user_id, project, "reader")
+    return _files.read_binary(path)
+
+
 def nc_files_write(acl: Acl, user_id: str, project: str, path: str, content: str, *, _files) -> str:
     acl.enforce(user_id, project, "collaborator")
     return _files.write_file(path, content)

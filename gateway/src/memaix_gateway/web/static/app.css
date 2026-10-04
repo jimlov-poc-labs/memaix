@@ -363,6 +363,15 @@ body[data-collapsed="true"] .sidebar-foot { display: none; }
   padding: .5rem .7rem; margin-bottom: .6rem; border-left: 3px solid var(--warning);
   background: var(--surface-2); border-radius: 8px;
 }
+/* Files page */
+.files-page { max-width: 760px; }
+.files-crumbs { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .6rem; }
+.files-crumbs .crumb-current { font-weight: 600; }
+.files-crumbs .crumb-sep { color: var(--muted); }
+.files-page .notice {
+  padding: .5rem .7rem; margin-bottom: .6rem; border-left: 3px solid var(--warning);
+  background: var(--surface-2); border-radius: 8px;
+}
 .form-actions { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .save-status.ok { color: var(--success); }
 .save-status.err { color: var(--danger); }

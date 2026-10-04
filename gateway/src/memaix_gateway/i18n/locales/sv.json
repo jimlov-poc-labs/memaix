@@ -478,5 +478,14 @@
   "web_booking_min": "min",
   "web_booking_err_save": "Det gick inte att spara. Kontrollera tiderna och försök igen.",
   "web_booking_err_forbidden": "Du har inte behörighet att ändra bokningsinställningarna.",
-  "web_booking_err_need_time": "Lägg till minst en tid, eller välj Stängt hela dagen."
+  "web_booking_err_need_time": "Lägg till minst en tid, eller välj Stängt hela dagen.",
+  "web_nav_files": "Filer",
+  "web_files_title": "Filer",
+  "web_files_intro": "Projektets egna filer. Klicka på en fil för att ladda ner den.",
+  "web_files_root": "Filer",
+  "web_files_empty": "Mappen är tom.",
+  "web_files_none": "Projektet har inget filutrymme än.",
+  "web_files_err_forbidden": "Du har inte behörighet att se de här filerna.",
+  "web_files_err_notfound": "Mappen eller filen finns inte längre.",
+  "web_files_err_load": "Kunde inte hämta filerna. Försök igen om en stund."
 }

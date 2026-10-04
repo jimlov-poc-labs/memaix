@@ -80,3 +80,15 @@ onboarding:
   # questions:  # Uncomment to override defaults
   #   - "Vad heter du och vad är din roll?"
   #   - "Vilka projekt jobbar du med?"
+
+# Per-project Nextcloud account (optional). When set, project_create also
+# makes a Nextcloud user `memaix-<project>` through the OCS provisioning API
+# and wires it up as the project's `files:` resource, so every project has its
+# own isolated file area (browsable at /app/files). Needs a Nextcloud admin
+# account allowed to create users. The generated password is written to
+# <config dir>/secrets/nc-<project> (mode 0600) and referenced as `file:`.
+# nextcloud_provision:
+#   url: "http://nextcloud:8081"
+#   admin_user: "memaix-provisioner"
+#   admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"
+#   quota: "2GB"           # optional, default 2GB

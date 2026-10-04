@@ -27,6 +27,13 @@ from ...paths import validate_relative_path
 SEARCH_MAX_BYTES = 200_000
 
 
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+
+class FileTooLarge(ValueError):
+    """Download exceeds MAX_DOWNLOAD_BYTES."""
+
+
 def _safe_rel(path: str) -> str:
     p = (path or "/").strip("/")
     return validate_relative_path(p) if p else ""
@@ -89,6 +96,30 @@ class WebDavFilesAdapter:
         resp = self._request("GET", rel)
         resp.raise_for_status()
         return resp.text
+
+    def read_binary(self, path: str) -> bytes:
+        """Raw bytes of a file — read_file's text decode would corrupt
+        non-text downloads (used by the web UI's file download)."""
+        rel = _safe_rel(path)
+        resp = self._request("GET", rel, stream=True)
+        try:
+            resp.raise_for_status()
+            declared = resp.headers.get("Content-Length")
+            if declared and declared.isdigit() and int(declared) > MAX_DOWNLOAD_BYTES:
+                raise FileTooLarge(rel)
+            data = b"".join(self._chunks(resp))
+        finally:
+            resp.close()
+        return data
+
+    @staticmethod
+    def _chunks(resp):
+        total = 0
+        for chunk in resp.iter_content(65536):
+            total += len(chunk)
+            if total > MAX_DOWNLOAD_BYTES:
+                raise FileTooLarge("download")
+            yield chunk
 
     def write_file(self, path: str, content: str) -> str:
         rel = _safe_rel(path)

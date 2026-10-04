@@ -104,6 +104,87 @@ def test_existing_vault_dir_is_never_reused(env):
     assert "taken" not in env.acl().projects
 
 
+_FILES = {
+    "url": "https://nc.example/remote.php/dav/files/memaix-itsq/",
+    "user": "memaix-itsq",
+    "password_ref": "file:/cfg/secrets/nc-itsq",
+}
+
+
+def _admin_with(env, provisioner) -> AccessAdmin:
+    return AccessAdmin(AclWriter(env.path), env.invites, env.vaults, provisioner=provisioner)
+
+
+def test_create_project_records_the_provisioned_files_resource(env):
+    seen = []
+
+    def provisioner(name):
+        seen.append(name)
+        return _FILES
+
+    out = _admin_with(env, provisioner).create_project(env.acl(), "root", "itsq")
+    assert seen == ["itsq"] and out["files"] is True
+    assert env.acl().projects["itsq"]["files"] == _FILES
+    assert env.acl().projects["itsq"]["vault"] == str(env.vaults / "itsq")
+
+
+def test_create_project_without_provisioning_has_no_files(env):
+    out = _admin_with(env, lambda name: None).create_project(env.acl(), "root", "itsq")
+    assert out["files"] is False
+    assert "files" not in env.acl().projects["itsq"]
+
+
+def test_failed_provisioning_rolls_back_acl_and_vault(env):
+    from memaix_gateway.nextcloud_provision import ProvisionError
+
+    def failing(name):
+        raise ProvisionError("Nextcloud refused (OCS status 997)")
+
+    with pytest.raises(AccessError, match="file area.*997"):
+        _admin_with(env, failing).create_project(env.acl(), "root", "itsq")
+    acl = env.acl()
+    assert "itsq" not in acl.projects and "itsq" not in acl.grants("root")
+    assert not (env.vaults / "itsq").exists()
+
+
+def test_unexpected_provisioner_crash_also_rolls_back(env):
+    def crash(name):
+        raise OSError("disk full")
+
+    with pytest.raises(AccessError, match="unexpected error"):
+        _admin_with(env, crash).create_project(env.acl(), "root", "itsq")
+    assert "itsq" not in env.acl().projects
+    assert not (env.vaults / "itsq").exists()
+
+
+def test_files_write_failure_names_the_orphaned_account_and_rolls_back(env):
+    class FlakyWriter(AclWriter):
+        calls = 0
+
+        def update(self, fn):
+            FlakyWriter.calls += 1
+            if FlakyWriter.calls == 2:
+                raise OSError("acl.yaml is read-only")
+            return super().update(fn)
+
+    admin = AccessAdmin(FlakyWriter(env.path), env.invites, env.vaults, provisioner=lambda name: _FILES)
+    with pytest.raises(AccessError, match="memaix-itsq"):
+        admin.create_project(env.acl(), "root", "itsq")
+    assert "itsq" not in env.acl().projects
+    assert not (env.vaults / "itsq").exists()
+
+
+def test_rollback_leaves_other_projects_and_grants_alone(env):
+    def crash(name):
+        raise OSError("boom")
+
+    with pytest.raises(AccessError):
+        _admin_with(env, crash).create_project(env.acl(), "root", "itsq")
+    acl = env.acl()
+    assert set(acl.projects) == {"acme", "beta"}
+    assert acl.grants("root") == {"acme": "owner", "beta": "owner"}
+
+
 def test_disabled_admin_cannot_create_project(env):
     data = yaml.safe_load(env.path.read_text())
     data["users"]["root"]["disabled"] = True
@@ -365,3 +446,4 @@ def test_reset_token_is_single_use_and_expires(env):
     token = env.admin.reset_link(env.acl(), "alice", "acme", "bob", ttl_s=-1)["token"]
     with pytest.raises(AccessError):
         env.admin.accept_invite(token, "brand new password")
+

@@ -18,7 +18,7 @@ Ett konto som bjuds in får aldrig `admin`.
 
 | Verktyg | Vem | Effekt |
 |---|---|---|
-| `project_create(name)` | systemadmin | Nytt projekt med eget git-valv (`/srv/vaults/<namn>`). Du blir ägare, ingen annan får något. Namn: 2–32 tecken `a-z 0-9 - _`. |
+| `project_create(name)` | systemadmin | Nytt projekt med eget git-valv (`/srv/vaults/<namn>`). Du blir ägare, ingen annan får något. Namn: 2–32 tecken `a-z 0-9 - _`. Är `nextcloud_provision` satt i `memaix.yaml` får projektet även ett eget Nextcloud-konto (`files:`, se `SECRETS.md`). |
 | `project_members(project)` | projektägare | Lista medlemmar och roller. |
 | `project_member_set(project, member, role)` | projektägare | Ändra roll, eller `role: null` för att ta bort. |
 | `user_invite(project, invitee, role, email?)` | projektägare | Skapa ett inloggningskonto begränsat till projektet. |

@@ -13,12 +13,14 @@ Callers must call server.reload_acl() after a successful write.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from . import gitvault
 from .acl import ROLES, AccessDenied, Acl
 from .cli import hash_password
 from .invites import DEFAULT_TTL_S, InviteStore
+from .nextcloud_provision import ProvisionError, provision_project_files
 from .web.acl_writer import AclWriter
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
@@ -61,10 +63,13 @@ def _other_owners(users: dict, user: str, project: str) -> list[str]:
 
 
 class AccessAdmin:
-    def __init__(self, writer: AclWriter, invites: InviteStore, vaults_dir: Path) -> None:
+    def __init__(
+        self, writer: AclWriter, invites: InviteStore, vaults_dir: Path, provisioner=provision_project_files,
+    ) -> None:
         self._writer = writer
         self._invites = invites
         self._vaults = Path(vaults_dir)
+        self._provision = provisioner
 
     # ----------------------------------------------------------- permissions
 
@@ -97,18 +102,44 @@ class AccessAdmin:
             grants[name] = "owner"
 
         # Write ACL first under the lock (rejects duplicates), then build the
-        # vault; roll the ACL entry back if the vault cannot be created.
+        # vault and the project's Nextcloud account; roll everything back if
+        # either cannot be created.
         self._writer.update(check_and_add)
         try:
             self._build_vault(vault)
+            has_files = self._add_files(name)
         except BaseException:
-            def undo(data: dict) -> None:
-                data.get("projects", {}).pop(name, None)
-                data["users"][actor].get("grants", {}).pop(name, None)
-
-            self._writer.update(undo)
+            self._rollback_project(actor, name, vault)
             raise
-        return {"project": name, "vault": str(vault), "owner": actor}
+        return {"project": name, "vault": str(vault), "owner": actor, "files": has_files}
+
+    def _add_files(self, name: str) -> bool:
+        """Provision the project's Nextcloud account (when configured) and
+        record it as the project's `files:` resource."""
+        try:
+            files = self._provision(name)
+        except ProvisionError as exc:
+            raise AccessError(f"could not create the file area for {name}: {exc}") from None
+        except Exception:
+            raise AccessError(f"could not create the file area for {name}: unexpected error") from None
+        if files is None:
+            return False
+        try:
+            self._writer.update(lambda data: data["projects"][name].__setitem__("files", files))
+        except Exception:
+            raise AccessError(
+                f"the file area for {name} was created but could not be recorded; "
+                f"remove the Nextcloud account {files['user']} and its secret before retrying"
+            ) from None
+        return True
+
+    def _rollback_project(self, actor: str, name: str, vault: Path) -> None:
+        def undo(data: dict) -> None:
+            data.get("projects", {}).pop(name, None)
+            data["users"][actor].get("grants", {}).pop(name, None)
+
+        self._writer.update(undo)
+        shutil.rmtree(vault, ignore_errors=True)
 
     @staticmethod
     def _build_vault(vault: Path) -> None:

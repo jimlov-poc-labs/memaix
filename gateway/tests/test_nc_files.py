@@ -42,6 +42,14 @@ class _FakeResponse:
     def __init__(self, text: str = "", status_code: int = 200):
         self.text = text
         self.status_code = status_code
+        self.headers = {}
+        self.content = b""
+
+    def iter_content(self, size):
+        yield self.content
+
+    def close(self):
+        pass
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -148,3 +156,70 @@ def test_list_files_empty_response_returns_empty_list():
     http = _FakeHttp(propfind_by_path={"": '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"></d:multistatus>'})
     adapter = WebDavFilesAdapter("https://nc.example.com/dav/", "alice", "secret", _http=http)
     assert adapter.list_files("/") == []
+
+
+class _BinaryHttp:
+    def __init__(self, content: bytes, status_code: int = 200):
+        self.content, self.status_code, self.requests = content, status_code, []
+
+    def request(self, method, url, **kwargs):
+        self.requests.append((method, url))
+        resp = _FakeResponse("", status_code=self.status_code)
+        resp.content = self.content
+        return resp
+
+
+def _binary_adapter(http):
+    return WebDavFilesAdapter("https://nc.example.com/dav/files/alice/", "alice", "secret", _http=http)
+
+
+def test_read_binary_returns_raw_bytes_unchanged():
+    payload = bytes(range(256))
+    http = _BinaryHttp(payload)
+    assert _binary_adapter(http).read_binary("/Contracts/a.bin") == payload
+    assert http.requests == [("GET", "https://nc.example.com/dav/files/alice/Contracts/a.bin")]
+
+
+def test_read_binary_rejects_traversal_and_http_errors():
+    with pytest.raises(ValueError):
+        _binary_adapter(_BinaryHttp(b"")).read_binary("../../etc/passwd")
+    with pytest.raises(RuntimeError):
+        _binary_adapter(_BinaryHttp(b"", status_code=404)).read_binary("gone.bin")
+
+
+def test_nc_files_download_allows_readers_and_denies_non_members():
+    from memaix_gateway.acl import AccessDenied, Acl
+    from memaix_gateway.tools.nc_files import nc_files_download
+
+    class Backend:
+        def read_binary(self, path):
+            return b"\x00\xff" + path.encode()
+
+    acl = Acl(
+        users={"alice": {"grants": {"p": "collaborator"}}, "rita": {"grants": {"p": "reader"}}, "eve": {"grants": {}}},
+        projects={"p": {"vault": "/v"}},
+    )
+    for user in ("alice", "rita"):
+        assert nc_files_download(acl, user, "p", "/x", _files=Backend()) == b"\x00\xff/x"
+    with pytest.raises(AccessDenied):
+        nc_files_download(acl, "eve", "p", "/x", _files=Backend())
+
+
+def test_read_binary_refuses_oversized_downloads(monkeypatch):
+    from memaix_gateway.connectors.adapters import files_webdav as mod
+
+    monkeypatch.setattr(mod, "MAX_DOWNLOAD_BYTES", 10)
+    declared = _BinaryHttp(b"x")
+    orig = declared.request
+
+    def with_length(method, url, **kw):
+        resp = orig(method, url, **kw)
+        resp.headers = {"Content-Length": "11"}
+        return resp
+
+    declared.request = with_length
+    with pytest.raises(mod.FileTooLarge):
+        _binary_adapter(declared).read_binary("big.bin")
+    with pytest.raises(mod.FileTooLarge):
+        _binary_adapter(_BinaryHttp(b"y" * 11)).read_binary("big.bin")
+    assert _binary_adapter(_BinaryHttp(b"z" * 10)).read_binary("ok.bin") == b"z" * 10
