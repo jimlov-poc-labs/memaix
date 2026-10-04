@@ -182,7 +182,8 @@
     for (const day of days) {
       const li = el('li', {}, el('span', { class: 'list-text', text: `${day} — ${describeWindows(state.dates[day])}` }));
       li.append(removeButton(day, () => {
-        const { [day]: _gone, ...rest } = state.dates;
+        const rest = { ...state.dates };
+        delete rest[day];
         saveWith('dates-status', () => post('schedule', { dates: rest }));
       }));
       list.append(li);
