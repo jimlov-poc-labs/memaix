@@ -326,3 +326,78 @@ def test_infeasible_raises_runtime_error_and_leaves_store_untouched(store, monke
 
     assert store.list_allocations(scenario["id"]) == []
     assert store.list_schedule(scenario["id"]) == []
+
+
+def test_fs_dependency_leaves_one_gap_day_after_predecessor(store):
+    # Låser dagens beteende: end-variabeln är exklusiv och precedensen är
+    # start[succ] >= end[pred] + 1, så en lucka på en dag uppstår (A: 6/1,
+    # B: tidigast 8/1).
+    scenario = store.add_scenario("acme", "Plan", "baseline")
+    store.add_resource("acme", "Anna")
+    a = store.add_task("acme", "A", estimate_hours=8)
+    b = store.add_task("acme", "B", estimate_hours=8)
+    store.add_dependency(a["id"], b["id"], type="FS")
+
+    result = allocate_cpsat(store, scenario["id"], project_start=START)
+
+    by_task = {x["task_id"]: x for x in result["allocations"]}
+    assert (by_task[a["id"]]["start_date"], by_task[a["id"]]["end_date"]) == ("2025-01-06", "2025-01-06")
+    assert by_task[b["id"]]["start_date"] == "2025-01-08"
+
+
+# --- Rena hjälpfunktioner (ingen lösare behövs för dessa) ---
+
+
+def test_horizon_days_sums_slowest_durations_plus_floor_and_margin():
+    from memaix_gateway.pm.allocate_cpsat import _horizon_days
+
+    cpm_rows = [{"earliest_start": "2025-01-06"}, {"earliest_start": "2025-01-09"}]
+    schedulable = [
+        {"estimate": 16, "eligible": [{"capacity_hours_per_day": 8.0}, {"capacity_hours_per_day": 4.0}]},  # 4 d
+        {"estimate": 8, "eligible": [{"capacity_hours_per_day": 8.0}]},  # 1 d
+    ]
+    assert _horizon_days(cpm_rows, START, schedulable) == 3 + 4 + 1 + 30
+
+
+class _FakeSolver:
+    def __init__(self, values):
+        self._values = values
+
+    def value(self, var):
+        return self._values[var]
+
+
+def test_extract_allocations_zero_duration_never_ends_before_start():
+    from memaix_gateway.pm.allocate_cpsat import _extract_allocations
+
+    schedulable = [{"task": {"id": 7}, "estimate": 3.5, "eligible": []}]
+    solver = _FakeSolver({"s": 2, "e": 2, "a1": 0, "a2": 1})  # end == start (varaktighet 0)
+    out = _extract_allocations(solver, schedulable, {7: "s"}, {7: "e"}, {7: {10: "a1", 11: "a2"}}, START)
+    assert out == [{
+        "task_id": 7, "resource_id": 11, "start_date": "2025-01-08", "end_date": "2025-01-08", "hours": 3.5,
+    }]
+
+
+def test_extract_allocations_end_is_last_day_inclusive():
+    from memaix_gateway.pm.allocate_cpsat import _extract_allocations
+
+    schedulable = [{"task": {"id": 1}, "estimate": 16, "eligible": []}]
+    solver = _FakeSolver({"s": 0, "e": 2, "a": 1})
+    out = _extract_allocations(solver, schedulable, {1: "s"}, {1: "e"}, {1: {5: "a"}}, START)
+    assert (out[0]["start_date"], out[0]["end_date"]) == ("2025-01-06", "2025-01-07")
+
+
+def test_classify_task_outcomes():
+    from memaix_gateway.pm.allocate_cpsat import _classify_task
+
+    res = [{"id": 1}, {"id": 2}]
+    skills = {1: [9], 2: []}
+    task = {"id": 5, "title": "T", "estimate_hours": 8, "required_skill_id": None}
+    entry, warning = _classify_task(task, res, skills)
+    assert warning is None and entry["eligible"] == res and entry["estimate"] == 8
+    entry, warning = _classify_task({**task, "required_skill_id": 9}, res, skills)
+    assert warning is None and entry["eligible"] == [res[0]]
+    entry, warning = _classify_task({**task, "required_skill_id": 3}, res, skills)
+    assert entry is None and warning == "task 5 ('T'): no eligible resource for required skill — unallocated"
+    entry, warning = _classify_task({**task, "estimate_hours": None}, res, skills)
+    assert entry is None and warning == "task 5 ('T'): no estimate — treated as zero-duration"
