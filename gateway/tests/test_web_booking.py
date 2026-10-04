@@ -5,6 +5,8 @@ _require_user is patched; role behaviour is exercised through the Acl."""
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -291,3 +293,15 @@ def test_non_json_body_is_400(rig):
     client, _, _ = rig
     for path in ("schedule", "enabled", "meeting-types"):
         assert client.post(f"/app/api/booking/{path}", content=b"not json").status_code == 400
+
+
+def test_get_survives_missing_token_db(rig, monkeypatch):
+    client, _, _ = rig
+
+    def boom():
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(booking_api, "_token_store", boom)
+    r = client.get("/app/api/booking?project=proj")
+    assert r.status_code == 200
+    assert r.json()["calendar_mode"] is None

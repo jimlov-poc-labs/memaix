@@ -8,6 +8,7 @@ public booking-link slug is never part of any response here."""
 from __future__ import annotations
 
 import re
+import sqlite3
 import unicodedata
 
 from starlette.requests import Request
@@ -111,10 +112,13 @@ def _slugify(name: str, taken: set[str]) -> str:
 
 def _state(acl, user: str, project: str) -> dict:
     hours = t_cal.calendar_working_hours_get(acl, user, project)
-    mode = t_cal.get_status(user, project, acl, _token_store())
+    try:
+        calendar_mode = t_cal.get_status(user, project, acl, _token_store())["active_mode"]
+    except sqlite3.OperationalError:
+        calendar_mode = None  # only drives an informational hint; never block the page
     return {
         "enabled": bool(t_cal.calendar_booking_enabled_get(acl, user, project).get("enabled")),
-        "calendar_mode": mode["active_mode"],
+        "calendar_mode": calendar_mode,
         "tz": hours.get("tz") or _DEFAULT_TZ,
         "week": hours.get("week", {}),
         "weeks": hours.get("weeks", {}),
