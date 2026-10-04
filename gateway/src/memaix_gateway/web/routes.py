@@ -36,7 +36,7 @@ _HTML_CACHE: dict[str, str] = {}
 
 # Pages the generic /app/{page} route may serve. An allowlist (rather than
 # "whatever exists on disk") keeps the URL space intentional.
-_KNOWN_PAGES = {"home", "board", "settings", "memory", "outbox", "admin", "search"}
+_KNOWN_PAGES = {"home", "board", "settings", "memory", "outbox", "admin", "search", "booking"}
 _NO_CACHE = "no-cache, no-store, must-revalidate"
 
 _STATIC_TYPES = {
@@ -393,6 +393,7 @@ from .api import accounts as _api_accounts  # noqa: E402
 from .api import admin as _api_admin  # noqa: E402
 from .api import admin_llm as _api_admin_llm  # noqa: E402
 from .api import admin_write as _api_admin_write  # noqa: E402
+from .api import booking as _api_booking  # noqa: E402
 from .api import brief as _api_brief  # noqa: E402
 from .api import memory as _api_memory  # noqa: E402
 from .api import mfa as _api_mfa  # noqa: E402
@@ -449,6 +450,15 @@ web_routes = [
     Route("/app/api/accounts/{provider}", _api_accounts.api_accounts_unlink, methods=["DELETE"]),
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_get, methods=["GET"]),
     Route("/app/api/settings/calendar-mode", _api_accounts.api_calendar_mode_set, methods=["POST"]),
+    # Host's own booking settings (/app/booking)
+    Route("/app/api/booking", _api_booking.api_booking_get, methods=["GET"]),
+    Route("/app/api/booking/schedule", _api_booking.api_booking_schedule_set, methods=["POST"]),
+    Route("/app/api/booking/enabled", _api_booking.api_booking_enabled_set, methods=["POST"]),
+    Route("/app/api/booking/meeting-types", _api_booking.api_booking_meeting_type_set, methods=["POST"]),
+    Route(
+        "/app/api/booking/meeting-types/{slug}",
+        _api_booking.api_booking_meeting_type_delete, methods=["DELETE"],
+    ),
     Route("/app/board/frame", app_board_frame, methods=["GET"]),
     Route("/app/static/{path:path}", app_static, methods=["GET"]),
     Route("/app/invite/{token:str}", _invite.invite_page, methods=["GET", "POST"]),

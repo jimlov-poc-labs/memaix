@@ -432,6 +432,44 @@ def test_settings_calendar_ical_ssrf_rejected_in_ui(alice_page):
     expect(page.locator(".toast-error")).to_be_visible()  # rejected, not saved
 
 
+def test_settings_calendar_offers_native_mode(alice_page):
+    page = alice_page
+    page.goto("/app/settings?project=demo")
+    page.select_option("#calendar-mode-select", "native")
+    expect(page.locator("#calendar-native-hint")).to_be_visible()
+
+
+def test_booking_page_host_controls_schedule(alice_page):
+    page = alice_page
+    page.goto("/app/booking?project=demo")
+    expect(page.locator("#hours-grids .week-grid")).to_have_count(1)
+
+    page.check("#booking-enabled")
+    page.locator("#onoff-form button[type=submit]").click()
+    expect(page.locator("#onoff-status")).to_have_text("Saved.")
+
+    page.get_by_role("button", name="Add time").first.click()
+    page.locator("#hours-form button[type=submit]").click()
+    expect(page.locator("#hours-status")).to_have_text("Saved.")
+
+    page.check("#booking-alt-weeks")
+    expect(page.locator("#hours-grids .week-grid")).to_have_count(2)
+
+    page.fill("#booking-cap-input", "3")
+    page.locator("#cap-form button[type=submit]").click()
+    expect(page.locator("#cap-status")).to_have_text("Saved.")
+
+    page.fill("#type-name", "Kort samtal")
+    page.fill("#type-minutes", "30")
+    page.locator("#type-form button[type=submit]").click()
+    expect(page.locator("#types-list li")).to_have_count(1)
+
+    state = page.request.get("/app/api/booking?project=demo").json()
+    assert state["enabled"] is True and state["max_per_day"] == 3
+    assert state["meeting_types"][0]["duration_min"] == 30
+    assert "mon" in state["week"]
+
+
 # ---------------------------------------------------------------------------
 # Mobile layout
 # ---------------------------------------------------------------------------

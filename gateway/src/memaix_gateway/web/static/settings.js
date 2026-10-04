@@ -186,6 +186,7 @@
   const syncInputs = () => {
     icalInput.hidden = select.value !== 'ical_secret';
     calIdInput.hidden = select.value !== 'free_busy';
+    document.getElementById('calendar-native-hint').hidden = select.value !== 'native';
   };
   select.addEventListener('change', syncInputs);
 
