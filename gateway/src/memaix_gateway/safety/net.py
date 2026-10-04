@@ -32,7 +32,7 @@ class BlockedURLError(ValueError):
 
 
 # Carrier-grade NAT (also Tailscale): neither "private" nor "reserved" in the stdlib.
-_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # NOSONAR -- RFC 6598 shared address space, not a host
 
 
 def _is_blocked_ip(ip: str) -> bool:
