@@ -16,6 +16,7 @@ docs/BUSINESS-CASE.md
 !.env.example
 config/*
 !config/*.example.yaml
+cloudflared-secrets/
 cloudflared/*
 !cloudflared/config.example.yml
 

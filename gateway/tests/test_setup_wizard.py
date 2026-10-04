@@ -237,6 +237,23 @@ def test_write_config_compose_profiles_and_mount_dirs(tmp_path):
     assert "COMPOSE_PROFILES=hydra,tunnel\n" in (tmp_path / ".env").read_text()
 
 
+def test_tunnel_token_goes_to_a_600_file_not_env(tmp_path):
+    engine.write_config(
+        _answers(track=2, domain="mcp.acme.se", tunnel_provider="cloudflare", tunnel_token="tok-abc"),
+        tmp_path,
+    )
+    token = tmp_path / "cloudflared-secrets" / "tunnel.token"
+    assert token.read_text() == "tok-abc"
+    assert token.stat().st_mode & 0o777 == 0o600
+    assert "tok-abc" not in (tmp_path / ".env").read_text()
+    assert "CLOUDFLARE_TUNNEL_TOKEN" not in (tmp_path / ".env").read_text()
+
+
+def test_tunnel_token_file_exists_even_without_a_token(tmp_path):
+    engine.write_config(_answers(), tmp_path)
+    assert (tmp_path / "cloudflared-secrets" / "tunnel.token").is_file()
+
+
 def test_hydra_dev_mode_only_for_http_issuer(tmp_path):
     """Hydra kör utan --dev så fort issuern är https; bara en lokal
     http-issuer (som Hydra annars vägrar starta med) får dev-läget."""

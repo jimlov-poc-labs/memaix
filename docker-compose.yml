@@ -93,9 +93,12 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    depends_on: [caddy]
-    profiles: ["tunnel"]                   # aktivera med: docker compose --profile tunnel up -d
+    # Token i en fil, inte på kommandoraden: den syns annars i `docker inspect` och `ps`.
+    # Lägg token i ./cloudflared-secrets/tunnel.token (chmod 600) innan start.
+    command: tunnel --no-autoupdate run --token-file /run/cf/tunnel.token
+    volumes:
+      - ./cloudflared-secrets/tunnel.token:/run/cf/tunnel.token:ro
+    profiles: ["tunnel"]                  # aktivera med: docker compose --profile tunnel up -d
 
   # Rekommenderad för drift: LOKALT hanterad tunnel. Ingress-reglerna ligger i
   # ./cloudflared/config.yml (se config.example.yml för uppsättning) — en fil i

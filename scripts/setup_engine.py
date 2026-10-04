@@ -202,7 +202,6 @@ def write_config(a: dict, root: Path) -> dict:
 
     env_lines = [
         "# Genererat av Memaix setup — ändra inte för hand",
-        f"CLOUDFLARE_TUNNEL_TOKEN={a['tunnel_token']}",
         f"HYDRA_DB_PASSWORD={secrets.token_hex(32)}",
         f"HYDRA_SYSTEM_SECRET={secrets.token_hex(32)}",
         f"HYDRA_PUBLIC_URL={issuer}",
@@ -230,6 +229,13 @@ def write_config(a: dict, root: Path) -> dict:
     if a.get("llm_api_key"):
         env_lines.append(f"LLM_API_KEY={a['llm_api_key']}")
     write_secret_file(root / ".env", "\n".join(env_lines) + "\n")
+
+    # Tunnel-token i en fil (compose monterar den med --token-file), så den inte
+    # syns i `docker inspect`. Filen skapas även när token saknas: saknas den
+    # gör Docker en katalog av monteringspunkten och cloudflared startar aldrig.
+    secrets_dir = root / "cloudflared-secrets"
+    secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_secret_file(secrets_dir / "tunnel.token", a["tunnel_token"])
 
     # Skapa bind-mount-katalogerna själva. Saknas de skapar Docker dem som
     # root, och gatewayen (som kör som MEMAIX_UID) kan då inte skriva /data.
