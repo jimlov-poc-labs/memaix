@@ -281,6 +281,49 @@ def api_projects(request: Request) -> JSONResponse:
     return JSONResponse({"user": user, "projects": _user_projects(user, acl)})
 
 
+def _resolve_sprint(
+    sprint_filter: str, sprints: list[dict], detected_active: str | None
+) -> tuple[str | None, set | None]:
+    """Map the ``sprint`` query value to (sprint id, card ids to keep).
+
+    ``None`` as card ids means "do not filter". Raises ``LookupError`` for a
+    sprint that is unknown (or has no items)."""
+    if sprint_filter == "active":
+        if not detected_active:
+            return None, None
+        active_items: list = next((sp["items"] for sp in sprints if sp["id"] == detected_active), [])
+        return detected_active, set(active_items)
+    for sp in sprints:
+        if sp["id"] == sprint_filter:
+            keep = set(sp["items"])
+            if not keep:
+                raise LookupError(sprint_filter)
+            return sp["id"], keep
+    raise LookupError(sprint_filter)
+
+
+def _card_sort_key(card: dict):
+    return (-(card.get("value") or 0), card.get("updated_at", ""))
+
+
+def _board_columns(cards: list[dict]) -> list[dict]:
+    """Group cards into the fixed columns (unknown status -> inbox), each
+    sorted by value desc then updated_at."""
+    col_map: dict[str, list[dict]] = {key: [] for key, _ in s.COLUMNS}
+    for card in cards:
+        st = card.get("status", "inbox")
+        col_map[st if st in col_map else "inbox"].append(card)
+    return [
+        {
+            "key":   key,
+            "label": label,
+            "muted": key == "rejected",
+            "cards": sorted(col_map[key], key=_card_sort_key),
+        }
+        for key, label in s.COLUMNS
+    ]
+
+
 def api_board(request: Request) -> JSONResponse:
     user = _require_user(request)
     if not user:
@@ -300,56 +343,20 @@ def api_board(request: Request) -> JSONResponse:
 
     cards = s.list_backlog(vault)
 
-    # Sprint filter
     active_sprint_id = None
     if sprint_filter:
         sprints, detected_active = s.list_sprints(vault)
-        if sprint_filter == "active":
-            active_sprint_id = detected_active
-            if active_sprint_id:
-                sprint_items: list = next(
-                    (sp["items"] for sp in sprints if sp["id"] == active_sprint_id), []
-                )
-                cards = [c for c in cards if c["id"] in sprint_items]
-        else:
-            sprint_items_set: set[str] = set()
-            for sp in sprints:
-                if sp["id"] == sprint_filter:
-                    sprint_items_set = set(sp["items"])
-                    active_sprint_id = sp["id"]
-                    break
-            if not sprint_items_set and sprint_filter:
-                return JSONResponse({"error": f"unknown sprint: {sprint_filter}"}, status_code=400)
-            if sprint_items_set:
-                cards = [c for c in cards if c["id"] in sprint_items_set]
-
-    # Group into columns, sort by value desc then updated_at desc
-    col_map: dict[str, list[dict]] = {key: [] for key, _ in s.COLUMNS}
-    for card in cards:
-        st = card.get("status", "inbox")
-        if st in col_map:
-            col_map[st].append(card)
-        else:
-            col_map["inbox"].append(card)
-
-    def _sort_key(c: dict):
-        v = c.get("value") or 0
-        return (-v, c.get("updated_at", ""))
-
-    columns = [
-        {
-            "key":   key,
-            "label": label,
-            "muted": key == "rejected",
-            "cards": sorted(col_map[key], key=_sort_key),
-        }
-        for key, label in s.COLUMNS
-    ]
+        try:
+            active_sprint_id, keep_ids = _resolve_sprint(sprint_filter, sprints, detected_active)
+        except LookupError:
+            return JSONResponse({"error": f"unknown sprint: {sprint_filter}"}, status_code=400)
+        if keep_ids is not None:
+            cards = [c for c in cards if c["id"] in keep_ids]
 
     return JSONResponse({
         "project":        project,
         "sprint":         active_sprint_id or sprint_filter or None,
-        "columns":        columns,
+        "columns":        _board_columns(cards),
         "total_cards":    len(cards),
     })
 
