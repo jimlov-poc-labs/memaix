@@ -46,6 +46,43 @@ def _is_blocked_ip(ip: str) -> bool:
     )
 
 
+def _is_literal_ip(host: str) -> bool:
+    # Parse in a try (ValueError = "not a literal IP, it's a hostname"); the
+    # block decision is made by the caller, OUTSIDE the try, because
+    # BlockedURLError subclasses ValueError and would be swallowed here.
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _require_http_host(url: str):
+    """Parse ``url`` and return (parsed, hostname); raise BlockedURLError for
+    an empty/non-string URL, a non-http(s) scheme or a missing host."""
+    if not url or not isinstance(url, str):
+        raise BlockedURLError("empty or non-string URL")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise BlockedURLError(f"URL scheme must be http/https, got {parsed.scheme!r}")
+    host = parsed.hostname
+    if not host:
+        raise BlockedURLError("URL has no host")
+    return parsed, host
+
+
+def _check_resolved_addresses(host: str, parsed) -> None:
+    """Resolve ``host`` and raise BlockedURLError if ANY address is non-public."""
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+    except socket.gaierror as exc:
+        raise BlockedURLError(f"could not resolve host {host!r}: {exc}") from exc
+    for info in infos:
+        ip = str(info[4][0])
+        if _is_blocked_ip(ip):
+            raise BlockedURLError(f"URL host {host!r} resolves to a non-public address: {ip}")
+
+
 def validate_external_url(url: str, *, resolve: bool = True) -> str:
     """Return the URL unchanged if it's a safe external http(s) target, else
     raise BlockedURLError.
@@ -77,37 +114,14 @@ def validate_external_url(url: str, *, resolve: bool = True) -> str:
     Location header before making the next request. Nothing here does that
     today, which is why the blanket rule is "no redirects".
     """
-    if not url or not isinstance(url, str):
-        raise BlockedURLError("empty or non-string URL")
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise BlockedURLError(f"URL scheme must be http/https, got {parsed.scheme!r}")
-    host = parsed.hostname
-    if not host:
-        raise BlockedURLError("URL has no host")
+    parsed, host = _require_http_host(url)
 
-    # A literal IP in the URL is checked directly (no DNS needed). Parse in a
-    # try (ValueError = "not a literal IP, it's a hostname"), but do the
-    # block decision OUTSIDE the try — BlockedURLError subclasses ValueError,
-    # so raising it inside would be swallowed by our own except.
-    is_literal_ip = False
-    try:
-        ipaddress.ip_address(host)
-        is_literal_ip = True
-    except ValueError:
-        pass
-    if is_literal_ip:
+    # A literal IP in the URL is checked directly (no DNS needed).
+    if _is_literal_ip(host):
         if _is_blocked_ip(host):
             raise BlockedURLError(f"URL host is a non-public address: {host}")
         return url
 
     if resolve:
-        try:
-            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
-        except socket.gaierror as exc:
-            raise BlockedURLError(f"could not resolve host {host!r}: {exc}") from exc
-        for info in infos:
-            ip = str(info[4][0])
-            if _is_blocked_ip(ip):
-                raise BlockedURLError(f"URL host {host!r} resolves to a non-public address: {ip}")
+        _check_resolved_addresses(host, parsed)
     return url
