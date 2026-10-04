@@ -291,7 +291,7 @@ def _resolve_sprint(
     if sprint_filter == "active":
         if not detected_active:
             return None, None
-        active_items = next((sp["items"] for sp in sprints if sp["id"] == detected_active), [])
+        active_items: list = next((sp["items"] for sp in sprints if sp["id"] == detected_active), [])
         return detected_active, set(active_items)
     for sp in sprints:
         if sp["id"] == sprint_filter:
