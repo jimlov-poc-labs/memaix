@@ -78,16 +78,16 @@ def _load_inputs(store, scenario_id: int) -> tuple[list[dict], list[dict], list[
     return tasks, deps, [r for r in resources if r["active"]]
 
 
-def _classify_task(task: dict, resources: list[dict], skill_ids_by_resource: dict[int, list]) -> tuple[dict | None, str | None]:
-    """Return (schedulable entry, None) or (None, warning)."""
+def _classify_task(task: dict, resources: list[dict], skill_ids_by_resource: dict[int, list]) -> dict | str:
+    """Return the schedulable entry, or a warning string if the task can't be scheduled."""
     estimate = task.get("estimate_hours")
     if estimate is None:
-        return None, f"task {task['id']} ({task['title']!r}): no estimate — treated as zero-duration"
+        return f"task {task['id']} ({task['title']!r}): no estimate — treated as zero-duration"
     required_skill = task.get("required_skill_id")
     eligible = [r for r in resources if required_skill is None or required_skill in skill_ids_by_resource[r["id"]]]
     if not eligible:
-        return None, f"task {task['id']} ({task['title']!r}): no eligible resource for required skill — unallocated"
-    return {"task": task, "estimate": estimate, "eligible": eligible}, None
+        return f"task {task['id']} ({task['title']!r}): no eligible resource for required skill — unallocated"
+    return {"task": task, "estimate": estimate, "eligible": eligible}
 
 
 def _split_schedulable(
@@ -97,11 +97,11 @@ def _split_schedulable(
     schedulable: list[dict] = []
     warnings: list[str] = []
     for t in tasks:
-        entry, warning = _classify_task(t, resources, skill_ids_by_resource)
-        if entry is not None:
-            schedulable.append(entry)
+        outcome = _classify_task(t, resources, skill_ids_by_resource)
+        if isinstance(outcome, str):
+            warnings.append(outcome)
         else:
-            warnings.append(warning)
+            schedulable.append(outcome)
     return schedulable, warnings
 
 

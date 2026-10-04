@@ -393,11 +393,11 @@ def test_classify_task_outcomes():
     res = [{"id": 1}, {"id": 2}]
     skills = {1: [9], 2: []}
     task = {"id": 5, "title": "T", "estimate_hours": 8, "required_skill_id": None}
-    entry, warning = _classify_task(task, res, skills)
-    assert warning is None and entry["eligible"] == res and entry["estimate"] == 8
-    entry, warning = _classify_task({**task, "required_skill_id": 9}, res, skills)
-    assert warning is None and entry["eligible"] == [res[0]]
-    entry, warning = _classify_task({**task, "required_skill_id": 3}, res, skills)
-    assert entry is None and warning == "task 5 ('T'): no eligible resource for required skill — unallocated"
-    entry, warning = _classify_task({**task, "estimate_hours": None}, res, skills)
-    assert entry is None and warning == "task 5 ('T'): no estimate — treated as zero-duration"
+    entry = _classify_task(task, res, skills)
+    assert entry["eligible"] == res and entry["estimate"] == 8
+    entry = _classify_task({**task, "required_skill_id": 9}, res, skills)
+    assert entry["eligible"] == [res[0]]
+    warning = _classify_task({**task, "required_skill_id": 3}, res, skills)
+    assert warning == "task 5 ('T'): no eligible resource for required skill — unallocated"
+    warning = _classify_task({**task, "estimate_hours": None}, res, skills)
+    assert warning == "task 5 ('T'): no estimate — treated as zero-duration"
