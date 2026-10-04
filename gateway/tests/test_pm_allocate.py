@@ -415,6 +415,8 @@ def test_allocate_no_estimate_task_delays_fs_successor(store):
 
     assert len(result["warnings"]) == 1 and "no estimate" in result["warnings"][0]
     assert [a["task_id"] for a in result["allocations"]] == [t2["id"]]
+    # the unestimated predecessor "finishes" on its ready date; FS successor starts the day after
+    assert result["allocations"][0]["start_date"] == "2025-01-07"
 
 
 def test_allocate_fs_successor_waits_for_resource_finish_of_predecessor(store):
@@ -661,3 +663,19 @@ def test_utilization_includes_inactive_resources(store):
     res = utilization(store, scenario["id"], "2025-01-06", "2025-01-06")
 
     assert [x["resource_id"] for x in res["resources"]] == [r["id"]]
+
+
+def test_allocate_fs_successor_starts_day_after_predecessor_ends_on_free_resource(store):
+    scenario = store.add_scenario("acme", "Plan", "baseline")
+    store.add_resource("acme", "Anna", capacity_hours_per_day=4.0)
+    store.add_resource("acme", "Erik", capacity_hours_per_day=4.0)
+    t1 = store.add_task("acme", "First", estimate_hours=16)
+    t2 = store.add_task("acme", "Second", estimate_hours=4)
+    store.add_dependency(t1["id"], t2["id"])
+
+    allocate(store, scenario["id"], project_start=START)
+
+    allocs = _alloc_by_task(store, scenario["id"])
+    assert allocs[t1["id"]]["end_date"] == "2025-01-09"
+    # a second resource is idle, so only the FS rule can hold the successor back
+    assert allocs[t2["id"]]["start_date"] == "2025-01-10"
