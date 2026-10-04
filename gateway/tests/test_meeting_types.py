@@ -150,3 +150,102 @@ def test_validate_empty_list_is_valid():
 def test_validate_rejects_non_dict_item():
     with pytest.raises(ValueError, match="must be an object"):
         validate_types(["not-a-dict"])
+
+
+# ---------------------------------------------------------------------------
+# Karakteriseringstester (Sonar S3776-saneringen av validate_types): exakta
+# meddelanden, kontrollordning och normalisering.
+# ---------------------------------------------------------------------------
+
+def _err(types):
+    with pytest.raises(ValueError) as exc:
+        validate_types(types)
+    return str(exc.value)
+
+
+def test_validate_error_messages_are_exact():
+    assert _err(["x"]) == "each meeting type must be an object, got 'x'"
+    assert _err([_type(slug="Bad_Slug")]) == "invalid slug 'Bad_Slug': must be lowercase alphanumeric/hyphen"
+    assert _err([{"name": "N", "duration_min": 5}]) == "invalid slug '': must be lowercase alphanumeric/hyphen"
+    assert _err([_type(slug="a"), _type(slug="a")]) == "duplicate slug 'a'"
+    assert _err([{"slug": "a", "duration_min": 5}]) == "'a': name is required"
+    assert _err([_type(slug="a", duration_min=0)]) == "'a': duration_min must be an int in 1..43200"
+    assert _err([_type(slug="a", duration_min=None)]) == "'a': duration_min must be an int in 1..43200"
+    assert _err([_type(slug="a", duration_min=2.5)]) == "'a': duration_min must be an int in 1..43200"
+    assert _err([_type(slug="a", interval_min=0)]) == "'a': interval_min must be an int in 1..43200"
+    assert _err([_type(slug="a", interval_min=43201)]) == "'a': interval_min must be an int in 1..43200"
+    assert _err([_type(slug="a", interval_min="15")]) == "'a': interval_min must be an int in 1..43200"
+    assert _err([_type(slug="a", interval_min=None)]) == "'a': interval_min must be an int in 1..43200"
+    assert _err([_type(slug="a", default=True), _type(slug="b", default=True)]) == (
+        "at most one meeting type may be marked default"
+    )
+
+
+def test_validate_slug_pattern_boundaries():
+    for ok in ("a", "a1", "a-b", "9", "ab-cd-ef"):
+        assert validate_types([_type(slug=ok)])[0]["slug"] == ok
+    for bad in ("", "-a", "a-", "A", "a_b", "a b", "å"):
+        assert "invalid slug" in _err([_type(slug=bad)])
+
+
+def test_validate_slug_with_trailing_newline_is_accepted_today():
+    """Kvirk som låses (ändra inte): `$` i slug-regexen matchar före ett avslutande
+    radbrytningstecken, så "a\\n" passerar."""
+    assert validate_types([_type(slug="a\n")])[0]["slug"] == "a\n"
+
+
+def test_validate_non_string_slug_raises_typeerror_today():
+    """Kvirk som låses (ändra inte): slug som inte är sträng ger TypeError från
+    regex-matchningen, inte ValueError."""
+    with pytest.raises(TypeError):
+        validate_types([_type(slug=None)])
+    with pytest.raises(TypeError):
+        validate_types([_type(slug=5)])
+
+
+def test_validate_bool_duration_is_accepted_today():
+    """Kvirk som låses (ändra inte): bool är int i Python, så True passerar som 1."""
+    result = validate_types([_type(duration_min=True)])
+    assert result[0]["duration_min"] is True
+    assert result[0]["interval_min"] is True
+
+
+def test_validate_check_order_slug_then_duplicate_then_name_then_duration_then_interval():
+    assert "invalid slug" in _err([{"slug": "Bad", "duration_min": "x"}])
+    assert "duplicate slug" in _err([_type(slug="a"), {"slug": "a", "duration_min": "x"}])
+    assert "name is required" in _err([{"slug": "a", "duration_min": "x"}])
+    assert "duration_min" in _err([_type(slug="a", duration_min="x", interval_min="y")])
+    assert "interval_min" in _err([_type(slug="a", interval_min="y")])
+
+
+def test_validate_item_error_wins_over_default_error_and_later_items_are_checked():
+    assert "name is required" in _err([
+        _type(slug="a", default=True), _type(slug="b", default=True), {"slug": "c", "duration_min": 5}
+    ])
+    assert "must be an object" in _err([_type(slug="a"), 3])
+
+
+def test_validate_bounds_inclusive_and_interval_independent():
+    result = validate_types([_type(slug="a", duration_min=1, interval_min=43200)])
+    assert result == [{"slug": "a", "name": "Quick sync", "duration_min": 1, "interval_min": 43200, "default": True}]
+
+
+def test_validate_normalizes_output_and_does_not_mutate_input():
+    src = [
+        {"slug": "a", "name": "A", "duration_min": 30, "extra": "dropped", "default": 0},
+        {"slug": "b", "name": "B", "duration_min": 60, "interval_min": 15, "default": "yes"},
+    ]
+    snapshot = [dict(x) for x in src]
+    result = validate_types(src)
+    assert result == [
+        {"slug": "a", "name": "A", "duration_min": 30, "interval_min": 30, "default": False},
+        {"slug": "b", "name": "B", "duration_min": 60, "interval_min": 15, "default": True},
+    ]
+    assert src == snapshot
+
+
+def test_validate_promotes_first_only_when_no_default():
+    result = validate_types([_type(slug="a"), _type(slug="b"), _type(slug="c")])
+    assert [t["default"] for t in result] == [True, False, False]
+    result = validate_types([_type(slug="a"), _type(slug="b", default=True)])
+    assert [t["default"] for t in result] == [False, True]
