@@ -24,6 +24,18 @@ def _default_dispatch() -> dict[str, Callable]:
     }
 
 
+_LINK_KEYS = ("invite_url", "reset_url")
+
+
+def redact_links(result: dict) -> dict:
+    """The copy of `result` that may be stored: one-time sign-in links are
+    shown to the approver in the approve response and never persisted."""
+    stored = {k: v for k, v in result.items() if k not in _LINK_KEYS}
+    if len(stored) != len(result):
+        stored["link_shown_once"] = True
+    return stored
+
+
 def execute_pending(acl, action: dict, *, tools: dict[str, Callable] | None = None) -> dict:
     """Run the tool behind a queued action with `_confirmed=True`.
 

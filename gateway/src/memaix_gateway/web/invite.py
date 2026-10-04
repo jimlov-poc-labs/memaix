@@ -58,6 +58,13 @@ def _admin():
     return t_access._admin()
 
 
+def _public_url() -> str:
+    from .. import config
+
+    server = config.load().get("memaix", {}).get("server", {}) or {}
+    return str(server.get("public_url", "") or "").rstrip("/")
+
+
 async def invite_page(request: Request) -> HTMLResponse:
     token = request.path_params["token"]
     user = _admin()._invites.peek(token)
@@ -77,8 +84,16 @@ async def invite_page(request: Request) -> HTMLResponse:
     from ..server import reload_acl
 
     reload_acl()
+    base = _public_url()
+    connector = (
+        f"<p>Din connector-URL (klistra in i Claude, ChatGPT eller Mistral):<br>"
+        f"<b>{escape(base)}</b></p>"
+        f'<p><a href="{escape(base)}/app/">Öppna Memaix i webbläsaren</a></p>'
+        if base
+        else "<p>Be den som bjöd in dig om din connector-URL.</p>"
+    )
     return _page(
         f"<p>Klart, <b>{escape(accepted)}</b>! Ditt lösenord är sparat. "
-        "Du kan nu logga in när du lägger till Memaix i din AI-klient "
-        "(se docs/AI-CLIENTS.md).</p>"
+        "Logga in med ditt användarnamn och lösenord när du lägger till Memaix "
+        f"i din AI-klient (se docs/AI-CLIENTS.md).</p>{connector}"
     )

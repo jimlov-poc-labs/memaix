@@ -48,3 +48,17 @@ def test_execute_pending_default_dispatch_covers_gated_tools():
         "email_send", "calendar_create", "calendar_update",
         "project_member_set", "user_invite", "user_reset_link",
     }
+
+
+def test_redact_links_strips_signin_urls_and_marks_it():
+    from memaix_gateway.outbox.execute import redact_links
+
+    out = redact_links({"user": "n", "invite_url": "u1", "reset_url": "u2"})
+    assert out == {"user": "n", "link_shown_once": True}
+
+
+def test_redact_links_leaves_other_results_untouched():
+    from memaix_gateway.outbox.execute import redact_links
+
+    assert redact_links({"status": "sent"}) == {"status": "sent"}
+    assert redact_links({"error": "x"}) == {"error": "x"}

@@ -997,10 +997,10 @@ def outbox_approve(action_id: str) -> dict:
         current = outbox.get(action_id) or {}
         return {"conflict": True, "current_status": current.get("status")}
 
-    from .outbox.execute import execute_pending
+    from .outbox.execute import execute_pending, redact_links
     result = execute_pending(acl, claimed)
     ok = "error" not in result
-    outbox.record_result(action_id, "executed" if ok else "failed", result)
+    outbox.record_result(action_id, "executed" if ok else "failed", redact_links(result))
     _get_audit().log(
         user, action["project"], f"outbox_execute:{action['tool']}", ok,
         "" if ok else str(result.get("error", "")),

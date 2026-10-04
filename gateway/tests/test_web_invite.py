@@ -64,3 +64,21 @@ def test_success_sets_hash_and_link_is_single_use(rig):
     assert "password_hash" in yaml.safe_load(path.read_text())["users"]["newbie"]
     assert client.get(f"/app/invite/{token}").status_code == 404
     assert client.post(f"/app/invite/{token}", data={"password": pw, "confirm": pw}).status_code == 404
+
+
+def test_done_page_shows_connector_url_and_app_link(rig, monkeypatch):
+    client, token, _ = rig
+    monkeypatch.setattr(invite_mod, "_public_url", lambda: "https://mcp.example")
+    pw = "a very good password"
+    r = client.post(f"/app/invite/{token}", data={"password": pw, "confirm": pw})
+    assert "https://mcp.example" in r.text
+    assert 'href="https://mcp.example/app/"' in r.text
+
+
+def test_done_page_without_public_url_says_to_ask(rig, monkeypatch):
+    client, token, _ = rig
+    monkeypatch.setattr(invite_mod, "_public_url", lambda: "")
+    pw = "a very good password"
+    r = client.post(f"/app/invite/{token}", data={"password": pw, "confirm": pw})
+    assert r.status_code == 200
+    assert "connector-URL" in r.text
