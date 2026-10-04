@@ -56,73 +56,100 @@ function modal(contentEl) {
   return { close, box };
 }
 
+function mdInlineNode(tok) {
+  let tag = 'em', cut = 1;
+  if (tok.startsWith('**')) { tag = 'strong'; cut = 2; }
+  else if (tok.startsWith('`')) tag = 'code';
+  const node = document.createElement(tag);
+  node.textContent = tok.slice(cut, -cut);
+  return node;
+}
+
+// Tokenize **bold**, *italic*, `code` — everything else as plain text.
+function mdInline(text) {
+  const frag = document.createDocumentFragment();
+  const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) frag.append(text.slice(last, m.index));
+    frag.append(mdInlineNode(m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) frag.append(text.slice(last));
+  return frag;
+}
+
+function mdFlushPara(s) {
+  if (!s.para.length) return;
+  const p = document.createElement('p');
+  p.append(mdInline(s.para.join(' ')));
+  s.el.append(p);
+  s.para = [];
+}
+
+function mdFlushList(s) {
+  if (!s.list) return;
+  s.el.append(s.list);
+  s.list = null;
+}
+
+function mdFlushAll(s) {
+  mdFlushPara(s);
+  mdFlushList(s);
+}
+
+function mdCodeLine(s, line) {
+  if (line.trim() !== '```') { s.codeBlock.push(line); return; }
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.textContent = s.codeBlock.join('\n');
+  pre.append(code);
+  s.el.append(pre);
+  s.codeBlock = null;
+}
+
+function mdListItem(s, line, text) {
+  mdFlushPara(s);
+  if (!s.list) s.list = document.createElement(/^\s*\d+\./.test(line) ? 'ol' : 'ul');
+  const item = document.createElement('li');
+  item.append(mdInline(text));
+  s.list.append(item);
+}
+
+function mdBlockLine(s, line) {
+  const h = line.match(/^(#{1,3})\s+([^\n]+)/);
+  if (h) {
+    mdFlushAll(s);
+    const heading = document.createElement(`h${h[1].length}`);
+    heading.append(mdInline(h[2]));
+    s.el.append(heading);
+    return;
+  }
+  if (/^---+\s*$/.test(line)) {
+    mdFlushAll(s);
+    s.el.append(document.createElement('hr'));
+    return;
+  }
+  const li = line.match(/^\s*(?:[-*]|\d+\.)\s+([^\n]+)/);
+  if (li) mdListItem(s, line, li[1]);
+  else if (line.trim() === '') mdFlushAll(s);
+  else s.para.push(line.trim());
+}
+
+function mdLine(s, line) {
+  if (s.codeBlock !== null) mdCodeLine(s, line);
+  else if (line.trim() === '```') { mdFlushAll(s); s.codeBlock = []; }
+  else mdBlockLine(s, line);
+}
+
 // Minimal markdown rendering without innerHTML of the markdown itself.
 // Supports: #/##/### headings, **bold**, *italic*, `code`, ``` blocks,
 // - / * / 1. lists, --- rule, blank-line paragraphs.
 function mdView(el, markdown) {
   el.textContent = '';
-  const lines = String(markdown ?? '').split('\n');
-  let list = null, codeBlock = null, para = [];
-
-  const inline = (text) => {
-    const frag = document.createDocumentFragment();
-    // Tokenize **bold**, *italic*, `code` — everything else as plain text.
-    const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
-    let last = 0, m;
-    while ((m = re.exec(text)) !== null) {
-      if (m.index > last) frag.append(text.slice(last, m.index));
-      const tok = m[0];
-      let node;
-      if (tok.startsWith('**')) { node = document.createElement('strong'); node.textContent = tok.slice(2, -2); }
-      else if (tok.startsWith('`')) { node = document.createElement('code'); node.textContent = tok.slice(1, -1); }
-      else { node = document.createElement('em'); node.textContent = tok.slice(1, -1); }
-      frag.append(node);
-      last = m.index + tok.length;
-    }
-    if (last < text.length) frag.append(text.slice(last));
-    return frag;
-  };
-
-  const flushPara = () => {
-    if (!para.length) return;
-    const p = document.createElement('p');
-    p.append(inline(para.join(' ')));
-    el.append(p);
-    para = [];
-  };
-  const flushList = () => { if (list) { el.append(list); list = null; } };
-
-  for (const line of lines) {
-    if (codeBlock !== null) {
-      if (line.trim() === '```') {
-        const pre = document.createElement('pre');
-        const code = document.createElement('code');
-        code.textContent = codeBlock.join('\n');
-        pre.append(code); el.append(pre); codeBlock = null;
-      } else codeBlock.push(line);
-      continue;
-    }
-    if (line.trim() === '```') { flushPara(); flushList(); codeBlock = []; continue; }
-
-    const h = line.match(/^(#{1,3})\s+([^\n]+)/);
-    if (h) {
-      flushPara(); flushList();
-      const el2 = document.createElement(`h${h[1].length}`);
-      el2.append(inline(h[2])); el.append(el2); continue;
-    }
-    if (/^---+\s*$/.test(line)) { flushPara(); flushList(); el.append(document.createElement('hr')); continue; }
-
-    const li = line.match(/^\s*(?:[-*]|\d+\.)\s+([^\n]+)/);
-    if (li) {
-      flushPara();
-      if (!list) list = document.createElement(/^\s*\d+\./.test(line) ? 'ol' : 'ul');
-      const item = document.createElement('li');
-      item.append(inline(li[1])); list.append(item); continue;
-    }
-    if (line.trim() === '') { flushPara(); flushList(); continue; }
-    para.push(line.trim());
-  }
-  flushPara(); flushList();
+  const s = { el, list: null, codeBlock: null, para: [] };
+  for (const line of String(markdown ?? '').split('\n')) mdLine(s, line);
+  mdFlushAll(s);
 }
 
 function pollBadge(path, badgeEl, interval = 10_000) {
