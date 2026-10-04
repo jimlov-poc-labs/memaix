@@ -250,37 +250,21 @@ methodology: {methodology}
     }
 
 
-def pm_plan_sprint(
-    acl: Acl,
-    user_id: str,
-    project: str,
-    sprint_id: str,
-    item_ids: list[str],
-    goal: str = "",
-) -> dict:
-    acl.enforce(user_id, project, "owner")
-    validate_id(sprint_id, kind="sprint id")
-    for _iid in item_ids:
-        validate_id(_iid, kind="backlog id")
-    vault = _vault(acl, project)
-
+def _sprint_playbook(vault: Path) -> tuple[int | None, int]:
+    """(capacity_points or None when uncapped, sprint length in days)."""
     pb_meta, _ = _split_fm(_read(vault / _PLAYBOOK_FILE) or "")
     capacity_map = pb_meta.get("capacity") or {}
-    capacity_points: int | None = sum(int(v) for v in capacity_map.values()) if capacity_map else None
-    sprint_length = int(pb_meta.get("sprint_length_days", 14))
+    capacity_points = sum(int(v) for v in capacity_map.values()) if capacity_map else None
+    return capacity_points, int(pb_meta.get("sprint_length_days", 14))
 
-    warnings: list[str] = []
+
+def _collect_sprint_items(
+    vault: Path, item_ids: list[str], warnings: list[str],
+) -> tuple[list[dict], list[str], int]:
+    """Read each backlog item's estimate. Returns (items, errors, committed_points)."""
     errors: list[str] = []
     items: list[dict] = []
     committed_points = 0
-
-    if capacity_points is None:
-        warnings.append("no playbook capacity; sprint uncapped")
-
-    sprint_path = vault / "pm" / "sprints" / f"{sprint_id}.md"
-    if sprint_path.exists():
-        warnings.append(f"{sprint_id} already exists; overwriting")
-
     for item_id in item_ids:
         item_path = vault / "backlog" / f"{item_id}.md"
         if not item_path.exists():
@@ -293,18 +277,15 @@ def pm_plan_sprint(
             estimate = 0
         items.append({"id": item_id, "estimate": int(estimate)})
         committed_points += int(estimate)
+    return items, errors, committed_points
 
-    if errors:
-        return {"ok": False, "errors": errors, "warnings": warnings}
 
-    over_capacity = capacity_points is not None and committed_points > capacity_points
-    if over_capacity:
-        warnings.append(f"committed {committed_points} > capacity {capacity_points}")
-
+def _render_sprint(
+    sprint_id: str, goal: str, sprint_length: int, cap_display, committed_points: int, items: list[dict],
+) -> str:
     items_yaml = "\n".join(f"  - id: {i['id']}\n    estimate: {i['estimate']}" for i in items)
     items_table = "\n".join(f"| {i['id']} | {i['estimate']} |" for i in items)
-    cap_display = capacity_points if capacity_points is not None else "uncapped"
-    sprint_content = f"""---
+    return f"""---
 id: {sprint_id}
 goal: {goal}
 status: planned
@@ -323,12 +304,48 @@ Capacity: {cap_display} pts · Committed: {committed_points} pts
 |------|----------|
 {items_table}
 """
-    _write(sprint_path, sprint_content)
 
-    stamped_rels = []
-    for i in items:
-        if _stamp_backlog_field(vault, i["id"], sprint=sprint_id):
-            stamped_rels.append(f"backlog/{i['id']}.md")
+
+def pm_plan_sprint(
+    acl: Acl,
+    user_id: str,
+    project: str,
+    sprint_id: str,
+    item_ids: list[str],
+    goal: str = "",
+) -> dict:
+    acl.enforce(user_id, project, "owner")
+    validate_id(sprint_id, kind="sprint id")
+    for _iid in item_ids:
+        validate_id(_iid, kind="backlog id")
+    vault = _vault(acl, project)
+
+    capacity_points, sprint_length = _sprint_playbook(vault)
+
+    warnings: list[str] = []
+
+    if capacity_points is None:
+        warnings.append("no playbook capacity; sprint uncapped")
+
+    sprint_path = vault / "pm" / "sprints" / f"{sprint_id}.md"
+    if sprint_path.exists():
+        warnings.append(f"{sprint_id} already exists; overwriting")
+
+    items, errors, committed_points = _collect_sprint_items(vault, item_ids, warnings)
+
+    if errors:
+        return {"ok": False, "errors": errors, "warnings": warnings}
+
+    over_capacity = capacity_points is not None and committed_points > capacity_points
+    if over_capacity:
+        warnings.append(f"committed {committed_points} > capacity {capacity_points}")
+
+    cap_display = capacity_points if capacity_points is not None else "uncapped"
+    _write(sprint_path, _render_sprint(sprint_id, goal, sprint_length, cap_display, committed_points, items))
+
+    stamped_rels = [
+        f"backlog/{i['id']}.md" for i in items if _stamp_backlog_field(vault, i["id"], sprint=sprint_id)
+    ]
 
     sprint_rel = f"pm/sprints/{sprint_id}.md"
     committed = _git_commit(

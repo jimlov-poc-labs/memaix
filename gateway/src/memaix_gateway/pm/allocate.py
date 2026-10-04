@@ -99,6 +99,71 @@ def _best_resource(eligible, ready_date, estimate, availability_by_resource, led
     return best
 
 
+def _build_graph(tasks: list[dict], deps: list[dict]):
+    """Return (successors, fs_predecessors, indegree) for the task graph.
+    Dependencies that reference an unknown task are ignored."""
+    task_ids = {t["id"] for t in tasks}
+    successors: dict[int, list[int]] = {t["id"]: [] for t in tasks}
+    fs_predecessors: dict[int, list[int]] = {t["id"]: [] for t in tasks}
+    indegree = {t["id"]: 0 for t in tasks}
+    for d in deps:
+        if d["predecessor_id"] not in task_ids or d["successor_id"] not in task_ids:
+            continue
+        successors[d["predecessor_id"]].append(d["successor_id"])
+        indegree[d["successor_id"]] += 1
+        if d.get("type", "FS") == "FS":
+            fs_predecessors[d["successor_id"]].append(d["predecessor_id"])
+    return successors, fs_predecessors, indegree
+
+
+def _ready_date_for(cpm: dict, fs_preds: list[int], finish_date: dict[int, date]) -> date:
+    """The CPM floor, pushed later by any already-placed FS predecessor."""
+    ready_date = date.fromisoformat(cpm["earliest_start"])
+    for pred in fs_preds:
+        if pred in finish_date:
+            ready_date = max(ready_date, finish_date[pred] + timedelta(days=1))
+    return ready_date
+
+
+def _place_task(task, ready_date, resources, skill_ids_by_resource, availability_by_resource, ledger):
+    """Place one task. Returns (finish_date, allocation_or_None, warning_or_None);
+    *ledger* is updated in place only when an allocation is made."""
+    task_id = task["id"]
+    estimate = task.get("estimate_hours")
+    if estimate is None:
+        return ready_date, None, f"task {task_id} ({task['title']!r}): no estimate — treated as zero-duration"
+    required_skill = task.get("required_skill_id")
+    eligible = [
+        r for r in resources
+        if required_skill is None or required_skill in skill_ids_by_resource[r["id"]]
+    ]
+    if not eligible:
+        return (
+            ready_date, None,
+            f"task {task_id} ({task['title']!r}): no eligible resource for required skill — unallocated",
+        )
+    r, end, start, trial_ledger = _best_resource(eligible, ready_date, estimate, availability_by_resource, ledger)
+    ledger.update(trial_ledger)
+    allocation = {
+        "task_id": task_id, "resource_id": r["id"], "start_date": start.isoformat(),
+        "end_date": end.isoformat(), "hours": estimate,
+    }
+    return end, allocation, None
+
+
+def _persist_plan(store, scenario_id: int, allocations: list[dict], cpm_rows: list[dict]) -> None:
+    store.clear_allocation(scenario_id)
+    store.clear_schedule(scenario_id)
+    for a in allocations:
+        store.add_allocation(scenario_id, a["task_id"], a["resource_id"], a["start_date"], a["end_date"], a["hours"])
+    for row in cpm_rows:
+        store.set_schedule_row(
+            scenario_id, row["task_id"], earliest_start=row["earliest_start"], earliest_finish=row["earliest_finish"],
+            latest_start=row["latest_start"], latest_finish=row["latest_finish"],
+            slack_days=row["slack_days"], is_critical=row["is_critical"],
+        )
+
+
 def allocate(store, scenario_id: int, *, project_start: date | None = None) -> dict:
     """Recompute a scenario's plan from scratch: critical path + resource
     assignment. Idempotent — replaces any existing allocation/schedule rows
@@ -129,16 +194,7 @@ def allocate(store, scenario_id: int, *, project_start: date | None = None) -> d
     # List-scheduling: process tasks in dependency order, breaking ties by
     # (critical first, then lower priority number = higher priority).
     task_by_id = {t["id"]: t for t in tasks}
-    successors: dict[int, list[int]] = {t["id"]: [] for t in tasks}
-    fs_predecessors: dict[int, list[int]] = {t["id"]: [] for t in tasks}
-    indegree = {t["id"]: 0 for t in tasks}
-    for d in deps:
-        if d["predecessor_id"] not in task_by_id or d["successor_id"] not in task_by_id:
-            continue
-        successors[d["predecessor_id"]].append(d["successor_id"])
-        indegree[d["successor_id"]] += 1
-        if d.get("type", "FS") == "FS":
-            fs_predecessors[d["successor_id"]].append(d["predecessor_id"])
+    successors, fs_predecessors, indegree = _build_graph(tasks, deps)
 
     def sort_key(task_id: int) -> tuple:
         cpm = cpm_by_task[task_id]
@@ -157,34 +213,15 @@ def allocate(store, scenario_id: int, *, project_start: date | None = None) -> d
     while heap:
         _, task_id = heapq.heappop(heap)
         processed += 1
-        task = task_by_id[task_id]
-        cpm = cpm_by_task[task_id]
-        ready_date = date.fromisoformat(cpm["earliest_start"])
-        for pred in fs_predecessors[task_id]:
-            if pred in finish_date:
-                ready_date = max(ready_date, finish_date[pred] + timedelta(days=1))
-
-        estimate = task.get("estimate_hours")
-        if estimate is None:
-            warnings.append(f"task {task_id} ({task['title']!r}): no estimate — treated as zero-duration")
-            finish_date[task_id] = ready_date
-        else:
-            required_skill = task.get("required_skill_id")
-            eligible = [
-                r for r in resources
-                if required_skill is None or required_skill in skill_ids_by_resource[r["id"]]
-            ]
-            if not eligible:
-                warnings.append(f"task {task_id} ({task['title']!r}): no eligible resource for required skill — unallocated")
-                finish_date[task_id] = ready_date
-            else:
-                r, end, start, trial_ledger = _best_resource(eligible, ready_date, estimate, availability_by_resource, ledger)
-                ledger.update(trial_ledger)
-                finish_date[task_id] = end
-                allocations.append(
-                    {"task_id": task_id, "resource_id": r["id"], "start_date": start.isoformat(),
-                     "end_date": end.isoformat(), "hours": estimate}
-                )
+        ready_date = _ready_date_for(cpm_by_task[task_id], fs_predecessors[task_id], finish_date)
+        finish, allocation, warning = _place_task(
+            task_by_id[task_id], ready_date, resources, skill_ids_by_resource, availability_by_resource, ledger,
+        )
+        finish_date[task_id] = finish
+        if warning is not None:
+            warnings.append(warning)
+        if allocation is not None:
+            allocations.append(allocation)
 
         for succ in successors[task_id]:
             indegree[succ] -= 1
@@ -194,15 +231,6 @@ def allocate(store, scenario_id: int, *, project_start: date | None = None) -> d
     if processed != len(tasks):
         warnings.append("task graph contains a cycle beyond FS dependencies — some tasks were not scheduled")
 
-    store.clear_allocation(scenario_id)
-    store.clear_schedule(scenario_id)
-    for a in allocations:
-        store.add_allocation(scenario_id, a["task_id"], a["resource_id"], a["start_date"], a["end_date"], a["hours"])
-    for row in cpm_rows:
-        store.set_schedule_row(
-            scenario_id, row["task_id"], earliest_start=row["earliest_start"], earliest_finish=row["earliest_finish"],
-            latest_start=row["latest_start"], latest_finish=row["latest_finish"],
-            slack_days=row["slack_days"], is_critical=row["is_critical"],
-        )
+    _persist_plan(store, scenario_id, allocations, cpm_rows)
 
     return {"scenario_id": scenario_id, "allocations": allocations, "schedule": cpm_rows, "warnings": warnings}
