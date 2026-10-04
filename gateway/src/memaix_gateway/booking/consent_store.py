@@ -147,6 +147,24 @@ class ConsentStore:
             conn.commit()
         return row_id, manage_token
 
+    def active_starts(
+        self, project: str, host_user: str, from_epoch: int, to_epoch: int,
+        exclude_event_id: str | None = None,
+    ) -> list[int]:
+        """meeting_start epochs of this host's non-cancelled bookings in
+        [from_epoch, to_epoch) — the input to the per-day booking cap."""
+        sql = (
+            "SELECT meeting_start FROM booking_consent WHERE project = ? AND host_user = ? "
+            "AND status != 'cancelled' AND meeting_start IS NOT NULL "
+            "AND meeting_start >= ? AND meeting_start < ?"
+        )
+        args: list = [project, host_user, from_epoch, to_epoch]
+        if exclude_event_id is not None:
+            sql += " AND (event_id IS NULL OR event_id != ?)"
+            args.append(exclude_event_id)
+        with self._lock, self._connect() as conn:
+            return [r["meeting_start"] for r in conn.execute(sql, args).fetchall()]
+
     def get_by_manage_token(self, manage_token: str) -> dict | None:
         with self._lock, self._connect() as conn:
             row = conn.execute(

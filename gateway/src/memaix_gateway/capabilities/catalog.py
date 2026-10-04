@@ -164,7 +164,7 @@ def register_defaults() -> None:
             key="calendar.working_hours", area="calendar",
             title_key="cap.calendar.working_hours.title",
             summary_key="cap.calendar.working_hours.summary",
-            tools=("calendar_working_hours_get", "calendar_working_hours_set"),
+            tools=("calendar_working_hours_get", "calendar_working_hours_set", "calendar_schedule_set"),
             example_prompts_key="cap.calendar.working_hours.examples",
             needs_role="collaborator", needs_resource="calendar",
             tags=("kalender", "arbetstid", "veckoschema", "calendar", "working hours", "schedule"),

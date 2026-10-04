@@ -691,21 +691,21 @@ async def booking_create(request: Request) -> JSONResponse:
                     )
                 return _json(request, {"error": "meeting_form_unavailable"}, status_code=502)
 
-    meeting_form_slug_final = meeting_form["slug"] if meeting_form is not None else None
-    meeting_form_provider = meeting_form["provider"] if meeting_form is not None else None
-    meeting_detail_line = meeting_detail["display_text"] if meeting_detail is not None else None
-    meeting_form_detail = (
-        (meeting_detail["join_url"] or meeting_detail["phone_number"]) if meeting_detail is not None else None
-    )
+        meeting_form_slug_final = meeting_form["slug"] if meeting_form is not None else None
+        meeting_form_provider = meeting_form["provider"] if meeting_form is not None else None
+        meeting_detail_line = meeting_detail["display_text"] if meeting_detail is not None else None
+        meeting_form_detail = (
+            (meeting_detail["join_url"] or meeting_detail["phone_number"]) if meeting_detail is not None else None
+        )
 
-    _row_id, manage_token = get_consent_store().record(
-        project=project, host_user=host_user, event_id=event.get("id"),
-        visitor_email=email, consent_text=consent_text,
-        consent_at=int(time.time()), meeting_end=int(end.timestamp()),
-        slug=request.path_params["slug"], meeting_start=int(start.timestamp()),
-        meeting_form_slug=meeting_form_slug_final, meeting_form_provider=meeting_form_provider,
-        meeting_form_detail=meeting_form_detail,
-    )
+        _row_id, manage_token = get_consent_store().record(
+            project=project, host_user=host_user, event_id=event.get("id"),
+            visitor_email=email, consent_text=consent_text,
+            consent_at=int(time.time()), meeting_end=int(end.timestamp()),
+            slug=request.path_params["slug"], meeting_start=int(start.timestamp()),
+            meeting_form_slug=meeting_form_slug_final, meeting_form_provider=meeting_form_provider,
+            meeting_form_detail=meeting_form_detail,
+        )
     # Lock released above — the booking is already committed to the
     # calendar, so email delivery is not part of the race-critical section
     # and its latency must never hold up the next booker for this host.
