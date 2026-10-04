@@ -36,10 +36,10 @@ class ProvisionError(Exception):
     """Provisioning failed. The message never contains the account password."""
 
 
-def _http_post(url: str, **kwargs):
+def _http_post(url: str, *, timeout: float = 15, **kwargs):
     import requests
 
-    return requests.post(url, **kwargs)
+    return requests.post(url, timeout=timeout, **kwargs)
 
 
 def _settings(cfg: dict | None) -> dict | None:
