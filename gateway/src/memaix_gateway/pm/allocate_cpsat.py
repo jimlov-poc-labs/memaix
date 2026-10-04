@@ -39,7 +39,6 @@ from datetime import date, timedelta
 
 from .schedule import compute_schedule
 
-
 _EARLIEST_START = "earliest_start"
 
 
