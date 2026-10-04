@@ -4,7 +4,7 @@
  * Drop this on any page:
  *
  *   <div data-memaix-booking="<slug>"></div>
- *   <script src="https://mcp.jimlov.se/embed/booking.js" defer></script>
+ *   <script src="https://mcp.memaix.se/embed/booking.js" defer></script>
  *
  * and you get the grid, the form, the captcha and the error handling. The
  * slug is public by construction (it identifies a booking page; it doesn't
