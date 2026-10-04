@@ -188,3 +188,12 @@ def test_unwritable_secret_dir_creates_no_account(cfg_dir):
     with pytest.raises(OSError):
         provision_project_files("acme", cfg=CFG, http=http)
     assert http.calls == []
+
+
+def test_unset_admin_password_raises_without_creating_anything(cfg_dir, monkeypatch):
+    monkeypatch.delenv("NC_ADMIN_PW_UNSET", raising=False)
+    cfg = {**CFG, "admin_password_ref": "env:NC_ADMIN_PW_UNSET"}
+    http = _Http()
+    with pytest.raises(ProvisionError, match="admin password"):
+        provision_project_files("acme", cfg=cfg, http=http)
+    assert http.calls == [] and not _secret_file(cfg_dir).exists()

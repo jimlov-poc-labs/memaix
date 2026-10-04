@@ -54,9 +54,12 @@ def _settings(cfg: dict | None) -> dict | None:
 
 def _admin_password(settings: dict) -> str:
     try:
-        return config.secret(settings["admin_password_ref"])
+        password = config.secret(settings["admin_password_ref"])
     except (KeyError, ValueError, NotImplementedError) as exc:
         raise ProvisionError(f"admin password not available ({type(exc).__name__})") from None
+    if not password:
+        raise ProvisionError("admin password not available (empty)")
+    return password
 
 
 def _write_secret(path: Path, password: str) -> bool:
