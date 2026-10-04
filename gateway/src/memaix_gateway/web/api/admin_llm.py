@@ -87,6 +87,52 @@ def api_admin_llm_get(request: Request) -> JSONResponse:
     })
 
 
+def _bad_request(message: str) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=400)
+
+
+def _is_http_url(value: str) -> bool:
+    return value.startswith(("http://", "https://"))
+
+
+def _validation_error(provider, name: str, endpoint: str) -> str | None:
+    """Första valideringsfelet (i samma ordning som tidigare) eller None."""
+    if provider not in PROVIDERS:
+        return f"provider must be one of {sorted(PROVIDERS)}"
+    if provider != "byo" and not name:
+        return "name (modellnamn) krävs"
+    if provider in ENDPOINT_PROVIDERS and not _is_http_url(endpoint):
+        return "endpoint (http(s)://…) krävs för lokal/egen LLM"
+    if endpoint and not _is_http_url(endpoint):
+        return "endpoint måste vara en http(s)-URL"
+    return None
+
+
+def _store_api_key(api_key: str) -> str:
+    """Skriv nyckeln till config/secrets (0600) och returnera `file:`-referensen."""
+    secrets_dir = _config_dir() / "secrets"
+    secrets_dir.mkdir(mode=0o700, exist_ok=True)
+    key_path = secrets_dir / _KEY_FILENAME
+    key_path.write_text(api_key.strip() + "\n", encoding="utf-8")
+    key_path.chmod(0o600)
+    return f"file:{key_path}"
+
+
+def _model_block(provider: str, name: str, endpoint: str, key_ref: str) -> dict:
+    model = {"provider": provider, "name": name}
+    if endpoint:
+        model["endpoint"] = endpoint
+    if key_ref:
+        model["api_key_ref"] = key_ref
+    return model
+
+
+def _key_state(api_key: str, key_ref: str) -> str:
+    if api_key:
+        return "ny"
+    return "behållen" if key_ref else "ingen"
+
+
 async def api_admin_llm_set(request: Request) -> JSONResponse:
     """PUT /app/api/admin/llm {provider, name?, endpoint?, api_key?}"""
     ok, err = _require_admin_mfa(request)
@@ -96,26 +142,16 @@ async def api_admin_llm_set(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "bad_request"}, status_code=400)
+        return _bad_request("bad_request")
 
     provider = body.get("provider")
     name = (body.get("name") or "").strip()
     endpoint = (body.get("endpoint") or "").strip()
     api_key = body.get("api_key") or ""
 
-    if provider not in PROVIDERS:
-        return JSONResponse(
-            {"error": f"provider must be one of {sorted(PROVIDERS)}"}, status_code=400
-        )
-    if provider != "byo" and not name:
-        return JSONResponse({"error": "name (modellnamn) krävs"}, status_code=400)
-    if provider in ENDPOINT_PROVIDERS:
-        if not endpoint.startswith(("http://", "https://")):
-            return JSONResponse(
-                {"error": "endpoint (http(s)://…) krävs för lokal/egen LLM"}, status_code=400
-            )
-    if endpoint and not endpoint.startswith(("http://", "https://")):
-        return JSONResponse({"error": "endpoint måste vara en http(s)-URL"}, status_code=400)
+    invalid = _validation_error(provider, name, endpoint)
+    if invalid:
+        return _bad_request(invalid)
 
     current = _current_model()
     writer = _writer()
@@ -125,29 +161,16 @@ async def api_admin_llm_set(request: Request) -> JSONResponse:
         _audit().log(user, "-", "admin_set_llm", True, "provider=byo (model-block borttaget)")
         return JSONResponse({"ok": True, "provider": "byo"})
 
-    key_ref = current.get("api_key_ref", "")
-    if api_key:
-        secrets_dir = _config_dir() / "secrets"
-        secrets_dir.mkdir(mode=0o700, exist_ok=True)
-        key_path = secrets_dir / _KEY_FILENAME
-        key_path.write_text(api_key.strip() + "\n", encoding="utf-8")
-        key_path.chmod(0o600)
-        key_ref = f"file:{key_path}"
+    key_ref = _store_api_key(api_key) if api_key else current.get("api_key_ref", "")
     if provider in API_PROVIDERS and not key_ref:
-        return JSONResponse({"error": "api_key krävs för en API-leverantör"}, status_code=400)
+        return _bad_request("api_key krävs för en API-leverantör")
 
-    model = {"provider": provider, "name": name}
-    if endpoint:
-        model["endpoint"] = endpoint
-    if key_ref:
-        model["api_key_ref"] = key_ref
-
-    writer.set_top_level("model", model)
+    writer.set_top_level("model", _model_block(provider, name, endpoint, key_ref))
 
     _audit().log(
         user, "-", "admin_set_llm", True,
         f"provider={provider} name={name} endpoint={endpoint or '-'} "
-        f"key={'ny' if api_key else ('behållen' if key_ref else 'ingen')}",
+        f"key={_key_state(api_key, key_ref)}",
     )
     return JSONResponse({
         "ok": True, "provider": provider, "name": name,
