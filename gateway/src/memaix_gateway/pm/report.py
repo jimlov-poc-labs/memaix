@@ -18,6 +18,33 @@ def _daterange(start: date, end: date):
         day += timedelta(days=1)
 
 
+def _allocated_hours_in_period(resource_id: int, allocations: list[dict], p_start: date, p_end: date) -> float:
+    allocated_hours = 0.0
+    for a in allocations:
+        if a["resource_id"] != resource_id:
+            continue
+        a_start, a_end = date.fromisoformat(a["start_date"]), date.fromisoformat(a["end_date"])
+        span_days = (a_end - a_start).days + 1
+        per_day = a["hours"] / span_days if span_days > 0 else a["hours"]
+        overlap_start, overlap_end = max(a_start, p_start), min(a_end, p_end)
+        if overlap_start <= overlap_end:
+            allocated_hours += per_day * ((overlap_end - overlap_start).days + 1)
+    return allocated_hours
+
+
+def _utilization_row(store, r: dict, allocations: list[dict], p_start: date, p_end: date) -> dict:
+    availability = store.list_availability(r["id"])
+    capacity_hours = sum(daily_capacity(r, d, availability) for d in _daterange(p_start, p_end))
+    allocated_hours = _allocated_hours_in_period(r["id"], allocations, p_start, p_end)
+    pct = round(100 * allocated_hours / capacity_hours, 1) if capacity_hours > 0 else None
+    return {
+        "resource_id": r["id"], "name": r["name"],
+        "capacity_hours": round(capacity_hours, 2),
+        "allocated_hours": round(allocated_hours, 2),
+        "utilization_pct": pct,
+    }
+
+
 def utilization(store, scenario_id: int, period_start: str, period_end: str, *, resource_id: int | None = None) -> dict:
     """Allocated hours vs capacity per resource over [period_start, period_end].
 
@@ -36,31 +63,7 @@ def utilization(store, scenario_id: int, period_start: str, period_end: str, *, 
         resources = [r for r in resources if r["id"] == resource_id]
     allocations = store.list_allocations(scenario_id)
 
-    results = []
-    for r in resources:
-        availability = store.list_availability(r["id"])
-        capacity_hours = sum(daily_capacity(r, d, availability) for d in _daterange(p_start, p_end))
-
-        allocated_hours = 0.0
-        for a in allocations:
-            if a["resource_id"] != r["id"]:
-                continue
-            a_start, a_end = date.fromisoformat(a["start_date"]), date.fromisoformat(a["end_date"])
-            span_days = (a_end - a_start).days + 1
-            per_day = a["hours"] / span_days if span_days > 0 else a["hours"]
-            overlap_start, overlap_end = max(a_start, p_start), min(a_end, p_end)
-            if overlap_start <= overlap_end:
-                allocated_hours += per_day * ((overlap_end - overlap_start).days + 1)
-
-        pct = round(100 * allocated_hours / capacity_hours, 1) if capacity_hours > 0 else None
-        results.append(
-            {
-                "resource_id": r["id"], "name": r["name"],
-                "capacity_hours": round(capacity_hours, 2),
-                "allocated_hours": round(allocated_hours, 2),
-                "utilization_pct": pct,
-            }
-        )
+    results = [_utilization_row(store, r, allocations, p_start, p_end) for r in resources]
     return {"scenario_id": scenario_id, "period_start": period_start, "period_end": period_end, "resources": results}
 
 
