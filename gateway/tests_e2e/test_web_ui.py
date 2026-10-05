@@ -488,6 +488,64 @@ def test_booking_page_date_exception_add_and_remove(alice_page):
     assert state["dates"] == {}
 
 
+def test_settings_imap_gmail_preset_fills_server_and_strips_spaces(alice_page):
+    page = alice_page
+    page.goto("/app/settings?project=demo")
+    page.wait_for_load_state("networkidle")
+    sent = []
+
+    def capture(route):
+        sent.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+
+    page.route("**/app/api/accounts/link-imap", capture)
+    hint = page.locator("#imap-gmail-hint")
+    expect(hint).to_be_hidden()
+
+    page.select_option("#imap-preset", "gmail")
+    expect(hint).to_be_visible()
+    page.fill("#imap-account-email", "me@gmail.com")
+    expect(page.locator("#imap-host")).to_have_value("imap.gmail.com")
+    expect(page.locator("#imap-user")).to_have_value("me@gmail.com")
+    expect(page.locator("#imap-port")).to_have_value("993")
+
+    page.fill("#imap-password", "abcd efgh ijkl mnop")
+    page.locator("#imap-link-form button[type=submit]").click()
+    expect(page.locator("#imap-password")).to_have_value("")
+    assert sent == [
+        {
+            "account_email": "me@gmail.com",
+            "host": "imap.gmail.com",
+            "user": "me@gmail.com",
+            "password": "abcdefghijklmnop",
+            "port": 993,
+        }
+    ]
+    expect(hint).to_be_hidden()
+    expect(page.locator("#imap-preset")).to_have_value("other")
+
+
+def test_settings_imap_other_provider_keeps_password_as_typed(alice_page):
+    page = alice_page
+    page.goto("/app/settings?project=demo")
+    page.wait_for_load_state("networkidle")
+    sent = []
+
+    def capture(route):
+        sent.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+
+    page.route("**/app/api/accounts/link-imap", capture)
+    page.fill("#imap-account-email", "me@example.se")
+    page.fill("#imap-host", "imap.example.se")
+    page.fill("#imap-user", "me")
+    page.fill("#imap-password", "with space")
+    page.locator("#imap-link-form button[type=submit]").click()
+    expect(page.locator("#imap-password")).to_have_value("")
+    assert sent[0]["password"] == "with space"
+    assert "port" not in sent[0]
+
+
 # ---------------------------------------------------------------------------
 # Mobile layout
 # ---------------------------------------------------------------------------

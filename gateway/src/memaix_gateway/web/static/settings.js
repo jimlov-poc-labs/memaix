@@ -172,13 +172,33 @@ async function settingsPage() {
   document.getElementById('link-microsoft')?.addEventListener('click', () => linkFlow('microsoft'));
 
   // --- IMAP mailbox linking (non-OAuth credential form) ------------------
+  const imapPreset = document.getElementById('imap-preset');
+  const imapEmail = document.getElementById('imap-account-email');
+  const imapHost = document.getElementById('imap-host');
+  const imapUser = document.getElementById('imap-user');
+  const imapPort = document.getElementById('imap-port');
+  const isGmail = () => imapPreset?.value === 'gmail';
+  imapPreset?.addEventListener('change', () => {
+    document.getElementById('imap-gmail-hint').hidden = !isGmail();
+    imapHost.readOnly = isGmail();
+    if (isGmail()) {
+      imapHost.value = 'imap.gmail.com';
+      imapPort.value = '993';
+      imapUser.value = imapEmail.value;
+    }
+  });
+  imapEmail?.addEventListener('input', () => {
+    if (isGmail()) imapUser.value = imapEmail.value;
+  });
   document.getElementById('imap-link-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const password = document.getElementById('imap-password').value;
     const body = {
-      account_email: document.getElementById('imap-account-email').value,
-      host: document.getElementById('imap-host').value,
-      user: document.getElementById('imap-user').value,
-      password: document.getElementById('imap-password').value,
+      account_email: imapEmail.value,
+      host: imapHost.value,
+      user: imapUser.value,
+      // Google shows app passwords as four groups separated by spaces.
+      password: isGmail() ? password.replaceAll(' ', '') : password,
     };
     const portVal = document.getElementById('imap-port').value;
     if (portVal) body.port = Number(portVal);
@@ -186,6 +206,7 @@ async function settingsPage() {
       await api('POST', '/app/api/accounts/link-imap', body);
       toast(t('web_saved'), 'success');
       e.target.reset();
+      imapPreset?.dispatchEvent(new Event('change'));
       renderAccounts();
     } catch (err) { toast(err.message, 'error'); }
   });

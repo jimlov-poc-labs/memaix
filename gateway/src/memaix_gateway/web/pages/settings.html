@@ -10,6 +10,12 @@
     </div>
     <form id="imap-link-form" class="settings-form">
       <h3 data-i18n="web_settings_link_imap">Link IMAP mailbox</h3>
+      <label for="imap-preset" data-i18n="web_settings_imap_preset">Mail provider</label>
+      <select id="imap-preset">
+        <option value="other" data-i18n="web_settings_imap_preset_other">Other (enter settings)</option>
+        <option value="gmail" data-i18n="web_settings_imap_preset_gmail">Gmail</option>
+      </select>
+      <p id="imap-gmail-hint" class="muted" hidden data-i18n="web_settings_imap_gmail_hint">Gmail needs an app password, not your normal one. Turn on 2-step verification, create an app password at myaccount.google.com/apppasswords and paste it as the password.</p>
       <input type="email" id="imap-account-email" placeholder="you@example.com" autocomplete="email" required aria-label="Email address">
       <input type="text" id="imap-host" placeholder="imap.example.com" autocomplete="off" required aria-label="IMAP host">
       <input type="text" id="imap-user" placeholder="IMAP username" autocomplete="off" required aria-label="IMAP username">
