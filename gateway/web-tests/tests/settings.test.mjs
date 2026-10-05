@@ -289,6 +289,40 @@ describe('IMAP form', () => {
     expect('port' in bodyOf(f.calls.find((c) => c.key === 'POST /app/api/accounts/link-imap'))).toBe(false);
   });
 
+  const pickPreset = (value) => {
+    $('imap-preset').value = value;
+    $('imap-preset').dispatchEvent(new Event('change'));
+  };
+
+  it('Gmail preset fills server, port and user, locks the host and mirrors the email', async () => {
+    await open({});
+    pickPreset('gmail');
+    $('imap-account-email').value = 'me@gmail.com';
+    $('imap-account-email').dispatchEvent(new Event('input'));
+    expect($('imap-host').value).toBe('imap.gmail.com');
+    expect($('imap-host').readOnly).toBe(true);
+    expect($('imap-port').value).toBe('993');
+    expect($('imap-user').value).toBe('me@gmail.com');
+    expect($('imap-gmail-hint').hidden).toBe(false);
+    pickPreset('other');
+    expect($('imap-host').readOnly).toBe(false);
+    expect($('imap-gmail-hint').hidden).toBe(true);
+    $('imap-account-email').value = 'x@y.se';
+    $('imap-account-email').dispatchEvent(new Event('input'));
+    expect($('imap-user').value).toBe('me@gmail.com');
+  });
+
+  it('Gmail preset strips spaces from the app password', async () => {
+    const f = await open({ routes: { 'POST /app/api/accounts/link-imap': {} } });
+    pickPreset('gmail');
+    $('imap-account-email').value = 'me@gmail.com';
+    $('imap-password').value = 'abcd efgh ijkl mnop';
+    submit();
+    await tick();
+    const body = bodyOf(f.calls.find((c) => c.key === 'POST /app/api/accounts/link-imap'));
+    expect(body.password).toBe('abcdefghijklmnop');
+  });
+
   it('toasts the error and keeps the typed values on failure', async () => {
     await open({ routes: { 'POST /app/api/accounts/link-imap': () => jsonResponse({ error: 'login failed' }, 400) } });
     fill('993');
