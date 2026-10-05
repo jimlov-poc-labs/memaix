@@ -62,10 +62,17 @@ verktyg(project, …)
 | Läsa mejl | `gmail.readonly` | `Mail.Read` |
 | Skapa utkast | `gmail.compose` | `Mail.ReadWrite` |
 | Skicka (bakom `allow_send`) | `gmail.send` | `Mail.Send` |
-| Kalender | `calendar` | `Calendars.ReadWrite` |
+| Kalender | `calendar.events` + `calendar.calendarlist.readonly` | `Calendars.ReadWrite` |
 | Filer (läs) | `drive.readonly` | `Files.Read.All` |
 | Filer (skriv egna) | `drive.file` | `Files.ReadWrite` |
 | Förnyelse offline | `access_type=offline` | `offline_access` |
+
+**Gmail över IMAP i stället för Googles API (sedan 2026-10).** Gmail-scopes är *restricted* och kräver en
+betald säkerhetsgranskning (CASA). Därför begär Google-länkningen bara kalenderscopes ovan. Ett Gmail-konto
+länkas som brevlåda över IMAP med ett app-lösenord (inställningar → länka brevlåda → välj *Gmail*; kräver
+tvåstegsverifiering på kontot, och en Workspace-admin kan ha stängt av app-lösenord). Memaix läser då
+`[Gmail]/All Mail` (`\All`) och sparar utkast i `[Gmail]/Drafts`. Redan länkade Google-konton behåller de
+behörigheter de gavs tills de länkas om.
 
 Begär bara det projektets verktyg faktiskt använder. Gmail/Drive-scopes är **restricted** → se
 CASA-noten i `BACKENDS.md` (gäller bara publik konsument-Gmail i skala).

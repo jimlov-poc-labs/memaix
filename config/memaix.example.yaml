@@ -19,9 +19,11 @@ auth:
 #       # without them every linked Google account collides under one key.
 #       - "openid"
 #       - "email"
-#       - "https://www.googleapis.com/auth/calendar"
-#       - "https://www.googleapis.com/auth/gmail.readonly"
-#       - "https://www.googleapis.com/auth/gmail.compose"
+#       - "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+#       - "https://www.googleapis.com/auth/calendar.events"
+#       # Gmail is deliberately not requested: its scopes are "restricted" and
+#       # need a paid security assessment. Link a Gmail mailbox over IMAP with
+#       # an app password instead (Settings → link mailbox → Gmail).
 #   microsoft:
 #     client_id: "YOUR_AZURE_APP_CLIENT_ID"
 #     client_secret_ref: "env:MICROSOFT_CLIENT_SECRET"
