@@ -260,4 +260,8 @@ def test_privacy_policy_matches_what_the_service_does(rig):
     # Gmail API access is no longer requested, so the policy must not claim it.
     assert "read and compose emails" not in html
     assert "never persisted" not in html and "No email content" not in html
-    assert "Lövgren" not in client.get("/terms").text
+    terms = client.get("/terms").text
+    assert "Lövgren" not in terms
+    assert "personal use only" not in terms
+    assert "private service" not in terms
+    assert "/privacy" in terms
