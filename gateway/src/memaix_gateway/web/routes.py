@@ -220,7 +220,7 @@ _PRIVACY_HTML = """<!DOCTYPE html>
 <ul>
 <li><strong>Account data</strong> – your name, email address and login details, and the projects you belong to.</li>
 <li><strong>Content you store in Memaix</strong> – notes, files, backlog items, rules and settings that you or your AI client write to your projects.</li>
-<li><strong>Google Calendar</strong> – if you link a Google account, Memaix asks for read-only access to your calendars (<code>calendar.readonly</code>) to show events and free/busy time. Memaix does not create, change or delete events in your Google Calendar.</li>
+<li><strong>Google Calendar</strong> – if you link a Google account, Memaix asks to see your list of calendars and to view and edit events (<code>calendar.calendarlist.readonly</code> and <code>calendar.events</code>). It uses this to show your events and free/busy time, and to create, change or delete events in your primary calendar when you ask it to, for example when a booking is confirmed. It does not change calendar settings or sharing.</li>
 <li><strong>Mail</strong> – if you link a mailbox, Memaix connects with the mailbox credentials you provide (for example an app password over IMAP) to read messages and to save drafts. Memaix does not request access to Gmail through Google&#39;s APIs.</li>
 <li><strong>Booking data</strong> – if you offer a public booking page, the name, email address, message and consent text that a guest submits.</li>
 </ul>
