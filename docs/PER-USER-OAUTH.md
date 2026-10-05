@@ -71,7 +71,8 @@ verktyg(project, …)
 betald säkerhetsgranskning (CASA). Därför begär Google-länkningen bara kalenderscopes ovan. Ett Gmail-konto
 länkas som brevlåda över IMAP med ett app-lösenord (inställningar → länka brevlåda → välj *Gmail*; kräver
 tvåstegsverifiering på kontot, och en Workspace-admin kan ha stängt av app-lösenord). Memaix läser då
-`[Gmail]/All Mail` (`\All`) och sparar utkast i `[Gmail]/Drafts`. Redan länkade Google-konton behåller de
+mappen flaggad `\All` (`[Gmail]/All Mail`, på svenska `[Gmail]/Alla mail`) och sparar utkast i mappen
+flaggad `\Drafts` — Memaix går på flaggorna, inte på namnen. Redan länkade Google-konton behåller de
 behörigheter de gavs tills de länkas om.
 
 Begär bara det projektets verktyg faktiskt använder. Gmail/Drive-scopes är **restricted** → se
