@@ -214,24 +214,40 @@ _PRIVACY_HTML = """<!DOCTYPE html>
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1.5rem;line-height:1.6;color:#222}h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:2rem}a{color:#0063cc}</style>
 </head><body>
 <h1>Privacy Policy</h1>
-<p>Memaix is a self-hosted personal productivity assistant operated by Jimmy Lövgren (<a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a>).</p>
+<p>Memaix is a project memory and assistant service operated by Jimmy Lovén (<a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a>). This policy describes what the service does with your data.</p>
 
-<h2>Data accessed</h2>
-<p>With your explicit consent, Memaix may access the following Google services on your behalf:</p>
+<h2>What we handle</h2>
 <ul>
-<li><strong>Gmail</strong> – read and compose emails for inbox triage and drafting.</li>
-<li><strong>Google Calendar</strong> – read and create calendar events for scheduling.</li>
+<li><strong>Account data</strong> – your name, email address and login details, and the projects you belong to.</li>
+<li><strong>Content you store in Memaix</strong> – notes, files, backlog items, rules and settings that you or your AI client write to your projects.</li>
+<li><strong>Google Calendar</strong> – if you link a Google account, Memaix asks for read-only access to your calendars (<code>calendar.readonly</code>) to show events and free/busy time. Memaix does not create, change or delete events in your Google Calendar.</li>
+<li><strong>Mail</strong> – if you link a mailbox, Memaix connects with the mailbox credentials you provide (for example an app password over IMAP) to read messages and to save drafts. Memaix does not request access to Gmail through Google&#39;s APIs.</li>
+<li><strong>Booking data</strong> – if you offer a public booking page, the name, email address, message and consent text that a guest submits.</li>
 </ul>
 
 <h2>How data is used</h2>
-<p>All data accessed through Google APIs is used solely to provide the productivity features you requested. Data is processed on your own server and is never shared with third parties, sold, or used for advertising.</p>
+<p>Data is used only to provide the features you ask for: showing your calendar and mail to you or to the AI client you have connected, creating drafts for your approval, and handling bookings. We do not sell data, share it with advertisers, or use it for advertising. Memaix does not use your data to train AI models. Our use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
 
-<h2>Data retention</h2>
-<p>OAuth tokens are stored encrypted on your self-hosted server. No email content or calendar events are persisted beyond the immediate request. You may revoke access at any time via <a href="https://myaccount.google.com/permissions">Google Account Permissions</a>.</p>
+<h2>AI clients</h2>
+<p>Memaix is used through an AI client that you choose and connect (for example Claude or ChatGPT). When you ask that client to read your calendar, mail or notes, the content it requests is sent to that client and its provider, which processes it under its own terms. Memaix itself never sends your data to an AI provider on its own initiative. Actions that send or change things on your behalf are prepared as drafts or pending items and require your approval.</p>
+
+<h2>Storage and retention</h2>
+<ul>
+<li>OAuth tokens and mailbox credentials are stored encrypted. Unlinking an account in Memaix deletes them. You can also revoke Google access at any time in <a href="https://myaccount.google.com/permissions">Google Account Permissions</a>.</li>
+<li>Calendar and mail content is fetched from the provider when it is requested and is not copied into Memaix&#39;s search index. Pending items awaiting your approval (such as a draft) contain the content of that draft until they are handled or expire.</li>
+<li>Notes, files and backlog items you store, and booking data, are kept until you or the project administrator delete them.</li>
+<li>An audit log records which action was taken, by whom and when.</li>
+</ul>
+
+<h2>Sharing</h2>
+<p>Your data is visible to you and to the other members of the projects you share it with. It is not shared with third parties except the AI client and mail or calendar provider that you connect yourself, and the infrastructure providers needed to run the service.</p>
+
+<h2>Your choices</h2>
+<p>You can unlink any connected account at any time. To access, correct or delete your data, or to close your account, email <a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a>.</p>
 
 <h2>Contact</h2>
 <p>Questions about this policy: <a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a></p>
-<p><small>Last updated: September 2026</small></p>
+<p><small>Last updated: October 2026</small></p>
 </body></html>"""
 
 _TERMS_HTML = """<!DOCTYPE html>
@@ -241,7 +257,7 @@ _TERMS_HTML = """<!DOCTYPE html>
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1.5rem;line-height:1.6;color:#222}h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:2rem}a{color:#0063cc}</style>
 </head><body>
 <h1>Terms of Service</h1>
-<p>Memaix is a personal, self-hosted tool operated by and for Jimmy Lövgren. By using this instance you acknowledge that it is a private service with no uptime guarantees or warranties of any kind.</p>
+<p>Memaix is a personal, self-hosted tool operated by Jimmy Lovén. By using this instance you acknowledge that it is a private service with no uptime guarantees or warranties of any kind.</p>
 
 <h2>Acceptable use</h2>
 <p>This service is intended for personal use only. Unauthorized access is prohibited.</p>

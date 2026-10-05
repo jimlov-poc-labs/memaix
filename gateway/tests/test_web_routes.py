@@ -249,3 +249,15 @@ def test_onboarding_missing_false_without_shared_grant_or_vault(tmp_path):
 
     assert _onboarding_missing(_VaultAcl(tmp_path), "anna", ["acme"]) is False
     assert _onboarding_missing(_VaultAcl(None), "anna", ["shared"]) is False
+
+
+def test_privacy_policy_matches_what_the_service_does(rig):
+    client, _ = rig
+    html = client.get("/privacy").text
+    assert "calendar.readonly" in html
+    assert "Limited Use" in html
+    assert "Jimmy Lovén" in html and "Lövgren" not in html
+    # Gmail API access is no longer requested, so the policy must not claim it.
+    assert "read and compose emails" not in html
+    assert "never persisted" not in html and "No email content" not in html
+    assert "Lövgren" not in client.get("/terms").text
