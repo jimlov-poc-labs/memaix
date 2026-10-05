@@ -257,14 +257,23 @@ _TERMS_HTML = """<!DOCTYPE html>
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1.5rem;line-height:1.6;color:#222}h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:2rem}a{color:#0063cc}</style>
 </head><body>
 <h1>Terms of Service</h1>
-<p>Memaix is a personal, self-hosted tool operated by Jimmy Lovén. By using this instance you acknowledge that it is a private service with no uptime guarantees or warranties of any kind.</p>
+<p>Memaix is a self-hosted project-memory and calendar service operated by Jimmy Lovén. Access is by invitation: you get an account from the operator, and you use it on these terms.</p>
+
+<h2>Your account</h2>
+<p>Keep your sign-in details to yourself. You are responsible for what is done with your account. The operator may suspend an account that is misused or no longer needed.</p>
 
 <h2>Acceptable use</h2>
-<p>This service is intended for personal use only. Unauthorized access is prohibited.</p>
+<p>Use the service only with your own account and only for lawful purposes. Do not try to reach other users' data, bypass access controls or disrupt the service. Unauthorized access is prohibited.</p>
+
+<h2>Linked services</h2>
+<p>You can link external accounts, such as Google Calendar or a mailbox over IMAP. What Memaix does with them is described in the <a href="/privacy">privacy policy</a>. You can unlink an account at any time, and its stored credentials are then deleted.</p>
+
+<h2>No warranty</h2>
+<p>The service is provided as is, without uptime guarantees or warranties of any kind. It may change or be unavailable from time to time.</p>
 
 <h2>Contact</h2>
 <p><a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a></p>
-<p><small>Last updated: September 2026</small></p>
+<p><small>Last updated: October 2026</small></p>
 </body></html>"""
 
 
