@@ -265,3 +265,5 @@ def test_privacy_policy_matches_what_the_service_does(rig):
     assert "personal use only" not in terms
     assert "private service" not in terms
     assert "/privacy" in terms
+    assert "hello@memaix.se" in terms and "hello@memaix.se" in html
+    assert "jimmy@jimlov.se" not in terms + html

@@ -214,7 +214,7 @@ _PRIVACY_HTML = """<!DOCTYPE html>
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1.5rem;line-height:1.6;color:#222}h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:2rem}a{color:#0063cc}</style>
 </head><body>
 <h1>Privacy Policy</h1>
-<p>Memaix is a project memory and assistant service operated by Jimmy Lovén (<a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a>). This policy describes what the service does with your data.</p>
+<p>Memaix is a project memory and assistant service operated by Jimmy Lovén (<a href="mailto:hello@memaix.se">hello@memaix.se</a>). This policy describes what the service does with your data.</p>
 
 <h2>What we handle</h2>
 <ul>
@@ -243,10 +243,10 @@ _PRIVACY_HTML = """<!DOCTYPE html>
 <p>Your data is visible to you and to the other members of the projects you share it with. It is not shared with third parties except the AI client and mail or calendar provider that you connect yourself, and the infrastructure providers needed to run the service.</p>
 
 <h2>Your choices</h2>
-<p>You can unlink any connected account at any time. To access, correct or delete your data, or to close your account, email <a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a>.</p>
+<p>You can unlink any connected account at any time. To access, correct or delete your data, or to close your account, email <a href="mailto:hello@memaix.se">hello@memaix.se</a>.</p>
 
 <h2>Contact</h2>
-<p>Questions about this policy: <a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a></p>
+<p>Questions about this policy: <a href="mailto:hello@memaix.se">hello@memaix.se</a></p>
 <p><small>Last updated: October 2026</small></p>
 </body></html>"""
 
@@ -272,7 +272,7 @@ _TERMS_HTML = """<!DOCTYPE html>
 <p>The service is provided as is, without uptime guarantees or warranties of any kind. It may change or be unavailable from time to time.</p>
 
 <h2>Contact</h2>
-<p><a href="mailto:jimmy@jimlov.se">jimmy@jimlov.se</a></p>
+<p><a href="mailto:hello@memaix.se">hello@memaix.se</a></p>
 <p><small>Last updated: October 2026</small></p>
 </body></html>"""
 
