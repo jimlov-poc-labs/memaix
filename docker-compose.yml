@@ -136,7 +136,7 @@ services:
   # ny installation hade fungerat. Migreringen är idempotent: redan tillämpade
   # steg hoppas över, så befintliga instanser påverkas inte.
   hydra-migrate:
-    image: oryd/hydra:v2.2
+    image: oryd/hydra:v26.2.0
     command: migrate sql -e --yes
     environment:
       DSN: postgres://hydra:${HYDRA_DB_PASSWORD}@postgres:5432/hydra?sslmode=disable
@@ -146,7 +146,7 @@ services:
     profiles: ["hydra"]
 
   hydra:
-    image: oryd/hydra:v2.2
+    image: oryd/hydra:v26.2.0
     restart: unless-stopped
     # Inte --dev: dev stänger av säkerhetskontroller (Secure-kakor, https-krav
     # på redirect_uri för icke-localhost, issuer-schema). TLS termineras i
