@@ -49,7 +49,7 @@
         ├── backlog_*   → markdown i vault
         └── pm_*        → SQLite + CP-SAT (ortools)
 
-  hydra :4444/:4445   ory Hydra v2.2 (OAuth 2.1 AS, DCR, JWT)   [profile: hydra]
+  hydra :4444/:4445   ory Hydra v26.2 (OAuth 2.1 AS, DCR, JWT)   [profile: hydra]
   postgres            Hydras databas                            [profile: hydra]
   login-app :3000     FastAPI — Hydras login/consent-UI         [profile: hydra]
   nextcloud :8081     valfri medföljande backend                [profile: nextcloud]
@@ -88,7 +88,7 @@ servicenamn). Två named volumes: `nextcloud-data`, `hydra-db`.
 | `cloudflared` | `cloudflare/cloudflared:latest` (token-läge) | – | `tunnel` | 53–58 |
 | `cloudflared-local` | samma image, lokal `config.yml` | – | `tunnel-local` | 63–70 |
 | `postgres` | `postgres:16-alpine` | – | `hydra` | 72–81 |
-| `hydra` | `oryd/hydra:v2.2` | `127.0.0.1:4444:4444`, `:4445:4445` | `hydra` | 83–104 |
+| `hydra` | `oryd/hydra:v26.2.0` | `127.0.0.1:4444:4444`, `:4445:4445` | `hydra` | 83–104 |
 | `nextcloud` | `nextcloud:latest` | `127.0.0.1:8081:80` | `nextcloud` | 107–118 |
 
 **Alla portar är bundna till `127.0.0.1`.** Enda vägen in utifrån är cloudflared-tunneln.
