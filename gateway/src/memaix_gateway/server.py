@@ -1673,10 +1673,39 @@ def backlog_add(project: str, title: str, description: str, category: str | None
     return _tool_call("backlog_add", project, t_backlog.backlog_add, title, description, category)
 
 
+_BACKLOG_PAGE_DEFAULT = 50
+_BACKLOG_PAGE_MAX = 200
+_BACKLOG_SUMMARY_FIELDS = (
+    "id", "title", "status", "category", "value", "complexity", "risk",
+    "assignee", "version", "updated_at",
+)
+
+
 @mcp.tool()
-def backlog_list(project: str, status: str | None = None, category: str | None = None) -> list:
-    """List backlog items, optionally filtered by status or category."""
-    return _tool_call("backlog_list", project, t_backlog.backlog_list, status, category)
+def backlog_list(
+    project: str,
+    status: str | None = None,
+    category: str | None = None,
+    limit: int = _BACKLOG_PAGE_DEFAULT,
+    offset: int = 0,
+) -> dict:
+    """List backlog items as slim summaries (no description or comments —
+    fetch those with backlog_get). Optionally filter by status or category.
+    Paged: returns {items, total, offset, limit, next_offset}; pass
+    next_offset as offset to read the next page (next_offset is null on the
+    last page). limit is capped at 200."""
+    limit = max(1, min(int(limit), _BACKLOG_PAGE_MAX))
+    offset = max(0, int(offset))
+    items = _tool_call("backlog_list", project, t_backlog.backlog_list, status, category)
+    page = items[offset:offset + limit]
+    end = offset + len(page)
+    return {
+        "items": [{k: it.get(k) for k in _BACKLOG_SUMMARY_FIELDS} for it in page],
+        "total": len(items),
+        "offset": offset,
+        "limit": limit,
+        "next_offset": end if end < len(items) else None,
+    }
 
 
 @mcp.tool()
