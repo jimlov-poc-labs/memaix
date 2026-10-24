@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from . import config
 from .acl import AccessDenied, Acl, ServiceClient
@@ -982,10 +982,7 @@ def outbox_get(action_id: str) -> dict:
     return action
 
 
-@mcp.tool()
-def outbox_approve(action_id: str) -> dict:
-    """Approve a queued action and execute it now (requires the tool's own role)."""
-    user = _user()
+def _approve_action(user: str, action_id: str) -> dict:
     acl = _get_acl()
     outbox = _get_outbox()
     action = _outbox_action_or_404(outbox, action_id)
@@ -1008,10 +1005,7 @@ def outbox_approve(action_id: str) -> dict:
     return {"ok": ok, "action_id": action_id, "result": result}
 
 
-@mcp.tool()
-def outbox_reject(action_id: str, reason: str = "") -> dict:
-    """Reject a queued action — it is never executed."""
-    user = _user()
+def _reject_action(user: str, action_id: str, reason: str = "") -> dict:
     acl = _get_acl()
     outbox = _get_outbox()
     action = _outbox_action_or_404(outbox, action_id)
@@ -1025,6 +1019,32 @@ def outbox_reject(action_id: str, reason: str = "") -> dict:
 
     _get_audit().log(user, action["project"], f"outbox_reject:{action['tool']}", True, reason)
     return {"ok": True, "action_id": action_id, "status": "rejected"}
+
+
+async def _maybe_elicit_approval(ctx: Context | None, user: str, result):
+    """If enabled and the client supports it, let the caller approve a freshly
+    queued action in the same call (outbox/elicit.py)."""
+    from .outbox.elicit import resolve_via_elicitation
+
+    enabled = bool(((config.load().get("memaix", {}) or {}).get("outbox", {}) or {}).get("elicit_approval", False))
+    return await resolve_via_elicitation(
+        ctx, result, enabled=enabled,
+        get_action=lambda aid: _get_outbox().get(aid),
+        approve=lambda aid: _approve_action(user, aid),
+        reject=lambda aid, reason: _reject_action(user, aid, reason),
+    )
+
+
+@mcp.tool()
+def outbox_approve(action_id: str) -> dict:
+    """Approve a queued action and execute it now (requires the tool's own role)."""
+    return _approve_action(_user(), action_id)
+
+
+@mcp.tool()
+def outbox_reject(action_id: str, reason: str = "") -> dict:
+    """Reject a queued action — it is never executed."""
+    return _reject_action(_user(), action_id, reason)
 
 
 # ------------------------------------------------------------------
@@ -2517,8 +2537,9 @@ def email_create_draft(
 
 
 @mcp.tool()
-def email_send(
+async def email_send(
     project: str, to: str, subject: str, body: str, cc: str | None = None, idempotency_key: str | None = None,
+    ctx: Context | None = None,
 ) -> dict:
     """Send an email (requires owner + allow_send feature flag).
 
@@ -2526,10 +2547,11 @@ def email_send(
     if the call is retried after e.g. a network timeout — a retry with the
     same key returns the original result (including a queued outbox
     action_id) instead of sending/queuing again."""
-    return _tool_call(
+    result = _tool_call(
         "email_send", project, t_email.email_send,
         to, subject, body, cc, idempotency_key=idempotency_key,
     )
+    return await _maybe_elicit_approval(ctx, _user(), result)
 
 
 # ------------------------------------------------------------------
@@ -2846,7 +2868,7 @@ def calendar_meeting_form_delete(project: str, slug: str) -> dict:
 
 
 @mcp.tool()
-def calendar_create(
+async def calendar_create(
     project: str,
     title: str,
     start: str,
@@ -2855,6 +2877,7 @@ def calendar_create(
     location: str | None = None,
     description: str | None = None,
     idempotency_key: str | None = None,
+    ctx: Context | None = None,
 ) -> dict:
     """Create a calendar event.
 
@@ -2864,18 +2887,21 @@ def calendar_create(
     _rl(user, project)
     try:
         dav = _resolve_calendar_dav(project, user, write=True)
-        return _audited(
+        result = _audited(
             user, project, "calendar_create",
             t_cal.calendar_create,
             _get_acl(), user, project, title, start, end, attendees, location, description, _dav=dav,
             idempotency_key=idempotency_key,
         )
+        return await _maybe_elicit_approval(ctx, user, result)
     except CalendarAuthRequired as e:
         return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": _CALENDAR_SETUP_HINT}
 
 
 @mcp.tool()
-def calendar_update(project: str, id: str, idempotency_key: str | None = None, **fields) -> dict:
+async def calendar_update(
+    project: str, id: str, idempotency_key: str | None = None, ctx: Context | None = None, **fields,
+) -> dict:
     """Update fields on an existing calendar event.
 
     Pass idempotency_key (same value on retry) to avoid re-applying the
@@ -2889,11 +2915,12 @@ def calendar_update(project: str, id: str, idempotency_key: str | None = None, *
     fields = {k: v for k, v in fields.items() if not k.startswith("_")}
     try:
         dav = _resolve_calendar_dav(project, user, write=True)
-        return _audited(
+        result = _audited(
             user, project, "calendar_update",
             t_cal.calendar_update,
             _get_acl(), user, project, id, _dav=dav, idempotency_key=idempotency_key, **fields,
         )
+        return await _maybe_elicit_approval(ctx, user, result)
     except CalendarAuthRequired as e:
         return {"auth_required": True, "link_url": e.link_url, "options": e.options, "hint": _CALENDAR_SETUP_HINT}
 
@@ -3302,36 +3329,41 @@ def project_members(project: str) -> list:
 
 
 @mcp.tool()
-def project_member_set(project: str, member: str, role: str | None) -> dict:
+async def project_member_set(project: str, member: str, role: str | None, ctx: Context | None = None) -> dict:
     """Change a member's role in a project (reader/collaborator/owner), or
     remove them with role=null. Project owner only. Queued in the outbox:
     nothing changes until a human approves it."""
     user = _user()
     _rl(user, project)
     acl = _get_acl()
-    return _audited(user, project, "project_member_set", t_access.project_member_set, acl, user, project, member, role)
+    result = _audited(user, project, "project_member_set", t_access.project_member_set, acl, user, project, member, role)
+    return await _maybe_elicit_approval(ctx, user, result)
 
 
 @mcp.tool()
-def user_invite(project: str, invitee: str, role: str, email: str | None = None) -> dict:
+async def user_invite(
+    project: str, invitee: str, role: str, email: str | None = None, ctx: Context | None = None,
+) -> dict:
     """Invite a person to one project. Creates a login limited to that project;
     after approval in the outbox the result holds an invite_url where the
     person chooses their own password. Project owner only."""
     user = _user()
     _rl(user, project)
     acl = _get_acl()
-    return _audited(user, project, "user_invite", t_access.user_invite, acl, user, project, invitee, role, email)
+    result = _audited(user, project, "user_invite", t_access.user_invite, acl, user, project, invitee, role, email)
+    return await _maybe_elicit_approval(ctx, user, result)
 
 
 @mcp.tool()
-def user_reset_link(project: str, member: str) -> dict:
+async def user_reset_link(project: str, member: str, ctx: Context | None = None) -> dict:
     """Create a set-new-password link for an existing member of a project.
     After approval in the outbox the result holds a reset_url. Project owner
     only, and only for members whose access lies entirely in projects you own."""
     user = _user()
     _rl(user, project)
     acl = _get_acl()
-    return _audited(user, project, "user_reset_link", t_access.user_reset_link, acl, user, project, member)
+    result = _audited(user, project, "user_reset_link", t_access.user_reset_link, acl, user, project, member)
+    return await _maybe_elicit_approval(ctx, user, result)
 
 
 def main() -> None:
