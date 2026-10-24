@@ -80,7 +80,7 @@ gatewayen implementerar (se `BUILD.md` för bygg-ordning). PM-modulens verktyg d
 | Verktyg | Parametrar | Returnerar | Roll |
 |---|---|---|---|
 | `backlog_add` | `project, title, description, category?, author?` | `{id, status:"inbox"}` | collaborator |
-| `backlog_list` | `project, status?, category?` | `[{id, title, status, category, value, complexity, risk}]` | reader |
+| `backlog_list` | `project, status?, category?, limit?, offset?` | `{items:[{id, title, status, category, value, complexity, risk, assignee, version, updated_at}], total, offset, limit, next_offset}` — slim (ingen description/kommentarer, använd `backlog_get`), sidindelad, `limit` default 50, tak 200 | reader |
 | `backlog_get` | `project, id` | fullt item (frontmatter + text) | reader |
 | `backlog_score` | `project, id, value?, complexity?, risk?` | uppdaterat item | collaborator |
 | `backlog_comment` | `project, id, text` | `{ok, commit}` | collaborator |

@@ -529,13 +529,13 @@ def test_rule_test_dry_runs_without_executing(wired, monkeypatch):
     )
     rule_id = added["rule"]["id"]
 
-    before = server.backlog_list("proj")
+    before = server.backlog_list("proj")["items"]
     result = server.rule_test(
         rule_id, {"type": "mail", "project": "proj", "id": "x", "payload": {"from": "a@client.com", "subject": "Hi"}}
     )
     assert result["matched"] is True
     assert result["result"]["actions"][0]["dry_run"] is True
-    after = server.backlog_list("proj")
+    after = server.backlog_list("proj")["items"]
     assert before == after  # nothing was actually created
 
 
@@ -668,3 +668,32 @@ def test_resolve_calendar_dav_read_still_merges_sa(sa_and_normal_calendar):
 
     dav = server._resolve_calendar_dav("proj", "alice")
     assert isinstance(dav, _MultiCalendarAdapter)
+
+
+def test_backlog_list_is_slim_and_paged(wired):
+    for i in range(5):
+        server.backlog_add("proj", f"Item {i}", "A long description " * 50)
+
+    first = server.backlog_list("proj", limit=2)
+    assert first["total"] == 5 and first["limit"] == 2 and first["offset"] == 0
+    assert len(first["items"]) == 2 and first["next_offset"] == 2
+    assert "description" not in first["items"][0]
+    assert {"id", "title", "status", "version"} <= set(first["items"][0])
+
+    last = server.backlog_list("proj", limit=2, offset=4)
+    assert len(last["items"]) == 1 and last["next_offset"] is None
+
+    seen = []
+    nxt = 0
+    while nxt is not None:
+        page = server.backlog_list("proj", limit=2, offset=nxt)
+        seen += [it["id"] for it in page["items"]]
+        nxt = page["next_offset"]
+    assert len(seen) == len(set(seen)) == 5
+
+
+def test_backlog_list_clamps_limit_and_offset(wired):
+    server.backlog_add("proj", "One", "x")
+    page = server.backlog_list("proj", limit=10_000, offset=-5)
+    assert page["limit"] == 200 and page["offset"] == 0
+    assert server.backlog_list("proj", limit=0)["limit"] == 1

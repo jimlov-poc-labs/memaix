@@ -37,6 +37,10 @@ auth:
 # outbox:
 #   default_mode: "auto"   # 'auto' (default) | 'review' — global fallback when a
 #                          # project doesn't set its own acl.yaml `outbox:` mode.
+#   elicit_approval: false # true = när en åtgärd köas i utkorgen frågar gatewayen personen i
+#                          # klienten direkt (MCP elicitation) och godkänner/avvisar i samma anrop.
+#                          # Klienter utan elicitation, och avbrutna dialoger, lämnar åtgärden
+#                          # kvar i utkorgen som vanligt. Samma rollkontroll och audit som outbox_approve.
 
 # brief:
 #   enabled: true                  # global switch for the scheduler (default true);
