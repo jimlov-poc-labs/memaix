@@ -321,6 +321,32 @@ class _Refused(Exception):
         self.response = response
 
 
+_FREE_CACHE_TTL_S = 60
+_FREE_CACHE_MAX = 256
+_free_cache: dict[tuple, tuple[float, list]] = {}
+_free_cache_lock = threading.Lock()
+
+
+def _free_windows_cached(key: tuple, compute) -> list:
+    """Reading availability (the grid a visitor browses) may be up to a minute
+    old; creating a booking never goes through here — it re-checks the
+    calendar itself, so a stale grid can show a taken slot but not sell it."""
+    now = time.monotonic()
+    with _free_cache_lock:
+        hit = _free_cache.get(key)
+        if hit and now - hit[0] < _FREE_CACHE_TTL_S:
+            return hit[1]
+    windows = compute()
+    with _free_cache_lock:
+        if len(_free_cache) >= _FREE_CACHE_MAX:
+            for k in [k for k, (t, _) in _free_cache.items() if now - t >= _FREE_CACHE_TTL_S]:
+                del _free_cache[k]
+            if len(_free_cache) >= _FREE_CACHE_MAX:
+                _free_cache.clear()
+        _free_cache[key] = (now, windows)
+    return windows
+
+
 def _find_free(request: Request) -> tuple[dict, list, int]:
     """The lookup both /slots and /times need: rate limit, resolve the link,
     check booking is on, parse the window, ask the calendar.
@@ -362,10 +388,16 @@ def _find_free(request: Request) -> tuple[dict, list, int]:
     )
 
     try:
-        dav = _resolve_dav_filtered(project, host_user, acl)
-        windows = t_cal.calendar_find_free(
-            acl, host_user, project, duration_min,
-            within_start.isoformat(), within_end.isoformat(), _dav=dav,
+        def compute() -> list:
+            dav = _resolve_dav_filtered(project, host_user, acl)
+            return t_cal.calendar_find_free(
+                acl, host_user, project, duration_min,
+                within_start.isoformat(), within_end.isoformat(), _dav=dav,
+            )
+
+        windows = _free_windows_cached(
+            (project, host_user, duration_min, within_start.isoformat(), within_end.isoformat()),
+            compute,
         )
     except CalendarAuthRequired:
         raise _Refused(_json(request, {"error": "not_found"}, status_code=404))

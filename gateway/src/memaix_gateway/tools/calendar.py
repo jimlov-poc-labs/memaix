@@ -464,36 +464,45 @@ class _ServiceAccountGoogleCalendarAdapter:
             "end": end.get("dateTime") or end.get("date", ""),
             "location": item.get("location", ""),
             "description": item.get("description", ""),
+            "source_busy": item.get("transparency", "opaque") != "transparent",
         }
 
+    def _calendar_events(self, cal_id: str, time_min: str, time_max: str) -> list[dict]:
+        # One client per thread: httplib2 connections are not thread-safe.
+        try:
+            resp = (
+                self._build()
+                .events()
+                .list(
+                    calendarId=cal_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=250,
+                )
+                .execute()
+            )
+            return [self._to_dict(ev) for ev in resp.get("items", [])]
+        except Exception:
+            return []
+
     def list_events(self, start: datetime, end: datetime) -> list[dict]:
+        from concurrent.futures import ThreadPoolExecutor
+
         time_min = start.isoformat() if start.tzinfo else start.isoformat() + "Z"
         time_max = end.isoformat() if end.tzinfo else end.isoformat() + "Z"
-        svc = self._build()
-        calendars_resp = svc.calendarList().list().execute()
-        calendars = calendars_resp.get("items", [])
-        events: list[dict] = []
-        for cal in calendars:
-            cal_id = cal["id"]
-            if _is_google_informational_calendar(cal_id):
-                continue
-            try:
-                resp = (
-                    svc.events()
-                    .list(
-                        calendarId=cal_id,
-                        timeMin=time_min,
-                        timeMax=time_max,
-                        singleEvents=True,
-                        orderBy="startTime",
-                        maxResults=250,
-                    )
-                    .execute()
-                )
-                events.extend(self._to_dict(ev) for ev in resp.get("items", []))
-            except Exception:
-                pass
-        return events
+        calendars_resp = self._build().calendarList().list().execute()
+        cal_ids = [
+            c["id"]
+            for c in calendars_resp.get("items", [])
+            if not _is_google_informational_calendar(c["id"])
+        ]
+        if not cal_ids:
+            return []
+        with ThreadPoolExecutor(max_workers=min(len(cal_ids), 8)) as pool:
+            per_calendar = pool.map(lambda c: self._calendar_events(c, time_min, time_max), cal_ids)
+            return [ev for events in per_calendar for ev in events]
 
     find_events = list_events
 
@@ -510,13 +519,22 @@ class _MultiCalendarAdapter:
         self._adapters = adapters
 
     def list_events(self, start: datetime, end: datetime) -> list[dict]:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def fetch(adapter) -> list[dict]:
+            try:
+                return adapter.list_events(start, end)
+            except Exception:
+                return []
+
         seen: set[tuple] = set()
         merged: list[dict] = []
-        for adapter in self._adapters:
-            try:
-                events = adapter.list_events(start, end)
-            except Exception:
-                events = []
+        # Sources are independent network calls; sequentially their latencies
+        # add up (4+ s for a visitor), in parallel it is the slowest one.
+        # map() keeps adapter order, so first-source-wins dedupe is unchanged.
+        with ThreadPoolExecutor(max_workers=max(len(self._adapters), 1)) as pool:
+            results = list(pool.map(fetch, self._adapters))
+        for events in results:
             for ev in events:
                 key = (ev.get("title", ""), ev.get("start", ""))
                 if key not in seen:
