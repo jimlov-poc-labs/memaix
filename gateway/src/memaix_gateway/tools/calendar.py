@@ -47,6 +47,14 @@ class CalendarAuthRequired(Exception):
 # ------------------------------------------------------------------
 
 
+def _is_google_informational_calendar(cal_id: str) -> bool:
+    """Google's built-in subscription calendars (day/week numbers, moon phases,
+    holidays, contact birthdays) have ids like "…#daynum@group.v.calendar.google.com".
+    Their events are informational but opaque, so counting them as busy blocks
+    every day and leaves the booking page with no slots."""
+    return "#" in cal_id and cal_id.endswith("@group.v.calendar.google.com")
+
+
 class _PerUserGoogleAdapter:
     """Google Calendar REST API v3 using a per-user OAuth access token."""
 
@@ -136,7 +144,7 @@ class _PerUserGoogleAdapter:
             if exc.response is None or exc.response.status_code != 403:
                 raise
             return []
-        return [c["id"] for c in cal_list.get("items", [])]
+        return [c["id"] for c in cal_list.get("items", []) if not _is_google_informational_calendar(c["id"])]
 
     def list_events(self, start: datetime, end: datetime) -> list[dict]:
         from urllib.parse import quote as _quote
@@ -461,6 +469,8 @@ class _ServiceAccountGoogleCalendarAdapter:
         events: list[dict] = []
         for cal in calendars:
             cal_id = cal["id"]
+            if _is_google_informational_calendar(cal_id):
+                continue
             try:
                 resp = (
                     svc.events()
