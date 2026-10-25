@@ -114,7 +114,7 @@ någon klagar.
 
 | Nyckel under `memaix.booking` | Betydelse |
 |---|---|
-| `watch_enabled` | `true` startar bakgrundsloopen. Default av. |
+| `watch_enabled` | Loopen är på som default men gör inget utan `watch_to`. `false` stänger av den helt. |
 | `watch_to` | Mottagarens mejladress. Utan den skickas inget. |
 | `watch_project` | Projektet vars mejlkanal (`mailbox`/`smtp`) skickar varningen. |
 
