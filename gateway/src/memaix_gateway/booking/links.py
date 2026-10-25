@@ -64,3 +64,14 @@ def get_link(slug: str) -> dict | None:
     if not isinstance(data, dict) or not data.get("project") or not data.get("user"):
         return None
     return data
+
+
+def list_links() -> list[tuple[str, dict]]:
+    """Every valid (slug, link) pair, via get_link so malformed files are
+    skipped the same way a request for them would be."""
+    pairs = []
+    for path in sorted(_links_dir().glob("*.json")):
+        link = get_link(path.stem)
+        if link is not None:
+            pairs.append((path.stem, link))
+    return pairs

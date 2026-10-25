@@ -104,3 +104,23 @@ sajterna visar ett grid av dubbletter.
 Har värden konfigurerat flera mötesformer (Google Meet, Zoom, telefon) visar
 widgeten en väljare. Har hen en enda visas ingen — ett val med ett alternativ
 är inte ett val, och gatewayen väljer ändå standardformen.
+
+## Bevakning
+
+Gatewayen kan själv kontrollera att de publika bokningslänkarna går att boka
+och mejla en varning när de inte gör det. En tom bokningssida ser ut som en
+fungerande sida för besökaren, så utan bevakning upptäcks felet först när
+någon klagar.
+
+| Nyckel under `memaix.booking` | Betydelse |
+|---|---|
+| `watch_enabled` | `true` startar bakgrundsloopen. Default av. |
+| `watch_to` | Mottagarens mejladress. Utan den skickas inget. |
+| `watch_project` | Projektet vars mejlkanal (`mailbox`/`smtp`) skickar varningen. |
+
+Loopen kör var 30:e minut och frågar varje länk om bokningsbara tider de
+kommande 60 dagarna. Varningen skickas när en länk saknat tider i två
+kontroller i rad, eller felar, och upprepas som mest en gång per dygn tills
+länken är frisk igen. Mejlet nämner länkens användare och projekt men aldrig
+sluggen. Det anger också troliga orsaker, till exempel ett långt
+kalenderevent som blockerar allt efter ett visst datum.
