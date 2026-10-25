@@ -9,6 +9,11 @@ it is never returned, logged or put in an exception.
 
 Enabled by an optional `nextcloud_provision` block in memaix.yaml
 (docs/SECRETS.md, config/memaix.example.yaml). Without it nothing happens.
+
+Two ways to create the user: `method: ocs` (default; Nextcloud's provisioning
+API, which Nextcloud 32 refuses for app-password logins) or `method: occ_ssh`
+(ssh to the Nextcloud host, where a forced command runs `occ user:add`; see
+ops/memaix-nc-provision.sh). The password goes over ssh stdin, never argv.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import os
 import re
 import secrets
 import string
+import subprocess
 from pathlib import Path
 
 from . import config
@@ -25,7 +31,9 @@ OCS_USERS = "/ocs/v2.php/cloud/users"
 DEFAULT_QUOTA = "2GB"
 _OK_CODES = {100, 200}
 _ALREADY_EXISTS = 102
-_REQUIRED = ("url", "admin_user", "admin_password_ref")
+_REQUIRED_OCS = ("url", "admin_user", "admin_password_ref")
+_REQUIRED_SSH = ("url", "ssh_host", "ssh_user", "ssh_key_file", "ssh_known_hosts")
+_EXISTS_EXIT = 10
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _ALPHABET = string.ascii_letters + string.digits
 _PASSWORD_LEN = 32
@@ -36,17 +44,33 @@ class ProvisionError(Exception):
     """Provisioning failed. The message never contains the account password."""
 
 
+class OutcomeUnknown(ProvisionError):
+    """The remote command may have finished after we gave up; keep the secret file."""
+
+
 def _http_post(url: str, *, timeout: float = 15, **kwargs):
     import requests
 
     return requests.post(url, timeout=timeout, **kwargs)
 
 
+def _run(argv: list[str], *, input: str, timeout: float):
+    return subprocess.run(argv, input=input, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _method(section: dict) -> str:
+    method = section.get("method") or "ocs"
+    if method not in ("ocs", "occ_ssh"):
+        raise ProvisionError(f"nextcloud_provision.method must be ocs or occ_ssh, not {method!r}")
+    return method
+
+
 def _settings(cfg: dict | None) -> dict | None:
     section = cfg if cfg is not None else config.load()["memaix"].get("nextcloud_provision")
     if not section:
         return None
-    missing = [k for k in _REQUIRED if not section.get(k)]
+    required = _REQUIRED_SSH if _method(section) == "occ_ssh" else _REQUIRED_OCS
+    missing = [k for k in required if not section.get(k)]
     if missing:
         raise ProvisionError(f"nextcloud_provision is missing: {', '.join(missing)}")
     return section
@@ -106,7 +130,36 @@ def _create_user(settings: dict, http, user: str, password: str, name: str) -> b
     return True
 
 
-def provision_project_files(name: str, *, cfg: dict | None = None, http=None) -> dict | None:
+def _create_user_ssh(settings: dict, run, user: str, password: str, name: str) -> bool:
+    """True when created, False when the user already exists."""
+    argv = [
+        "ssh", "-i", str(settings["ssh_key_file"]),
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={settings['ssh_known_hosts']}",
+        "-p", str(settings.get("ssh_port") or 22),
+        f"{settings['ssh_user']}@{settings['ssh_host']}",
+        "user-add", user, str(settings.get("quota") or DEFAULT_QUOTA), f"Memaix {name}",
+    ]
+    try:
+        proc = run(argv, input=password + "\n", timeout=_TIMEOUT_S * 2)
+    except subprocess.TimeoutExpired:
+        raise OutcomeUnknown(
+            f"ssh to the Nextcloud host timed out; {user} may exist. The secret file nc-{name} was kept; "
+            "check the account, then remove whichever is stale before retrying"
+        ) from None
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProvisionError(f"Nextcloud host unreachable over ssh ({type(exc).__name__})") from None
+    if proc.returncode == _EXISTS_EXIT:
+        return False
+    if proc.returncode != 0:
+        raise ProvisionError(f"occ over ssh refused to create {user} (exit {proc.returncode})")
+    return True
+
+
+def provision_project_files(
+    name: str, *, cfg: dict | None = None, http=None, run=None
+) -> dict | None:
     """Create the project's Nextcloud account and return its `files:` resource.
 
     `cfg` is the `nextcloud_provision` block (read from memaix.yaml when None).
@@ -126,7 +179,12 @@ def provision_project_files(name: str, *, cfg: dict | None = None, http=None) ->
     if not _write_secret(secret_path, password):
         raise ProvisionError(f"a secret file for {name} already exists; remove it or the stale account first")
     try:
-        created = _create_user(settings, http or _http_post, user, password, name)
+        if _method(settings) == "occ_ssh":
+            created = _create_user_ssh(settings, run or _run, user, password, name)
+        else:
+            created = _create_user(settings, http or _http_post, user, password, name)
+    except OutcomeUnknown:
+        raise
     except BaseException:
         secret_path.unlink(missing_ok=True)
         raise
