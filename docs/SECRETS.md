@@ -30,6 +30,13 @@ skrivs till `<config-katalogen>/secrets/nc-<projekt>` (katalog `0700`, fil `0600
 och refereras i `acl.yaml` som `password_ref: "file:<sökväg>"`. Admin-lösenordet för
 provisioneringen anges separat via `admin_password_ref`. Lösenordet returneras och loggas aldrig.
 
+`method: occ_ssh` skapar kontot med `occ user:add` över ssh i stället för OCS. Nextcloud 32 kräver
+bekräftat lösenord för OCS-`addUser`, och ett app-lösenord räknas inte som det (403). SSH-nyckeln
+ligger som `file:` under `secrets/`, värdnyckeln är pinnad i en `known_hosts`-fil
+(`StrictHostKeyChecking=yes`), och nyckeln på Nextcloud-värden är låst med `restrict,command=` till
+`ops/memaix-nc-provision.sh`, som bara accepterar `user-add memaix-<projekt> <kvot> <namn>` och tar
+lösenordet på stdin. Nyckeln kan alltså inte köra något annat.
+
 ## Kryptering i vila (om värdet lagras lokalt)
 - Lagras en hemlighet i SQLite/fil → kryptera blobben (libsodium/age sealed box) med en **KEK som inte
   ligger bredvid datan** (envelope encryption via KMS/Vault). Bara ciphertext i vila.

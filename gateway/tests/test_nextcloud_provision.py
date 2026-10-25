@@ -197,3 +197,84 @@ def test_unset_admin_password_raises_without_creating_anything(cfg_dir, monkeypa
     with pytest.raises(ProvisionError, match="admin password"):
         provision_project_files("acme", cfg=cfg, http=http)
     assert http.calls == [] and not _secret_file(cfg_dir).exists()
+
+
+# --- method: occ_ssh -------------------------------------------------------
+
+SSH_CFG = {
+    "method": "occ_ssh",
+    "url": "https://nc.example/",
+    "ssh_host": "nc-host",
+    "ssh_user": "provision",
+    "ssh_key_file": "/keys/prov",
+    "ssh_known_hosts": "/keys/known_hosts",
+}
+
+
+class _Proc:
+    def __init__(self, returncode=0):
+        self.returncode = returncode
+
+
+class _Run:
+    def __init__(self, returncode=0, exc=None):
+        self.returncode, self.exc, self.calls = returncode, exc, []
+
+    def __call__(self, argv, *, input, timeout):
+        self.calls.append((argv, input))
+        if self.exc:
+            raise self.exc
+        return _Proc(self.returncode)
+
+
+def test_ssh_success_sends_password_on_stdin_never_argv(cfg_dir):
+    run = _Run()
+    out = provision_project_files("acme", cfg={**SSH_CFG, "quota": "5GB"}, run=run)
+
+    path = _secret_file(cfg_dir)
+    assert out["user"] == "memaix-acme"
+    assert out["url"] == "https://nc.example/remote.php/dav/files/memaix-acme/"
+    password = path.read_text()
+    (argv, stdin), = run.calls
+    assert stdin == password + "\n"
+    assert all(password not in a for a in argv)
+    assert argv[-4:] == ["user-add", "memaix-acme", "5GB", "Memaix acme"]
+    assert "StrictHostKeyChecking=yes" in argv and "BatchMode=yes" in argv
+    assert "UserKnownHostsFile=/keys/known_hosts" in argv
+
+
+def test_ssh_default_quota_and_no_ocs_call():
+    run, http = _Run(), _Http()
+    provision_project_files("acme", cfg=SSH_CFG, run=run, http=http)
+    assert run.calls[0][0][-2] == "2GB"
+    assert http.calls == []
+
+
+def test_ssh_existing_user_raises_and_leaves_no_file(cfg_dir):
+    with pytest.raises(ProvisionError, match="already exists"):
+        provision_project_files("acme", cfg=SSH_CFG, run=_Run(10))
+    assert not _secret_file(cfg_dir).exists()
+
+
+def test_ssh_failure_exit_is_reported_without_password(cfg_dir):
+    with pytest.raises(ProvisionError, match=r"exit 255"):
+        provision_project_files("acme", cfg=SSH_CFG, run=_Run(255))
+    assert not _secret_file(cfg_dir).exists()
+
+
+def test_ssh_unreachable_removes_secret(cfg_dir):
+    with pytest.raises(ProvisionError, match="unreachable"):
+        provision_project_files("acme", cfg=SSH_CFG, run=_Run(exc=FileNotFoundError()))
+    assert not _secret_file(cfg_dir).exists()
+
+
+@pytest.mark.parametrize("missing", ["url", "ssh_host", "ssh_user", "ssh_key_file", "ssh_known_hosts"])
+def test_ssh_missing_setting_raises(missing):
+    cfg = {k: v for k, v in SSH_CFG.items() if k != missing}
+    with pytest.raises(ProvisionError, match=missing):
+        provision_project_files("acme", cfg=cfg, run=_Run())
+
+
+def test_unknown_method_raises():
+    with pytest.raises(ProvisionError, match="method"):
+        provision_project_files("acme", cfg={**SSH_CFG, "method": "magic"}, run=_Run())

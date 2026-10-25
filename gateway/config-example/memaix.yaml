@@ -32,3 +32,15 @@ server:
 #   admin_user: "memaix-provisioner"
 #   admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"
 #   quota: "2GB"           # valfritt, standard 2GB
+#
+# method: occ_ssh skapar kontot med `occ user:add` över ssh i stället för OCS
+# (Nextcloud 32 kräver bekräftat lösenord för OCS addUser, vilket app-lösenord
+# inte ger). Nyckeln på Nextcloud-värden är låst till ops/memaix-nc-provision.sh.
+# nextcloud_provision:
+#   method: "occ_ssh"
+#   url: "http://nextcloud:8081"
+#   ssh_host: "alienqronk"
+#   ssh_user: "memaix-provision"
+#   ssh_key_file: "/app/config/secrets/nc-provision-key"       # 0600
+#   ssh_known_hosts: "/app/config/secrets/nc-provision-known_hosts"
+#   quota: "2GB"
