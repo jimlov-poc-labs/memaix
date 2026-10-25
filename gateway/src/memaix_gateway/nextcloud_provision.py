@@ -44,6 +44,10 @@ class ProvisionError(Exception):
     """Provisioning failed. The message never contains the account password."""
 
 
+class OutcomeUnknown(ProvisionError):
+    """The remote command may have finished after we gave up; keep the secret file."""
+
+
 def _http_post(url: str, *, timeout: float = 15, **kwargs):
     import requests
 
@@ -139,6 +143,11 @@ def _create_user_ssh(settings: dict, run, user: str, password: str, name: str) -
     ]
     try:
         proc = run(argv, input=password + "\n", timeout=_TIMEOUT_S * 2)
+    except subprocess.TimeoutExpired:
+        raise OutcomeUnknown(
+            f"ssh to the Nextcloud host timed out; {user} may exist. The secret file nc-{name} was kept; "
+            "check the account, then remove whichever is stale before retrying"
+        ) from None
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProvisionError(f"Nextcloud host unreachable over ssh ({type(exc).__name__})") from None
     if proc.returncode == _EXISTS_EXIT:
@@ -174,6 +183,8 @@ def provision_project_files(
             created = _create_user_ssh(settings, run or _run, user, password, name)
         else:
             created = _create_user(settings, http or _http_post, user, password, name)
+    except OutcomeUnknown:
+        raise
     except BaseException:
         secret_path.unlink(missing_ok=True)
         raise

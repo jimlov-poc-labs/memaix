@@ -5,6 +5,7 @@ touches the network. The generated password must never leave the 0600 file."""
 from __future__ import annotations
 
 import stat
+import subprocess
 
 import pytest
 import requests
@@ -278,3 +279,11 @@ def test_ssh_missing_setting_raises(missing):
 def test_unknown_method_raises():
     with pytest.raises(ProvisionError, match="method"):
         provision_project_files("acme", cfg={**SSH_CFG, "method": "magic"}, run=_Run())
+
+
+def test_ssh_timeout_keeps_secret_file_because_the_account_may_exist(cfg_dir):
+    run = _Run(exc=subprocess.TimeoutExpired(cmd="ssh", timeout=30))
+    with pytest.raises(ProvisionError, match="may exist") as ei:
+        provision_project_files("acme", cfg=SSH_CFG, run=run)
+    assert _secret_file(cfg_dir).exists()
+    assert _secret_file(cfg_dir).read_text() not in str(ei.value)
