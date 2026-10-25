@@ -147,7 +147,7 @@ def test_auth_untouched_without_issuer(cfg, monkeypatch):
 
 
 def _patch_loops(monkeypatch, make):
-    from memaix_gateway.booking import purge, reminders
+    from memaix_gateway.booking import purge, reminders, watch
     from memaix_gateway.connectors import calendar_cache
     from memaix_gateway.notify import scheduler
 
@@ -155,6 +155,7 @@ def _patch_loops(monkeypatch, make):
     monkeypatch.setattr(calendar_cache, "calendar_sync_loop", make("calendar"))
     monkeypatch.setattr(purge, "consent_purge_loop", make("purge"))
     monkeypatch.setattr(reminders, "reminder_loop", make("reminders"))
+    monkeypatch.setattr(watch, "booking_watch_loop", make("watch"))
 
 
 def _record_loops(monkeypatch, started):
@@ -175,7 +176,7 @@ def test_lifespan_loops_all_enabled_in_order(cfg, monkeypatch):
     with _client() as client:
         assert client.get("/health").status_code == 200
     # senast tillagda wrappern är ytterst och startar först
-    assert started == ["reminders", "purge", "calendar", "brief"]
+    assert started == ["watch", "reminders", "purge", "calendar", "brief"]
 
 
 @pytest.mark.parametrize(
@@ -185,6 +186,7 @@ def test_lifespan_loops_all_enabled_in_order(cfg, monkeypatch):
         ("calendar_sync", "enabled", "calendar"),
         ("booking", "purge_enabled", "purge"),
         ("booking", "reminders_enabled", "reminders"),
+        ("booking", "watch_enabled", "watch"),
     ],
 )
 def test_lifespan_loop_can_be_disabled(cfg, monkeypatch, section, key, gone):
@@ -194,7 +196,7 @@ def test_lifespan_loop_can_be_disabled(cfg, monkeypatch, section, key, gone):
     with _client():
         pass
     assert gone not in started
-    assert len(started) == 3
+    assert len(started) == 4
 
 
 def test_lifespan_cancels_tasks_on_exit(cfg, monkeypatch):
@@ -214,7 +216,7 @@ def test_lifespan_cancels_tasks_on_exit(cfg, monkeypatch):
     _patch_loops(monkeypatch, make)
     with _client():
         pass
-    assert sorted(cancelled) == ["brief", "calendar", "purge", "reminders"]
+    assert sorted(cancelled) == ["brief", "calendar", "purge", "reminders", "watch"]
 
 
 # ---------------------------------------------------------------- handlers

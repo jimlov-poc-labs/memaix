@@ -490,12 +490,31 @@ def _reminders_loop():
     return reminder_loop(_server._get_acl, get_link)
 
 
+def _booking_watch_loop():
+    """Mails the host when a public booking link has no bookable time."""
+    from .booking.links import list_links
+    from .booking.routes import _resolve_dav_filtered
+    from .booking.watch import booking_watch_loop
+    from .notify.channels import EmailChannel
+
+    def send_fn_factory():
+        cfg = _memaix_cfg(config.load()).get("booking", {})
+        to, project = cfg.get("watch_to"), cfg.get("watch_project")
+        if not to or not project:
+            return None
+        channel = EmailChannel(_server._get_acl(), {"to": to, "project": project})
+        return lambda subject, body: channel.send(subject, body, body)
+
+    return booking_watch_loop(_server._get_acl, _resolve_dav_filtered, list_links, send_fn_factory)
+
+
 # (config-sektion, flagga, loop-fabrik) — ordningen avgör lindningsordningen.
 _BACKGROUND_LOOPS = (
     ("brief", "enabled", _brief_loop),
     ("calendar_sync", "enabled", _calendar_sync_loop),
     ("booking", "purge_enabled", _consent_purge_loop),
     ("booking", "reminders_enabled", _reminders_loop),
+    ("booking", "watch_enabled", _booking_watch_loop),
 )
 
 
