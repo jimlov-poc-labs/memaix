@@ -85,3 +85,56 @@ def test_free_cache_is_bounded(monkeypatch):
     for i in range(20):
         routes._free_windows_cached(("k", i), lambda: [])
     assert len(routes._free_cache) <= 4
+
+
+class _Exec:
+    def __init__(self, payload=None, error=None):
+        self._payload, self._error = payload, error
+
+    def execute(self):
+        if self._error:
+            raise self._error
+        return self._payload
+
+
+class _FakeService:
+    def __init__(self, calendars, events_by_cal):
+        self._calendars, self._events = calendars, events_by_cal
+
+    def calendarList(self):
+        return self
+
+    def events(self):
+        return self
+
+    def list(self, calendarId=None, **kwargs):
+        if calendarId is None:
+            return _Exec({"items": [{"id": c} for c in self._calendars]})
+        outcome = self._events[calendarId]
+        if isinstance(outcome, Exception):
+            return _Exec(error=outcome)
+        return _Exec({"items": outcome})
+
+
+def _adapter(service):
+    adapter = _ServiceAccountGoogleCalendarAdapter.__new__(_ServiceAccountGoogleCalendarAdapter)
+    adapter._build = lambda: service
+    return adapter
+
+
+def test_service_account_lists_every_calendar_skips_informational_and_failures():
+    moon = "ht3jlfaac5lfd6263ulfh4tql8@group.calendar.google.com"
+    ev = lambda i, **kw: {"id": i, "summary": i, "start": {"dateTime": "2026-11-02T08:00:00Z"},
+                          "end": {"dateTime": "2026-11-02T09:00:00Z"}, **kw}
+    service = _FakeService(
+        ["main", "free", "broken", moon],
+        {"main": [ev("m1")], "free": [ev("f1", transparency="transparent")],
+         "broken": RuntimeError("403"), moon: [ev("moon")]},
+    )
+    events = _adapter(service).list_events(START, END)
+    assert sorted(e["id"] for e in events) == ["f1", "m1"]
+    assert {e["id"]: e["source_busy"] for e in events} == {"m1": True, "f1": False}
+
+
+def test_service_account_with_no_calendars_returns_nothing():
+    assert _adapter(_FakeService([], {})).list_events(START, END) == []
