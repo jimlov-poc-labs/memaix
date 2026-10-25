@@ -139,7 +139,7 @@ def _create_user_ssh(settings: dict, run, user: str, password: str, name: str) -
         "-o", f"UserKnownHostsFile={settings['ssh_known_hosts']}",
         "-p", str(settings.get("ssh_port") or 22),
         f"{settings['ssh_user']}@{settings['ssh_host']}",
-        "user-add", user, str(settings.get("quota") or DEFAULT_QUOTA), f"Memaix {name}",
+        "user-add", user, str(settings.get("quota") or DEFAULT_QUOTA).replace(" ", ""), f"Memaix {name}",
     ]
     try:
         proc = run(argv, input=password + "\n", timeout=_TIMEOUT_S * 2)

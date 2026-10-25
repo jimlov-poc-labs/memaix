@@ -287,3 +287,9 @@ def test_ssh_timeout_keeps_secret_file_because_the_account_may_exist(cfg_dir):
         provision_project_files("acme", cfg=SSH_CFG, run=run)
     assert _secret_file(cfg_dir).exists()
     assert _secret_file(cfg_dir).read_text() not in str(ei.value)
+
+
+def test_ssh_quota_with_a_space_is_sent_as_one_word():
+    run = _Run()
+    provision_project_files("acme", cfg={**SSH_CFG, "quota": "2 GB"}, run=run)
+    assert run.calls[0][0][-2] == "2GB"

@@ -21,7 +21,7 @@ case "$user" in
   *) echo "user must be memaix-<project>" >&2; exit 2 ;;
 esac
 printf '%s' "$user" | grep -Eq '^memaix-[a-z0-9][a-z0-9_-]{1,31}$' || { echo "bad user" >&2; exit 2; }
-printf '%s' "$quota" | grep -Eq '^(([1-9]|1[0-9]|20) ?GB|[1-9][0-9]{0,3} ?MB)$' || { echo "bad quota (max 20GB)" >&2; exit 2; }
+printf '%s' "$quota" | grep -Eq '^(([1-9]|1[0-9]|20)GB|[1-9][0-9]{0,3}MB)$' || { echo "bad quota (max 20GB)" >&2; exit 2; }
 printf '%s' "$display" | grep -Eq '^[A-Za-z0-9 _-]{1,64}$' || { echo "bad display name" >&2; exit 2; }
 
 IFS= read -r pass
