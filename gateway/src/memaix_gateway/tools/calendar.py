@@ -47,12 +47,18 @@ class CalendarAuthRequired(Exception):
 # ------------------------------------------------------------------
 
 
+_GOOGLE_MOON_CALENDAR_ID = "ht3jlfaac5lfd6263ulfh4tql8@group.calendar.google.com"
+
+
 def _is_google_informational_calendar(cal_id: str) -> bool:
     """Google's built-in subscription calendars (day/week numbers, moon phases,
     holidays, contact birthdays) have ids like "…#daynum@group.v.calendar.google.com".
     Their events are informational but opaque, so counting them as busy blocks
     every day and leaves the booking page with no slots."""
-    return "#" in cal_id and cal_id.endswith("@group.v.calendar.google.com")
+    # The moon-phase calendar predates the "#" naming and keeps a fixed id.
+    return cal_id == _GOOGLE_MOON_CALENDAR_ID or (
+        "#" in cal_id and cal_id.endswith("@group.v.calendar.google.com")
+    )
 
 
 class _PerUserGoogleAdapter:

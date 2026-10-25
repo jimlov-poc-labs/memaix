@@ -99,6 +99,7 @@ def test_informational_google_calendars_are_not_read(monkeypatch):
         {"id": "abc#daynum@group.v.calendar.google.com"},
         {"id": "abc#moon@group.v.calendar.google.com"},
         {"id": "sv.swedish#holiday@group.v.calendar.google.com"},
+        {"id": "ht3jlfaac5lfd6263ulfh4tql8@group.calendar.google.com"},
         {"id": "team@group.calendar.google.com"},
     ]}
     seen = []
