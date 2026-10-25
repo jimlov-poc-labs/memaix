@@ -89,3 +89,28 @@ def test_healthy_account_still_lists_events(monkeypatch):
     _route(monkeypatch, {"calendarList": _Resp(200, {"items": [{"id": "primary"}]}),
                          "/events": _Resp(200, {"items": [_event(1), _event(2)]})})
     assert len(_PerUserGoogleAdapter("tok").list_events(START, END)) == 2
+
+
+def test_informational_google_calendars_are_not_read(monkeypatch):
+    # Day-number / moon / week-number / holiday calendars carry opaque all-day
+    # events; reading them made every day busy and the booking page empty.
+    cal_list = {"items": [
+        {"id": "me@example.com"},
+        {"id": "abc#daynum@group.v.calendar.google.com"},
+        {"id": "abc#moon@group.v.calendar.google.com"},
+        {"id": "sv.swedish#holiday@group.v.calendar.google.com"},
+        {"id": "team@group.calendar.google.com"},
+    ]}
+    seen = []
+
+    def fake_get(url, **kwargs):
+        if "calendarList" in url:
+            return _Resp(200, cal_list)
+        seen.append(url)
+        return _Resp(200, {"items": []})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    _PerUserGoogleAdapter("tok").list_events(START, END)
+    assert len(seen) == 2
+    assert any("me%40example.com" in u for u in seen)
+    assert any("team%40group.calendar.google.com" in u for u in seen)
