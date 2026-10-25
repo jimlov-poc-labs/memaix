@@ -359,3 +359,28 @@ def test_preflight_is_noop_when_off_and_passes_with_block(monkeypatch):
     np_.ensure_files_possible()
     _mx(monkeypatch, {"require_files": True, "nextcloud_provision": CFG})
     np_.ensure_files_possible()
+
+
+def test_ssh_quota_with_a_space_is_sent_as_one_word():
+    run = _Run()
+    provision_project_files("acme", cfg={**SSH_CFG, "quota": "2 GB"}, run=run)
+    assert run.calls[0][0][-2] == "2GB"
+
+
+@pytest.mark.parametrize("raw,sent", [("2 GB", "2GB"), (" 500 MB ", "500MB"), ("20GB", "20GB"), ("2\tGB", "2GB")])
+def test_ssh_quota_is_normalised_to_one_word(raw, sent):
+    run = _Run()
+    provision_project_files("acme", cfg={**SSH_CFG, "quota": raw}, run=run)
+    assert run.calls[0][0][-2] == sent
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["2GB; rm -rf /", "2GB$(id)", "`id`", "2GB\nfoo", "2 G B x", "21GB", "0GB", "2TB", "none", "unlimited",
+     "-1GB", "2gb", "GB", "2.5GB", "99999MB", "$IFS", "2GB|id", "2GB&&id"],
+)
+def test_ssh_quota_invalid_fails_closed_before_ssh(bad, cfg_dir):
+    run = _Run()
+    with pytest.raises(ProvisionError):
+        provision_project_files("acme", cfg={**SSH_CFG, "quota": bad}, run=run)
+    assert run.calls == []
