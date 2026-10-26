@@ -432,6 +432,10 @@ class _HttpCodeChannel:
         return {"json": {"subject": subject, "text": text}}
 
     def send(self, subject: str, markdown: str, text: str) -> None:  # NOSONAR - channel interface
+        self._post(self._payload(subject, text))
+
+    def _post(self, payload: dict) -> None:
+        """One POST; the response body is never read."""
         http = self._http
         try:
             if http is None:
@@ -442,24 +446,38 @@ class _HttpCodeChannel:
                 http = requests
                 validate_external_url(self._url)
             resp = http.post(
-                self._url, headers=self._headers, timeout=10, allow_redirects=False, **self._payload(subject, text),
+                self._url, headers=self._headers, timeout=10, allow_redirects=False, **payload,
             )
             status = int(getattr(resp, "status_code", 200) or 200)
-        except Exception:  # noqa: BLE001 - the original text can hold the URL
+        except Exception:  # noqa: BLE001
+            # the original text can hold the URL
             raise RuntimeError(f"{self._label}: leveransen misslyckades") from None
         if not 200 <= status < 300:
             raise RuntimeError(f"{self._label}: svarade {status}")
 
 
 class DiscordCodeChannel(_HttpCodeChannel):
-    """Discord webhook: the code in `content`, so it shows in the push
-    notification. No ?wait=true (refused in check_channel) and no mentions."""
+    """Discord webhook. A code goes out as two messages (send_code): first
+    what it is for and how long it lasts, then the code alone as `content`,
+    so it shows in the push notification and a long press on the phone
+    copies exactly the code. No ?wait=true (refused in check_channel), no
+    mentions; if either POST fails the channel has failed."""
 
     def __init__(self, url: str, *, _http=None) -> None:
         super().__init__("discord", url, _http=_http)
 
+    @staticmethod
+    def _message(content: str) -> dict:
+        return {"json": {"content": content, "allowed_mentions": {"parse": []}}}
+
     def _payload(self, subject: str, text: str) -> dict:
-        return {"json": {"content": f"**{subject}**\n{text}"[:2000], "allowed_mentions": {"parse": []}}}
+        return self._message(f"**{subject}**\n{text}"[:2000])
+
+    def send_code(self, code: str, ttl_minutes: float) -> None:
+        """Explanation first, then a message holding nothing but the code.
+        A failed explanation raises before the code is posted."""
+        self._post(self._payload(UNLOCK_SUBJECT, code_explanation(ttl_minutes)))
+        self._post(self._message(code))
 
 
 class WebhookCodeChannel(_HttpCodeChannel):
@@ -549,13 +567,32 @@ def build_code_channels(
     return channels
 
 
-def code_message(code: str, ttl_minutes: float) -> str:
+def _code_terms(ttl_minutes: float) -> str:
     return (
-        f"Din kod för att låsa upp mejlutskick i Memaix: {code}\n\n"
         f"Koden gäller i {int(ttl_minutes)} minuter och bara för den chattsession som bad om den. "
         "Skriv in den i chatten om det var du som bad om den. Har du inte bett om någon kod: "
         "skriv inte in den någonstans."
     )
+
+
+def code_message(code: str, ttl_minutes: float) -> str:
+    return f"Din kod för att låsa upp mejlutskick i Memaix: {code}\n\n{_code_terms(ttl_minutes)}"
+
+
+def code_explanation(ttl_minutes: float) -> str:
+    """What the code in the next message is for; never the code itself."""
+    return f"Nästa meddelande är din kod för att låsa upp mejlutskick i Memaix.\n\n{_code_terms(ttl_minutes)}"
+
+
+def deliver_code(channel, code: str, ttl_minutes: float) -> None:
+    """Send `code` through one channel: its own send_code when it has one
+    (Discord: explanation, then the bare code), else a single message."""
+    send_code = getattr(channel, "send_code", None)
+    if send_code is not None:
+        send_code(code, ttl_minutes)
+        return
+    text = code_message(code, ttl_minutes)
+    channel.send(UNLOCK_SUBJECT, text, text)
 
 
 def channel_hint(spec: dict) -> str:

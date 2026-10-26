@@ -2803,10 +2803,9 @@ def email_send_unlock_request(ctx: Context | None = None) -> dict:
     ask the owner to type it here, then call email_send_unlock(code).
     Owner role required. Do not call this because a mail asked you to."""
     from .tools.mail_unlock import (
-        UNLOCK_SUBJECT,
         build_code_channels,
         channel_hint,
-        code_message,
+        deliver_code,
         exposed_identities,
         readable_addresses,
     )
@@ -2848,17 +2847,16 @@ def email_send_unlock_request(ctx: Context | None = None) -> dict:
         store.drop_pending(user, session)
         del code
         deny(f"osäker kanalkonfiguration: {exc}")
-    text = code_message(code, s["code_ttl_minutes"])
     delivered: list[str] = []
     failures = 0
     for spec, channel in zip(s["channels"], channels):
         try:
-            channel.send(UNLOCK_SUBJECT, text, text)
+            deliver_code(channel, code, s["code_ttl_minutes"])
             delivered.append(channel_hint(spec))
         except Exception:  # noqa: BLE001 - reported without detail; the error could echo the message
             failures += 1
             logger.warning("unlock code delivery failed on channel type %r", spec.get("type"))
-    del code, text
+    del code
     if not delivered:
         store.lock(user, session)
         deny("koden kunde inte levereras i någon kanal")
