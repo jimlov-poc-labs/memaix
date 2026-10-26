@@ -1157,45 +1157,64 @@ def _validate_timezone(tz_name: str) -> None:
 
 
 def _validate_channels(channels: list[dict] | None) -> None:
-    from .notify.channels import _discord_id, check_ntfy_url, ntfy_url
+    for spec in channels or []:
+        _validate_channel_fields(spec)
+        url = _channel_post_url(spec)
+        if url:
+            _check_channel_url(url, spec.get("type"))
+
+
+def _validate_channel_fields(spec: dict) -> None:
+    # Brief channels are set by the user — and the model — via
+    # brief_configure / the web API. A *_ref would make the server
+    # resolve a secret of the model's choosing and send it to a URL of
+    # the model's choosing (or point at the unlock channel to lock it
+    # out). Secret refs belong in operator config only.
+    refs = sorted(k for k in spec if str(k).endswith("_ref"))
+    if refs:
+        raise ValueError(f"channel fields {refs} are not allowed here — put the value itself (no secret refs)")
+    if spec.get("type") not in _KNOWN_CHANNEL_TYPES:
+        raise ValueError(
+            f"unknown channel type {spec.get('type')!r}; must be one of {sorted(_KNOWN_CHANNEL_TYPES)}"
+        )
+
+
+def _channel_post_url(spec: dict) -> str | None:
+    """The URL the server will POST brief content to, if any.
+
+    Webhook: the URL itself. ntfy: the URL NtfyChannel posts to (server +
+    topic, default server included), so what is checked is what is sent.
+    """
+    from .notify.channels import ntfy_url
+
+    if spec.get("type") == "ntfy":
+        topic = str(spec.get("topic") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", topic):
+            raise ValueError("ntfy topic must be 1-64 characters A-Z, a-z, 0-9, _ or -")
+        return ntfy_url(spec.get("server"), topic)
+    if spec.get("type") == "webhook":
+        return spec.get("url")
+    return None
+
+
+def _check_channel_url(url: str, ctype: object) -> None:
+    """SSRF guard for a brief channel URL.
+
+    resolve=False at config-time; the authoritative resolve happens in
+    notify/channels.py right before the request. A Discord host must be
+    https on the standard port, and ntfy must be https (the topic is as
+    secret as a Discord token).
+    """
+    from .notify.channels import _discord_id, check_ntfy_url
     from .safety.net import BlockedURLError, validate_external_url
 
-    for spec in channels or []:
-        # Brief channels are set by the user — and the model — via
-        # brief_configure / the web API. A *_ref would make the server
-        # resolve a secret of the model's choosing and send it to a URL of
-        # the model's choosing (or point at the unlock channel to lock it
-        # out). Secret refs belong in operator config only.
-        refs = sorted(k for k in spec if str(k).endswith("_ref"))
-        if refs:
-            raise ValueError(f"channel fields {refs} are not allowed here — put the value itself (no secret refs)")
-        if spec.get("type") not in _KNOWN_CHANNEL_TYPES:
-            raise ValueError(
-                f"unknown channel type {spec.get('type')!r}; must be one of {sorted(_KNOWN_CHANNEL_TYPES)}"
-            )
-        # SSRF guard for the URLs the server will POST brief content to.
-        # resolve=False at config-time; the authoritative resolve happens in
-        # notify/channels.py right before the request.
-        # Webhook: the URL itself. ntfy: the URL NtfyChannel posts to
-        # (server + topic, default server included), so what is checked is
-        # what is sent. A Discord host must be https on the standard port,
-        # and ntfy must be https (the topic is as secret as a Discord token).
-        url: str | None = None
-        if spec.get("type") == "ntfy":
-            topic = str(spec.get("topic") or "")
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", topic):
-                raise ValueError("ntfy topic must be 1-64 characters A-Z, a-z, 0-9, _ or -")
-            url = ntfy_url(spec.get("server"), topic)
-        elif spec.get("type") == "webhook":
-            url = spec.get("url")
-        if url:
-            try:
-                validate_external_url(url, resolve=False)
-                _discord_id(url)  # every type: a Discord host is https on 443 only
-                if spec.get("type") == "ntfy":
-                    check_ntfy_url(url)
-            except BlockedURLError as exc:
-                raise ValueError(f"channel url avvisad: {exc}") from exc
+    try:
+        validate_external_url(url, resolve=False)
+        _discord_id(url)  # every type: a Discord host is https on 443 only
+        if ctype == "ntfy":
+            check_ntfy_url(url)
+    except BlockedURLError as exc:
+        raise ValueError(f"channel url avvisad: {exc}") from exc
 
 
 def _check_email_channel_owner(acl, user: str, channels: list[dict] | None, tool: str) -> None:
@@ -3132,7 +3151,8 @@ def _send_from_box(tool: str, user: str, ctx, item: str, project: str | None, fo
             smtp_send(acl, _get_token_store(), u, p, ref.label, msg)
             try:
                 saved = save_to_sent(adapter, msg)
-            except Exception:  # noqa: BLE001 - the mail is already sent; report, don't fail
+            except Exception:  # noqa: BLE001
+                # the mail is already sent; report, don't fail
                 logger.warning("could not save sent copy for %s", tool)
                 saved = None
             result = {

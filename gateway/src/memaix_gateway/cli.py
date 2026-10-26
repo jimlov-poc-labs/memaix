@@ -72,6 +72,52 @@ def _verify_imap(host: str, user: str, password: str, port: int | None) -> None:
     build_mailbox(token).logout()
 
 
+def _acl_and_store(acl, store):
+    """The given acl and token store, else the server's."""
+    if acl is None or store is None:
+        from .server import _get_acl, _get_token_store
+
+        acl = acl or _get_acl()
+        store = store or _get_token_store()
+    return acl, store
+
+
+def _link_projects(acl, args) -> list[str] | None:
+    """Projects to share the account with, or None after saying why not:
+    unknown user, no projects, or a listed project the user cannot read."""
+    if args.user not in acl.users:
+        print(f"Okänd användare: {args.user}", file=sys.stderr)
+        return None
+    projects = [p.strip() for p in (args.projects or "").split(",") if p.strip()]
+    if not projects:
+        print("Ange --projects (kommaseparerat, eller *) — ett konto utan projekt syns ingenstans.", file=sys.stderr)
+        return None
+    from .acl import AccessDenied
+
+    for project in projects:
+        if project == "*":
+            continue
+        try:
+            acl.enforce(args.user, project, "reader")
+        except AccessDenied:
+            print(f"{args.user} har ingen åtkomst till projektet {project}", file=sys.stderr)
+            return None
+    return projects
+
+
+def _verified(args, verify, imap_user: str, password: str) -> bool:
+    """False (after printing the error type only) if --verify login fails."""
+    if not args.verify:
+        return True
+    try:
+        verify(args.host, imap_user, password, args.port)
+    except Exception as exc:  # noqa: BLE001
+        # shown without the password: the type only
+        print(f"IMAP-inloggning misslyckades: {type(exc).__name__}", file=sys.stderr)
+        return False
+    return True
+
+
 def cmd_link_imap(args, *, stdin=None, acl=None, store=None, verify=_verify_imap) -> int:
     """Store an IMAP account for args.user and share it for mail with
     args.projects. Prints no secret; returns a process exit code."""
@@ -84,35 +130,13 @@ def cmd_link_imap(args, *, stdin=None, acl=None, store=None, verify=_verify_imap
     if not password:
         print("Tomt lösenord på stdin — inget länkades.", file=sys.stderr)
         return 1
-    if acl is None or store is None:
-        from .server import _get_acl, _get_token_store
-
-        acl = acl or _get_acl()
-        store = store or _get_token_store()
-    if args.user not in acl.users:
-        print(f"Okänd användare: {args.user}", file=sys.stderr)
+    acl, store = _acl_and_store(acl, store)
+    projects = _link_projects(acl, args)
+    if projects is None:
         return 1
-    projects = [p.strip() for p in (args.projects or "").split(",") if p.strip()]
-    if not projects:
-        print("Ange --projects (kommaseparerat, eller *) — ett konto utan projekt syns ingenstans.", file=sys.stderr)
-        return 1
-    from .acl import AccessDenied
-
-    for project in projects:
-        if project == "*":
-            continue
-        try:
-            acl.enforce(args.user, project, "reader")
-        except AccessDenied:
-            print(f"{args.user} har ingen åtkomst till projektet {project}", file=sys.stderr)
-            return 1
     imap_user = args.imap_user or args.account
-    if args.verify:
-        try:
-            verify(args.host, imap_user, password, args.port)
-        except Exception as exc:  # noqa: BLE001 - shown without the password
-            print(f"IMAP-inloggning misslyckades: {type(exc).__name__}", file=sys.stderr)
-            return 1
+    if not _verified(args, verify, imap_user, password):
+        return 1
     from .tools.account import account_link_imap
 
     account_link_imap(

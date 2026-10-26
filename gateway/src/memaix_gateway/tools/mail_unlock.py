@@ -229,21 +229,34 @@ def readable_addresses(acl, token_store, *, users: list[str] | None = None) -> s
     provider or project scope — scopes can change later without the
     channel config being looked at again.
     """
-    out: set[str] = set()
-    for project, cfg in (getattr(acl, "projects", {}) or {}).items():
-        mailbox = (cfg or {}).get("mailbox") or {}
-        smtp = (cfg or {}).get("smtp") or {}
-        for value in (mailbox.get("user"), smtp.get("user"), smtp.get("from_addr")):
-            if value:
-                out.add(_norm(value))
+    out = _project_addresses(acl)
     names = users if users is not None else list((getattr(acl, "users", {}) or {}).keys())
-    if token_store is not None:
-        for user in names:
-            for account in token_store.list_accounts(user):
-                if account.get("account"):
-                    out.add(_norm(account["account"]))
+    out |= _linked_addresses(token_store, names)
     out.discard("")
     return out
+
+
+def _project_addresses(acl) -> set[str]:
+    """acl.yaml mailbox user, smtp user and smtp from_addr of every project."""
+    out: set[str] = set()
+    for cfg in (getattr(acl, "projects", {}) or {}).values():
+        mailbox = (cfg or {}).get("mailbox") or {}
+        smtp = (cfg or {}).get("smtp") or {}
+        values = (mailbox.get("user"), smtp.get("user"), smtp.get("from_addr"))
+        out.update(_norm(value) for value in values if value)
+    return out
+
+
+def _linked_addresses(token_store, names: list[str]) -> set[str]:
+    """Every account linked by any of `names`, whatever provider or scope."""
+    if token_store is None:
+        return set()
+    return {
+        _norm(account["account"])
+        for user in names
+        for account in token_store.list_accounts(user)
+        if account.get("account")
+    }
 
 
 def _readable_hit(value: str, readable: set[str]) -> str | None:
@@ -300,19 +313,28 @@ def exposed_identities(notify_store) -> set[str]:
     out: set[str] = set()
     if notify_store is None:
         return out
-    for channels in notify_store.all_channels():
-        for spec in channels or []:
-            ctype = (spec or {}).get("type")
-            try:
-                if ctype == "ntfy" and spec.get("topic"):
-                    out.add(ntfy_identity(spec.get("server"), spec.get("topic")))
-                elif ctype in ("webhook", "discord"):
-                    url = _resolved(spec, "url")
-                    if url:
-                        out.add(webhook_identity(url))
-            except Exception:  # noqa: BLE001 - a broken brief spec is not a code channel
-                continue
+    specs = (spec for channels in notify_store.all_channels() for spec in channels or [])
+    for spec in specs:
+        try:
+            identity = _brief_identity(spec)
+        except Exception:  # noqa: BLE001
+            # a broken brief spec is not a code channel
+            continue
+        if identity:
+            out.add(identity)
     return out
+
+
+def _brief_identity(spec: dict | None) -> str | None:
+    """Comparable identity of one brief channel's ntfy topic or webhook."""
+    spec = spec or {}
+    ctype = spec.get("type")
+    if ctype == "ntfy" and spec.get("topic"):
+        return ntfy_identity(spec.get("server"), spec.get("topic"))
+    if ctype in ("webhook", "discord"):
+        url = _resolved(spec, "url")
+        return webhook_identity(url) if url else None
+    return None
 
 
 def _check_url(url: str | None, label: str) -> str:
@@ -337,32 +359,49 @@ def check_channel(spec: dict, readable: set[str], exposed: set[str] | frozenset[
     """
     ctype = spec.get("type")
     if ctype == "ntfy":
-        topic = _resolved(spec, "topic")
-        if not topic:
-            raise ValueError("ntfy-kanalen behöver 'topic' eller 'topic_ref'")
-        if len(topic) < MIN_NTFY_TOPIC_LEN or not re.fullmatch(r"[A-Za-z0-9_-]+", topic):
-            raise ValueError(
-                f"ntfy-ämnet måste vara minst {MIN_NTFY_TOPIC_LEN} slumpade tecken (A-Z, a-z, 0-9, _ eller -) "
-                "— ett gissningsbart ämne kan vem som helst läsa"
-            )
-        from urllib.parse import urlsplit
-
-        if urlsplit(str(spec.get("server") or DEFAULT_NTFY_SERVER)).scheme.lower() != "https":
-            raise ValueError("ntfy-kanalens server måste vara https — ämnet får aldrig gå i klartext")
-        if ntfy_identity(spec.get("server"), topic) in exposed:
-            raise ValueError("ntfy-ämnet används också av en notiskanal som modellen kan se och ändra")
+        _check_ntfy(spec, exposed)
         return
     if ctype in ("discord", "webhook"):
-        url = _check_url(_resolved(spec, "url"), ctype)
-        if ctype == "discord" and not webhook_identity(url).startswith("discord:"):
-            raise ValueError("discord-kanalen kräver en Discord-webhook (https://discord.com/api/webhooks/<id>/<token>)")
-        if webhook_identity(url) in exposed:
-            raise ValueError(f"{ctype}-kanalen pekar på samma webhook som en notiskanal som modellen kan se och ändra")
+        _check_webhook(spec, ctype, exposed)
         return
     if ctype != "smtp":
         raise ValueError(
             f"kanaltyp {ctype!r} stöds inte för upplåsningskoder (använd discord, ntfy, webhook eller smtp)"
         )
+    _check_smtp(spec, readable)
+
+
+def _check_ntfy(spec: dict, exposed: set[str] | frozenset[str]) -> None:
+    """Unguessable topic, https server, and not a topic the model can see."""
+    from urllib.parse import urlsplit
+
+    topic = _resolved(spec, "topic")
+    if not topic:
+        raise ValueError("ntfy-kanalen behöver 'topic' eller 'topic_ref'")
+    if len(topic) < MIN_NTFY_TOPIC_LEN or not re.fullmatch(r"[A-Za-z0-9_-]+", topic):
+        raise ValueError(
+            f"ntfy-ämnet måste vara minst {MIN_NTFY_TOPIC_LEN} slumpade tecken (A-Z, a-z, 0-9, _ eller -) "
+            "— ett gissningsbart ämne kan vem som helst läsa"
+        )
+    if urlsplit(str(spec.get("server") or DEFAULT_NTFY_SERVER)).scheme.lower() != "https":
+        raise ValueError("ntfy-kanalens server måste vara https — ämnet får aldrig gå i klartext")
+    if ntfy_identity(spec.get("server"), topic) in exposed:
+        raise ValueError("ntfy-ämnet används också av en notiskanal som modellen kan se och ändra")
+
+
+def _check_webhook(spec: dict, ctype: str, exposed: set[str] | frozenset[str]) -> None:
+    """https without query, a real Discord webhook for discord, and not a
+    webhook the model can see."""
+    url = _check_url(_resolved(spec, "url"), ctype)
+    if ctype == "discord" and not webhook_identity(url).startswith("discord:"):
+        raise ValueError("discord-kanalen kräver en Discord-webhook (https://discord.com/api/webhooks/<id>/<token>)")
+    if webhook_identity(url) in exposed:
+        raise ValueError(f"{ctype}-kanalen pekar på samma webhook som en notiskanal som modellen kan se och ändra")
+
+
+def _check_smtp(spec: dict, readable: set[str]) -> None:
+    """to and from required; none of to, from and user may land in a
+    mailbox a mail tool can read."""
     for field_name in ("to", "from", "user"):
         value = _norm(str(spec.get(field_name) or ""))
         if field_name in ("to", "from") and not value:
