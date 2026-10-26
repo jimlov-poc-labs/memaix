@@ -1292,3 +1292,240 @@ def test_code_channel_with_the_brief_webhook_id_is_refused_end_to_end(wired, mon
     with pytest.raises(PermissionError, match="osäker kanalkonfiguration") as exc:
         server.email_send_unlock_request(ctx=_Ctx("s1"))
     assert http.posts == [] and "HEMLIGT" not in str(exc.value)
+
+
+# --- URL parser differential (Simon, third review) ----------------------
+# stdlib urlparse and urllib3 (what requests sends with) disagreed on
+# "https://attacker.test\@discord.com/...": the guard and the "already
+# stored" check saw discord.com, the POST went to attacker.test.
+
+_EVIL_DISCORD = _DISCORD.replace("https://discord.com", "https://attacker.test\\@discord.com")
+
+
+@pytest.fixture()
+def real_requests(monkeypatch):
+    """Real requests stack; records the URL urllib3 sends to and every DNS lookup."""
+    import socket
+
+    import requests
+
+    seen = SimpleNamespace(posted=[], resolved=[])
+
+    def fake_send(self, req, **kw):
+        seen.posted.append(req.url)
+        resp = requests.Response()
+        resp.status_code = 204
+        resp._content = b""
+        return resp
+
+    def gai(host, *a, **k):
+        seen.resolved.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("162.159.135.232", 443))]
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", fake_send)
+    monkeypatch.setattr(socket, "getaddrinfo", gai)
+    monkeypatch.setattr(server, "_brief_tools_for_user", lambda: {})
+    return seen
+
+
+@pytest.mark.parametrize("url,why", [
+    (_EVIL_DISCORD, "backslash"),
+    ("https://discord.com/api/a\\b", "backslash"),            # only the backslash check sees this
+    ("https://discord.com/api/a b", "whitespace"),
+    ("https://discord.com/api/a\tb", "whitespace"),           # urlsplit drops tab/CR/LF silently
+    ("https://discord.com/api/a\r\nX: y", "whitespace"),
+    ("\thttps://discord.com/api/x", "whitespace"),
+    ("https://discord.com/api/a\x7fb", "whitespace"),
+    ("https://user@discord.com/api/x", "user info"),          # same host in both parsers: only the @ check
+    ("https://discord.com%2eattacker.test/x", "percent-encoded"),
+    ("https://discord.com:99999/x", "could not be parsed"),
+])
+def test_ambiguous_urls_are_refused_without_echoing_them(url, why):
+    from memaix_gateway.safety.net import BlockedURLError, validate_external_url
+
+    for resolve in (False, True):
+        with pytest.raises(BlockedURLError, match=why) as exc:
+            validate_external_url(url, resolve=resolve)
+        assert "HEMLIGT" not in str(exc.value) and "99999" not in str(exc.value)
+
+
+@pytest.mark.parametrize("url", [
+    "https://discord.com/api/a%5Cb",          # %5C in the path is just a path byte
+    "https://DISCORD.com/api/x",
+    "https://discord.com./api/x",
+    "https://bücher.de/x",                    # urlparse: unicode, urllib3: punycode
+    "https://xn--bcher-kva.de/x",
+    "https://[2606:4700::6810:84e5]/x",
+])
+def test_unambiguous_urls_still_pass(url):
+    from memaix_gateway.safety.net import validate_external_url
+
+    assert validate_external_url(url, resolve=False) == url
+
+
+def test_parser_disagreement_on_host_is_refused(monkeypatch):
+    # The last line of defence: whatever trick a future urllib3 falls for,
+    # a host that differs between the parsers is refused.
+    import urllib3.util
+
+    from memaix_gateway.safety.net import BlockedURLError, validate_external_url
+
+    real = urllib3.util.parse_url
+    monkeypatch.setattr(urllib3.util, "parse_url", lambda u: real(u.replace("discord.com", "attacker.test")))
+    with pytest.raises(BlockedURLError, match="ambiguous"):
+        validate_external_url("https://discord.com/x", resolve=False)
+
+
+def test_backslash_discord_hook_cannot_replace_the_stored_one(wired, real_requests):
+    # Simon's probe: store the real hook unlocked, then try the look-alike
+    # from a locked session. It used to be accepted as "already stored".
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    hook = {"type": "webhook", "url": _DISCORD, "format": "discord"}
+    server.brief_configure(True, channels=[hook], ctx=ctx)
+    evil = {"type": "webhook", "format": "discord", "url": _EVIL_DISCORD}
+    with pytest.raises(ValueError, match="backslash") as exc:
+        server.brief_configure(True, channels=[evil], ctx=_Ctx("locked"))
+    assert "HEMLIGT" not in str(exc.value)
+    assert server._get_notify().get_prefs("jimmy")["channels"] == [hook]
+    server.brief_send_now()
+    assert real_requests.posted and not any("attacker.test" in u for u in real_requests.posted)
+
+
+@pytest.mark.parametrize("evil", [
+    {"type": "webhook", "format": "discord", "url": _EVIL_DISCORD},
+    {"type": "ntfy", "topic": "brief", "server": "https://attacker.test\\@ntfy.sh"},
+    {"type": "webhook", "format": "raw", "url": "https://user@discord.com/api/webhooks/1/x"},
+])
+def test_already_stored_ambiguous_channel_never_sends(wired, real_requests, evil):
+    # Stored before the fix (or written straight to the store): the send-time
+    # check must refuse it on its own.
+    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", enabled=True, channels=[evil])
+    out = server.brief_send_now()
+    assert real_requests.posted == [] and "attacker.test" not in real_requests.resolved
+    assert "HEMLIGT" not in repr(out) and "attacker" not in repr(out)
+
+
+def test_eve_cannot_exfiltrate_by_mcp_with_or_without_lock(wired, smtp_spy, monkeypatch):
+    monkeypatch.setenv("MEMAIX_USER", "eve")
+    for enabled in (True, False):
+        wired.cfg["memaix"]["mail_send_unlock"]["enabled"] = enabled
+        with pytest.raises(server.AccessDenied):
+            server.brief_configure(True, "07:00", "UTC", channels=[_EVE_EXFIL], ctx=_Ctx("s1"))
+    server._get_notify().set_prefs("eve", now_iso="x", enabled=True, channels=[_EVE_EXFIL])
+    with pytest.raises(server.AccessDenied):
+        server.brief_send_now()
+    assert smtp_spy == []
+
+
+# --- Discord / ntfy identity: scheme + host + port ----------------------
+
+
+def _ident(spec):
+    from memaix_gateway.notify.channels import channel_identity
+
+    return channel_identity(spec)
+
+
+def test_discord_identity_needs_https_on_the_standard_port():
+    hook = {"type": "webhook", "url": _DISCORD}
+    assert _ident(hook) == "discord:1234567890"
+    assert _ident({"type": "webhook", "url": _DISCORD.replace("discord.com", "discord.com:443")}) == _ident(hook)
+    assert _ident({"type": "webhook", "url": _DISCORD.replace("discord.com", "canary.discord.com")}) == _ident(hook)
+    for bad in (_DISCORD.replace("https:", "http:"), _DISCORD.replace("discord.com", "discord.com:8443"),
+                _DISCORD.replace("https://discord.com", "http://discord.com."), _EVIL_DISCORD):
+        assert _ident({"type": "webhook", "url": bad}) != _ident(hook)
+
+
+@pytest.mark.parametrize("bad", [
+    _DISCORD.replace("https:", "http:"),
+    _DISCORD.replace("discord.com", "discord.com:8443"),
+    _DISCORD.replace("https://discord.com", "http://DISCORD.com."),
+])
+def test_non_https_discord_hook_is_refused_as_a_channel(wired, bad):
+    from memaix_gateway.notify.channels import build_channels
+
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)  # refused even unlocked: the token would travel in the clear / elsewhere
+    for fmt in ("discord", "raw"):
+        with pytest.raises(ValueError, match="https på standardport"):
+            server.brief_configure(True, channels=[{"type": "webhook", "url": bad, "format": fmt}], ctx=ctx)
+    # Already stored: build_channels skips it.
+    assert build_channels([{"type": "webhook", "url": bad, "format": "discord"}], _http=_Http()) == []
+
+
+def test_ntfy_identity_is_scheme_host_port_and_topic():
+    base = _ident({"type": "ntfy", "topic": "brief"})
+    assert _ident({"type": "ntfy", "topic": "brief", "server": "https://ntfy.sh/"}) == base
+    assert _ident({"type": "ntfy", "topic": "brief", "server": "https://NTFY.sh:443"}) == base
+    for other in ({"server": "http://ntfy.sh"}, {"server": "https://ntfy.sh:8443"},
+                  {"server": "https://ntfy.example"}, {"topic": "brief2"}):
+        assert _ident({"type": "ntfy", "topic": "brief", **other}) != base
+    bad = {"type": "ntfy", "topic": "brief", "server": "https://attacker.test\\@ntfy.sh"}
+    assert _ident(bad) != _ident(bad)  # an unparseable destination matches nothing, not even itself
+
+
+def test_ntfy_scheme_change_needs_the_unlock(wired):
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    server.brief_configure(True, channels=[{"type": "ntfy", "topic": "brief"}], ctx=ctx)
+    # Same list again from a locked session: fine (nothing new).
+    server.brief_configure(True, channels=[{"type": "ntfy", "topic": "brief", "server": "https://ntfy.sh"}],
+                           ctx=_Ctx("locked"))
+    with pytest.raises(mu.SendLocked):
+        server.brief_configure(True, channels=[{"type": "ntfy", "topic": "brief", "server": "http://ntfy.sh"}],
+                               ctx=_Ctx("locked"))
+
+
+@pytest.mark.parametrize("topic", ["a/b", "a?b", "x" * 65, "", "a\\b"])
+def test_ntfy_topic_must_be_a_plain_name(wired, topic):
+    with pytest.raises(ValueError):
+        server.brief_configure(True, channels=[{"type": "ntfy", "topic": topic}], ctx=_Ctx("s1"))
+
+
+# --- Rules: fail closed, webhook triggers -------------------------------
+
+
+@pytest.mark.parametrize("broken", ["raises", "bad_value"])
+def test_send_lock_stays_on_when_config_cannot_be_read(wired, tmp_path, monkeypatch, broken):
+    from memaix_gateway.rules.actions import _send_lock_enabled
+    from memaix_gateway.rules.engine import evaluate
+
+    if broken == "raises":
+        def _boom(*a, **k):
+            raise OSError("config unreadable")
+        monkeypatch.setattr(config, "load", _boom)
+    else:
+        bad = {"memaix": {"mail_send_unlock": {"enabled": False, "ttl_hours": "abc"}}}
+        monkeypatch.setattr(config, "load", lambda *a, **k: bad)
+    assert _send_lock_enabled() is True
+    rules, _ = _mail_rule(tmp_path)
+    hook = _Hook()
+    event = {"type": "mail", "project": "memaix", "id": "m1", "payload": {"subject": "x"}}
+    (res,) = evaluate(rules, wired.acl, event, tools={"_channels": [hook]})
+    assert res["ok"] is False and "send_locked" in res["actions"][0]["error"] and hook.sent == []
+
+
+def test_webhook_triggered_notify_is_refused_under_the_lock(wired, tmp_path):
+    from memaix_gateway.rules.actions import run_action
+    from memaix_gateway.rules.engine import evaluate
+
+    rules = RulesStore.for_path(tmp_path / "rules-webhook.db")
+    rules.add_rule("jimmy", "memaix", "n8n", {"type": "webhook", "token": "delad-hemlighet"},
+                   [{"type": "notify", "params": {"text_from": "subject"}}], None)
+    hook = _Hook()
+    payload = {"token": "delad-hemlighet", "subject": "vidarebefordrat mejl"}
+    event = {"type": "webhook", "project": "memaix", "id": "w1", "payload": payload}
+    (res,) = evaluate(rules, wired.acl, event, tools={"_channels": [hook]})
+    assert res["ok"] is False and "send_locked" in res["actions"][0]["error"] and hook.sent == []
+    # Unknown or missing trigger type: refused too (allowlist).
+    action = {"type": "notify", "params": {"text": "x"}}
+    for trigger in (None, "something-new"):
+        assert run_action(wired.acl, "jimmy", action, {}, tools={"_channels": [hook]}, trigger_type=trigger)["ok"] is False
+    # Our own triggers still notify.
+    assert run_action(wired.acl, "jimmy", action, {}, tools={"_channels": [hook]}, trigger_type="schedule")["ok"]
+    assert hook.sent == ["x"]
+    # Control: lock off, the webhook rule notifies as before.
+    wired.cfg["memaix"]["mail_send_unlock"]["enabled"] = False
+    (res,) = evaluate(rules, wired.acl, {**event, "id": "w2"}, tools={"_channels": [hook]})
+    assert res["ok"] is True and hook.sent == ["x", "vidarebefordrat mejl"]

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -1156,6 +1157,7 @@ def _validate_timezone(tz_name: str) -> None:
 
 
 def _validate_channels(channels: list[dict] | None) -> None:
+    from .notify.channels import _discord_id, ntfy_url
     from .safety.net import BlockedURLError, validate_external_url
 
     for spec in channels or []:
@@ -1174,10 +1176,21 @@ def _validate_channels(channels: list[dict] | None) -> None:
         # SSRF guard for the URLs the server will POST brief content to.
         # resolve=False at config-time; the authoritative resolve happens in
         # notify/channels.py right before the request.
-        url = spec.get("url") if spec.get("type") == "webhook" else spec.get("server")
+        # Webhook: the URL itself. ntfy: the URL NtfyChannel posts to
+        # (server + topic, default server included), so what is checked is
+        # what is sent. A Discord host must be https on the standard port.
+        url: str | None = None
+        if spec.get("type") == "ntfy":
+            topic = str(spec.get("topic") or "")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", topic):
+                raise ValueError("ntfy topic must be 1-64 characters A-Z, a-z, 0-9, _ or -")
+            url = ntfy_url(spec.get("server"), topic)
+        elif spec.get("type") == "webhook":
+            url = spec.get("url")
         if url:
             try:
                 validate_external_url(url, resolve=False)
+                _discord_id(url)
             except BlockedURLError as exc:
                 raise ValueError(f"channel url avvisad: {exc}") from exc
 

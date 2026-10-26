@@ -87,8 +87,53 @@ class EmailChannel:
             s.send_message(msg)
 
 
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
+def _destination(url: str) -> tuple[str, str, int, str, str]:
+    """(scheme, host, port, path, query) the HTTP client will really use.
+
+    Raises BlockedURLError if the URL is not a plain external http(s) URL
+    or its host is ambiguous between parsers (safety/net.py). Parsed with
+    urllib3, the parser requests sends with, so an identity built from it
+    describes where the POST goes — not where urlparse thinks it goes."""
+    from urllib3.util import parse_url
+
+    from ..safety.net import sent_host, validate_external_url
+
+    validate_external_url(url, resolve=False)
+    parts = parse_url(url)
+    scheme = (parts.scheme or "").lower()
+    return scheme, sent_host(url), parts.port or _DEFAULT_PORTS.get(scheme, 0), parts.path or "", parts.query or ""
+
+
+def _discord_id(url: str) -> str | None:
+    """Webhook id if `url` is a Discord webhook Memaix may post to, else None.
+
+    Raises ValueError for a URL on a Discord host that is not https on the
+    standard port: the path carries the webhook token, so plain http or an
+    odd port would send it somewhere it should not go."""
+    from ..tools.mail_unlock import _DISCORD_HOSTS, _DISCORD_PATH
+
+    scheme, host, port, path, _query = _destination(url)
+    if host.rstrip(".") not in _DISCORD_HOSTS:
+        return None
+    if scheme != "https" or port != 443:
+        raise ValueError("Discord-webhooks måste vara https på standardport")
+    m = _DISCORD_PATH.match(path)
+    return m.group(1) if m else None
+
+
+def ntfy_url(server: str | None, topic: str) -> str:
+    """The URL NtfyChannel posts to (one place, so identity and send agree)."""
+    return f"{(server or 'https://ntfy.sh').rstrip('/')}/{topic}"
+
+
 class WebhookChannel:
     def __init__(self, url: str, fmt: str = "raw", *, _http=None) -> None:
+        # Refuse ambiguous / non-https Discord URLs at construction, so an
+        # already stored bad spec is skipped by build_channels on every send.
+        _discord_id(url)
         self._url = url
         self._fmt = fmt
         self._http = _http
@@ -138,11 +183,12 @@ class NtfyChannel:
         self._topic = topic
         self._server = server.rstrip("/")
         self._http = _http
+        _destination(ntfy_url(self._server, self._topic))
 
     # channel interface fixes this signature
     def send(self, subject: str, markdown: str, text: str) -> None:  # NOSONAR
         http = self._http
-        url = f"{self._server}/{self._topic}"
+        url = ntfy_url(self._server, self._topic)
         if http is None:
             import requests
             http = requests
@@ -168,28 +214,36 @@ def channel_identity(spec: dict) -> str:
     Used to decide whether a destination is already stored, so it must not
     match loosely: two specs share an identity only if they reach the same
     place. Email is (sending project, recipient). A Discord webhook is its
-    id (globally unique; host aliases and the token cannot point elsewhere).
-    Any other webhook is scheme + host + port + path + query — unlike the
+    id, but only over https on the standard port to a Discord host (aliases
+    reach the same webhook). Any other webhook, and ntfy, is scheme + host +
+    port + path + query as the HTTP client parses it. A URL that
+    safety/net.py refuses gets an identity that matches nothing. Unlike the
     unlock check's webhook_identity, which matches loosely on purpose
     because there a match means "refuse".
     """
-    from urllib.parse import urlsplit
+    import secrets
 
-    from ..tools.mail_unlock import ntfy_identity, webhook_identity
+    from ..safety.net import BlockedURLError
 
     ctype = (spec or {}).get("type")
     if ctype == "email":
         return f"email:{spec.get('project') or ''}:{str(spec.get('to') or '').strip().lower()}"
-    if ctype == "webhook":
-        url = str(spec.get("url") or "").strip()
-        loose = webhook_identity(url)
-        if loose.startswith("discord:"):
-            return loose
-        parts = urlsplit(url)
-        return f"url:{parts.scheme.lower()}://{(parts.hostname or '').lower()}:{parts.port}{parts.path}?{parts.query}"
-    if ctype == "ntfy":
-        return ntfy_identity(spec.get("server"), spec.get("topic"))
-    return f"other:{ctype}"
+    if ctype not in ("webhook", "ntfy"):
+        return f"other:{ctype}"
+    try:
+        if ctype == "webhook":
+            url = str(spec.get("url") or "")
+            hook_id = _discord_id(url)
+            if hook_id:
+                return f"discord:{hook_id}"
+            prefix = "url"
+        else:
+            url = ntfy_url(spec.get("server"), str(spec.get("topic") or ""))
+            prefix = "ntfy"
+        scheme, host, port, path, query = _destination(url)
+    except (BlockedURLError, ValueError):
+        return f"invalid:{secrets.token_hex(8)}"
+    return f"{prefix}:{scheme}://{host}:{port}{path}?{query}"
 
 
 def may_send_from(acl, user: str | None, project: str | None) -> bool:

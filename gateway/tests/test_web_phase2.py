@@ -381,6 +381,26 @@ def test_brief_web_email_channel_needs_owner_of_its_project(rig, tmp_path, monke
     assert client.post("/app/api/brief", json={"channels": [channel]}).status_code == 200
 
 
+@pytest.mark.parametrize("channel", [
+    {"type": "webhook", "url": "https://attacker.test\\@discord.com/api/webhooks/1/HEMLIGT"},
+    {"type": "webhook", "url": "http://discord.com/api/webhooks/1/HEMLIGT"},
+    {"type": "ntfy", "topic": "brief", "server": "https://attacker.test\\@ntfy.sh"},
+])
+def test_brief_web_refuses_ambiguous_or_plain_http_discord_urls(rig, tmp_path, monkeypatch, channel):
+    # The web path has no send lock (a human sets it), but the same URL
+    # checks: the owner must not be tricked into a look-alike destination.
+    client, current, _, _, _ = rig
+    from memaix_gateway.notify.store import NotifyStore
+    from memaix_gateway.web.api import brief as brief_mod
+
+    store = NotifyStore.for_path(tmp_path / "notify.db")
+    monkeypatch.setattr(brief_mod, "_notify_store", lambda: store)
+    current["user"] = "alice"
+    resp = client.post("/app/api/brief", json={"channels": [channel]})
+    assert resp.status_code == 400 and "HEMLIGT" not in resp.text
+    assert store.get_prefs("alice") is None
+
+
 def test_search_requires_auth_and_empty_query_ok(rig, monkeypatch):
     client, _, _, _, _ = rig
     assert client.get("/app/api/search?q=").json()["results"] == []

@@ -7,7 +7,8 @@ own outbox gate (tools/email.py) already queues it for approval when the
 project is in 'review' mode, so a rule can never bypass the outbox.
 `notify` is the exception: it posts to the user's brief channels, so with
 memaix.mail_send_unlock on it skips email channels and is refused outright
-when the rule was fired by a mail trigger.
+unless the rule was fired by a trigger whose payload is our own (schedule,
+internal). Mail and webhook triggers carry outside content.
 """
 
 from __future__ import annotations
@@ -68,10 +69,15 @@ def _default_action_dispatch() -> dict[str, Callable]:
     }
 
 
-# Triggers whose payload is outside content (a mail someone sent us). With
-# the send lock on, a rule fired by one must not reach any outgoing channel:
-# that would be the auto-chain "read mail -> outgoing" (AGENTS.md §2).
-_EXTERNAL_CONTENT_TRIGGERS = {"mail"}
+# Triggers whose payload Memaix produced itself. With the send lock on, notify
+# from any other trigger is refused: a mail trigger carries a mail someone
+# sent us, and a webhook trigger carries whatever the caller posted — n8n
+# forwarding mail makes that the same auto-chain "read mail -> outgoing"
+# (AGENTS.md §2). An allowlist, so an unknown or missing trigger type is
+# refused too. Refused rather than limited to owner-approved channels: an
+# approval flag on a brief channel would be one more field the model can
+# set through brief_configure, and the send lock would have to guard it.
+_OWN_CONTENT_TRIGGERS = {"schedule", "internal"}
 
 
 def _send_lock_enabled() -> bool:
@@ -126,7 +132,7 @@ def run_action(
     """Execute one rule action. Never raises — failures come back as {"ok": False, "error": ...}.
 
     trigger_type is the type of the rule's trigger; with the send lock on, a
-    notify fired by a mail trigger is refused."""
+    notify is refused unless it is "schedule" or "internal"."""
     action_type = action.get("type")
     if not isinstance(action_type, str):
         return {"ok": False, "error": "action must include a string 'type'"}
@@ -138,11 +144,11 @@ def run_action(
 
     if action_type == "notify":
         locked = _send_lock_enabled()
-        if locked and trigger_type in _EXTERNAL_CONTENT_TRIGGERS:
+        if locked and trigger_type not in _OWN_CONTENT_TRIGGERS:
             result = {
                 "ok": False,
-                "error": "send_locked: notify från en mejlutlöst regel är spärrad när "
-                         "memaix.mail_send_unlock är på (ingen auto-kedja)",
+                "error": f"send_locked: notify från en regel med utlösaren {trigger_type!r} är spärrad "
+                         "(bara schedule/internal tillåts) när memaix.mail_send_unlock är på (ingen auto-kedja)",
             }
         else:
             result = _run_notify(acl, user, params, tools=tools, locked=locked)

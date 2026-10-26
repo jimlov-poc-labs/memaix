@@ -136,19 +136,25 @@ styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det
   session. Kontrollen görs före godkännandet, så en vägrad åtgärd ligger kvar som `pending`;
 - regelåtgärder (`rules`) som skickar mejl vägras, eftersom de saknar session. Det gäller även
   `notify`: dess e-postkanaler hoppas över;
-- `notify` från en regel som utlöses av ett mejl (`trigger.type: mail`) vägras helt, så att läst mejl aldrig
-  kedjas till en utgående kanal;
+- `notify` från en regel vägras helt om regeln inte utlöses av `schedule` eller `internal`. Det gäller
+  `trigger.type: mail` (läst mejl) och `trigger.type: webhook`: en webhook bär det anroparen postade, och
+  om n8n vidarebefordrar mejl är det samma auto-kedja. Okända eller saknade utlösartyper vägras också.
+  Vi valde att vägra hellre än att låta ägaren märka vissa kanaler som tillåtna för regler: en sådan
+  flagga vore ett fält till som modellen kan sätta via `brief_configure`, och spärren skulle behöva
+  vakta det också. Vill du ha notiser från n8n med spärren på, låt n8n posta direkt till kanalen.
+  Kan konfigurationen inte läsas räknas spärren som påslagen;
 - `brief_configure` får inte lägga till en **ny** mottagare (e-postadress/projekt, webhook, ntfy-ämne) utan
   upplåst session och ägarroll. Att behålla, ta bort, ordna om eller byta format på redan sparade mottagare
-  kräver ingen kod. En Discord-webhook känns igen på sitt id (värdalias räknas som samma); andra webhooks
-  måste stämma exakt i schema, värd, port, sökväg och query;
+  kräver ingen kod. En Discord-webhook känns igen på sitt id (värdalias räknas som samma) men bara över
+  `https` på standardport; andra webhooks och ntfy måste stämma exakt i schema, värd, port, sökväg (ämne)
+  och query. Identiteten räknas fram med samma URL-parser som `requests` skickar med (urllib3);
 - forward och reply kräver som förut upplåst session.
 
 Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
 människan själv besvarar i klienten), systemutskick (`_confirmed=True`: bokningsbekräftelser och
 utkorgsåtgärder som en människa godkänt), brief-inställningar i webbgränssnittet (där sitter människan,
 inte modellen) och **utskick till redan sparade brief-mottagare**: den schemalagda briefen, `brief_send_now`
-och `notify` från andra utlösare än mejl (utom till e-postkanaler, se ovan). Mottagare som sparades innan spärren slogs på räknas som sparade;
+och `notify` från `schedule`/`internal`-regler (utom till e-postkanaler, se ovan). Mottagare som sparades innan spärren slogs på räknas som sparade;
 gå igenom dem (`brief_status`) innan du slår på `enabled`.
 
 **Brief-kanaler och RBAC.** En e-postkanal skickar från projektets låda och kräver därför ägarroll i det
@@ -169,6 +175,12 @@ skicka från ett projekt där du är collaborator), `allow_send` **och** en uppl
   **Discord-webhook i en kanal som inga botar kan läsa** som kodkanal.
 - **Kodkanalens webhook måste vara en annan än brief-webhooken** (annat Discord-webhook-id; samma id med
   annan token eller värdalias räknas som samma webhook och vägras).
+- **URL:er som två parsare kan läsa olika vägras överallt** (`safety/net.py`, både när kanalen sparas och
+  före varje utskick, även för redan sparade kanaler och iCal-URL:er): bakstreck, blanksteg och
+  kontrolltecken, användarinfo (`user@värd`), procentkodad värd, och värd som stdlib och urllib3 tolkar
+  olika. Granskning 2026-10-26: `https://attacker.test\@discord.com/...` var discord.com för kontrollen
+  men attacker.test för `requests`. En Discord-värd kräver dessutom `https` på standardport, och ett
+  ntfy-ämne får bara innehålla A-Z, a-z, 0-9, `_` och `-`.
 - **Reply-To-varningen är information, inte en spärr.** Modellen kan själv anropa `email_reply` med
   `confirm_reply_to=True`; den som läser chatten ska se varningen innan det sker.
 - **Det finns ingen hård mottagar-allowlist.** En upplåst session kan skicka till vilken adress som helst.
