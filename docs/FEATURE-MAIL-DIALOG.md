@@ -140,14 +140,15 @@ styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det
   kedjas till en utgående kanal;
 - `brief_configure` får inte lägga till en **ny** mottagare (e-postadress/projekt, webhook, ntfy-ämne) utan
   upplåst session och ägarroll. Att behålla, ta bort, ordna om eller byta format på redan sparade mottagare
-  kräver ingen kod. Jämförelsen normaliserar som kodkanalskontrollen (Discord-alias via webhook-id);
+  kräver ingen kod. En Discord-webhook känns igen på sitt id (värdalias räknas som samma); andra webhooks
+  måste stämma exakt i schema, värd, port, sökväg och query;
 - forward och reply kräver som förut upplåst session.
 
 Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
 människan själv besvarar i klienten), systemutskick (`_confirmed=True`: bokningsbekräftelser och
 utkorgsåtgärder som en människa godkänt), brief-inställningar i webbgränssnittet (där sitter människan,
 inte modellen) och **utskick till redan sparade brief-mottagare**: den schemalagda briefen, `brief_send_now`
-och `notify` från andra utlösare än mejl. Mottagare som sparades innan spärren slogs på räknas som sparade;
+och `notify` från andra utlösare än mejl (utom till e-postkanaler, se ovan). Mottagare som sparades innan spärren slogs på räknas som sparade;
 gå igenom dem (`brief_status`) innan du slår på `enabled`.
 
 **Brief-kanaler och RBAC.** En e-postkanal skickar från projektets låda och kräver därför ägarroll i det

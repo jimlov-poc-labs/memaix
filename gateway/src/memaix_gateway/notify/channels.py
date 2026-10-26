@@ -165,17 +165,28 @@ class NtfyChannel:
 def channel_identity(spec: dict) -> str:
     """Comparable identity of a brief channel's destination.
 
-    Email is (sending project, recipient): the project picks the mailbox the
-    mail goes out from. Webhooks and ntfy topics use the same normalisation
-    as the unlock-channel check (Discord host aliases are one webhook id).
+    Used to decide whether a destination is already stored, so it must not
+    match loosely: two specs share an identity only if they reach the same
+    place. Email is (sending project, recipient). A Discord webhook is its
+    id (globally unique; host aliases and the token cannot point elsewhere).
+    Any other webhook is scheme + host + port + path + query — unlike the
+    unlock check's webhook_identity, which matches loosely on purpose
+    because there a match means "refuse".
     """
+    from urllib.parse import urlsplit
+
     from ..tools.mail_unlock import ntfy_identity, webhook_identity
 
     ctype = (spec or {}).get("type")
     if ctype == "email":
         return f"email:{spec.get('project') or ''}:{str(spec.get('to') or '').strip().lower()}"
     if ctype == "webhook":
-        return webhook_identity(spec.get("url"))
+        url = str(spec.get("url") or "").strip()
+        loose = webhook_identity(url)
+        if loose.startswith("discord:"):
+            return loose
+        parts = urlsplit(url)
+        return f"url:{parts.scheme.lower()}://{(parts.hostname or '').lower()}:{parts.port}{parts.path}?{parts.query}"
     if ctype == "ntfy":
         return ntfy_identity(spec.get("server"), spec.get("topic"))
     return f"other:{ctype}"

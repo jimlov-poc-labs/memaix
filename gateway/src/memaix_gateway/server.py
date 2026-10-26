@@ -1337,6 +1337,11 @@ def brief_send_now() -> dict:
     from datetime import timezone as _tz
 
     from .notify.deliver import deliver
+
+    # RBAC before anything is sent: a stored email channel in a project the
+    # user does not own is a denial, not a silent skip (build_channels also
+    # skips it, as the backstop for the scheduled brief).
+    _check_email_channel_owner(acl, user, prefs.get("channels"), "brief_send_now")
     result = deliver(
         store, acl, config.load(), user, prefs,
         now=datetime.now(_tz.utc), force=True, tools=_brief_tools_for_user(),

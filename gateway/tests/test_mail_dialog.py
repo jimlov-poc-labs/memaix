@@ -1127,14 +1127,27 @@ def test_brief_send_now_never_sends_from_a_mailbox_the_user_does_not_own(wired, 
     # check must hold on its own.
     server._get_notify().set_prefs("eve", now_iso="2026-10-26T00:00:00", enabled=True, channels=[_EVE_EXFIL])
     monkeypatch.setenv("MEMAIX_USER", "eve")
-    server.brief_send_now()
+    with pytest.raises(server.AccessDenied):
+        server.brief_send_now()
     assert smtp_spy == []
+    assert any(r["tool"] == "brief_send_now" and not r["ok"] for r in server._get_audit().tail(50))
     # The owner's own email channel still goes out (control).
     server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", enabled=True,
                                    channels=[{"type": "email", "to": "jimmy@x.se", "project": "jimlov"}])
     monkeypatch.setenv("MEMAIX_USER", "jimmy")
     assert server.brief_send_now()["delivered"] == 1
     assert [m["To"] for m in smtp_spy] == ["jimmy@x.se"]
+
+
+def test_scheduled_brief_never_sends_from_a_mailbox_the_user_does_not_own(wired, smtp_spy):
+    # The scheduler has no precheck of its own: build_channels is the backstop.
+    from datetime import datetime, timezone
+
+    from memaix_gateway.notify.deliver import deliver
+
+    prefs = server._get_notify().set_prefs("eve", now_iso="2026-10-26T00:00:00", enabled=True, channels=[_EVE_EXFIL])
+    deliver(server._get_notify(), wired.acl, wired.cfg, "eve", prefs, now=datetime.now(timezone.utc), tools={})
+    assert smtp_spy == []
 
 
 def test_brief_never_covers_a_project_without_grant(wired):
@@ -1166,12 +1179,20 @@ def test_new_brief_destination_needs_an_unlocked_session(wired, tmp_path):
     server.brief_configure(True, channels=[alias], ctx=other)
     server.brief_configure(True, channels=[hook], ctx=other)
     server.brief_configure(False, ctx=other)  # channels=None: untouched
-    # ... but every kind of new destination is locked.
-    for new in ({"type": "ntfy", "topic": _TOPIC},
-                {"type": "webhook", "url": "https://hooks.example.com/x"},
+    # ... but every kind of new destination is locked, including a stored
+    # plain webhook with another port or query (strict match, not the loose
+    # one the unlock-channel check uses).
+    plain = {"type": "webhook", "url": "https://hooks.example.com/x"}
+    _unlock(wired, ctx)
+    server.brief_configure(True, channels=[hook, plain], ctx=ctx)
+    for new in ({"type": "webhook", "url": "https://hooks.example.com:8443/x"},
+                {"type": "webhook", "url": "https://hooks.example.com/x?to=evil"},
+                {"type": "ntfy", "topic": _TOPIC},
+                {"type": "webhook", "url": "https://other.example.com/x"},
                 {"type": "email", "to": "x@attacker.test", "project": "jimlov"}):
         with pytest.raises(mu.SendLocked):
-            server.brief_configure(True, channels=[hook, new], ctx=other)
+            server.brief_configure(True, channels=[hook, plain, new], ctx=other)
+    server.brief_configure(True, channels=[plain], ctx=other)  # removing stays free
     assert len(server._get_notify().get_prefs("jimmy")["channels"]) == 1
 
 
