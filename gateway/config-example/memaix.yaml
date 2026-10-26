@@ -44,3 +44,19 @@ server:
 #   ssh_key_file: "/app/config/secrets/nc-provision-key"       # 0600
 #   ssh_known_hosts: "/app/config/secrets/nc-provision-known_hosts"
 #   quota: "2GB"
+
+# mail_send_unlock: email_forward/email_reply (och, när enabled, ALLA
+# mejlutskick från en modell) kräver en chattsession upplåst med en
+# engångskod som skickas utanför chatten (docs/FEATURE-MAIL-DIALOG.md).
+# Kanalens URL/ämne/token anges helst som *_ref och visas aldrig för modellen.
+# mail_send_unlock:
+#   enabled: true
+#   ttl_hours: 4
+#   channels:
+#     - {type: discord, url_ref: "env:UNLOCK_DISCORD_WEBHOOK"}   # utan ?wait=true
+#     # - {type: ntfy, topic_ref: "env:UNLOCK_NTFY_TOPIC", token_ref: "env:UNLOCK_NTFY_TOKEN"}
+#     #   (ämnet minst 24 slumptecken; får inte vara samma som en brief-kanal)
+#
+# mail_dialog: tak för email_reply(reply_all=True).
+# mail_dialog:
+#   reply_all_max_cc: 20

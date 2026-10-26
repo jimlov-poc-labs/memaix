@@ -13,7 +13,7 @@ Status: byggd (gren `feat/mail-dialog-client`, 2026-10-26). Kod: `gateway/src/me
 | `email_archive(items, project?, folder="INBOX")` | collaborator | Flyttar till lådans SPECIAL-USE `\Archive`-mapp (reserv: kända namn som `Archive`/`Arkiv`). Skapar aldrig mappar; saknas mappen rapporteras det. |
 | `email_move(items, destination, project?, folder="INBOX")` | collaborator | Flyttar till en befintlig mapp. |
 | `email_forward(item, to, note="", mode="inline", ...)` | owner + upplåst | Inline med citat och originalets bilagor, eller hela originalet som `.eml` (`mode="attachment"`). |
-| `email_reply(item, body, reply_all=False, quote=True, ...)` | owner + upplåst | `In-Reply-To`/`References`, `Re:`, svarar Reply-To (annars From); svara-alla lägger till To/Cc utom den egna adressen. |
+| `email_reply(item, body, reply_all=False, quote=True, confirm_reply_to=False, ...)` | owner + upplåst | `In-Reply-To`/`References`, `Re:`, svarar Reply-To (annars From); svara-alla lägger till To/Cc utom den egna adressen. Se "Reply-To och svara-alla" nedan. |
 | `email_send_unlock_request()` | owner | Skickar en engångskod till ägaren utanför chatten. |
 | `email_send_unlock(code)` | owner | Låser upp den här MCP-sessionen. |
 | `email_send_lock()` | alla | Låser direkt igen. |
@@ -67,32 +67,89 @@ Nekas alltid:
 
 Ett mejl kan alltså inte låsa upp något. Tillståndet ligger i minnet, så en omstart låser alla sessioner.
 
-**Kanaler.** `ntfy`, `webhook` eller `smtp`, där `smtp` är ett eget avsändarkonto med `host`, `port`,
-`user`, `password_ref`, `from` och `to`. Kanaltypen `email` från notiserna går **inte**: den skickar från en
-projektlåda som modellen kan läsa. En `smtp`-kanal vägras om `to`, `from` eller `user` är en adress som
-något mejlverktyg kan läsa, alltså alla acl.yaml-lådor och alla länkade konton för alla användare. Annars
-kunde modellen läsa koden själv.
+**Vad en "session" är.** Över HTTP: (användare, OAuth-klientens `client_id`, `Mcp-Session-Id`). mcp-SDK:n
+vägrar sedan 1.27.2 ett session-id från en annan credential än den som skapade sessionen (därav golvet
+`mcp>=1.27.2` i `pyproject.toml`). Memaix binder dessutom upplåsningen till `client_id` själv, så att den
+håller även om SDK-kontrollen skulle försvinna. **Över stdio** är hela processen en session
+(`stdio:{pid}`): alla chattar som delar samma stdio-process delar också upplåsningen. Kör en process per
+chatt om det spelar roll.
+
+**Kanaler.** Grundregeln: koden får inte hamna någonstans där modellen kan läsa den, och inget verktyg
+får visa var den skickas. Felmeddelanden, loggar och audit nämner bara kanaltyp, aldrig URL, ämne eller token.
+
+- `discord` (primär, Jimmys val 2026-10-26): en Discord-webhook, helst som `url_ref`. Koden ligger i
+  `content` så att den syns i push-notisen. Måste vara `https://discord.com/api/webhooks/<id>/<token>`
+  (eller discordapp.com, ptb., canary.). **Ingen query-sträng**: `?wait=true` får Discord att returnera
+  meddelandet med id, och med URL + id går meddelandet att läsa tillbaka. Svaret läses aldrig.
+- `ntfy`: ämnet (`topic` eller hellre `topic_ref`) måste vara minst 24 slumptecken (`A-Z a-z 0-9 _ -`),
+  eftersom vem som helst som kan ämnet kan läsa det. `token_ref` skickas som `Authorization: Bearer`
+  (för skyddade ämnen på egen server eller ntfy.sh-konto).
+- `webhook`: generisk JSON-post `{subject, text}`, samma krav som discord på https och ingen query-sträng.
+- `smtp`: ett eget avsändarkonto med `host`, `port`, `user`, `password_ref`, `from` och `to`.
+
+Vägras:
+
+- Kanaltypen `email` från notiserna: den skickar från en projektlåda som modellen kan läsa.
+- En `ntfy`-/`discord`-/`webhook`-kanal med samma ämne eller webhook som **någon användares brief-kanal**.
+  Brief-kanalerna sätter modellen själv via `brief_configure`, så de är kända för den. Jämförelsen
+  normaliserar (ntfy.sh som standardserver, värdnamnets skiftläge, Discords värdalias via webhook-id).
+- En `smtp`-kanal där `to`, `from` eller `user` hamnar i en låda som något mejlverktyg kan läsa (alla
+  acl.yaml-lådor och alla länkade konton för alla användare). Adresser normaliseras först: skiftläge,
+  `+tagg`, och för Gmail punkter och `googlemail.com`. Dessutom vägras **hela domänen** om en läsbar låda
+  ligger där (catch-all och alias på egna domäner, Outlook, iCloud och Proton går inte att härleda), utom
+  `gmail.com`/`googlemail.com` där normaliseringen täcker alla alias.
+
+En vägrad begäran räknas mot `max_requests`, så att modellen inte kan pröva sig fram till kodkanalen genom
+att ändra sin brief-kanal och se vilken begäran som vägras.
+
+`brief_status` och `brief_configure` maskerar ntfy-ämnen (`ab***`), webhook-URL:er (`https://värd/***`) och
+`*_ref`. Brief-leveransens fel rapporteras bara som kanal- och feltyp.
+
+I `memaix.yaml` (filens innehåll hamnar under `memaix.` i konfigurationen):
 
 ```yaml
-memaix:
-  mail_send_unlock:
-    enabled: true
-    ttl_hours: 4
-    code_ttl_minutes: 10
-    max_attempts: 5
-    max_requests: 3
-    request_window_minutes: 15
-    channels:
-      - {type: ntfy, topic: <hemligt-ämne>, server: https://ntfy.sh}
-      # - {type: smtp, host: smtp.purelymail.com, port: 465, user: kod@annan.se,
-      #    password_ref: env:UNLOCK_SMTP_PASSWORD, from: kod@annan.se, to: jimmy@annan.se}
+mail_send_unlock:
+  enabled: true
+  ttl_hours: 4
+  code_ttl_minutes: 10
+  max_attempts: 5
+  max_requests: 3
+  request_window_minutes: 15
+  channels:
+    - {type: discord, url_ref: "env:UNLOCK_DISCORD_WEBHOOK"}
+    # - {type: ntfy, topic_ref: "env:UNLOCK_NTFY_TOPIC", token_ref: "env:UNLOCK_NTFY_TOKEN"}
+    # - {type: smtp, host: smtp.purelymail.com, port: 465, user: kod@annan.se,
+    #    password_ref: env:UNLOCK_SMTP_PASSWORD, from: kod@annan.se, to: jimmy@annan.se}
+mail_dialog:
+  reply_all_max_cc: 20
 ```
 
-**Samspel med `allow_send`.** `allow_send: false` är fortfarande spärren per projekt. Forward och reply
-kräver `allow_send` **och** en upplåst session. `email_send` fungerar som förut, utom i projekt med
-`send_unlock: true` i acl.yaml: där kräver även `email_send` från en modell en upplåst session, och
-regelåtgärder (`rules`) som skickar vägras. Systemutskick (`_confirmed=True`: bokningsbekräftelser och
-utkorgsåtgärder som en människa godkänt) påverkas inte.
+**När upplåsningen är påslagen gäller den alla utgående vägar**, oavsett projektets flagga (granskning
+2026-10-26: annars bestämmer det svagaste projektet):
+
+- `email_send` från en modell kräver en upplåst session i **alla** projekt;
+- `outbox_approve` (MCP-verktyget) av en köad `email_send`/`email_forward`/`email_reply` kräver en upplåst
+  session. Kontrollen görs före godkännandet, så en vägrad åtgärd ligger kvar som `pending`;
+- regelåtgärder (`rules`) som skickar mejl vägras, eftersom de saknar session;
+- forward och reply kräver som förut upplåst session.
+
+Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
+människan själv besvarar i klienten) och systemutskick (`_confirmed=True`: bokningsbekräftelser och
+utkorgsåtgärder som en människa godkänt). Med `enabled: false` gäller det gamla: `send_unlock: true` i
+acl.yaml slår på kravet för `email_send` i just det projektet.
+
+**Samspel med `allow_send`.** `allow_send: false` är fortfarande spärren per projekt. Utskick kräver
+ägarroll i **det projekt lådan läses genom** (en upplåsning som ägare i ett projekt ger ingen rätt att
+skicka från ett projekt där du är collaborator), `allow_send` **och** en upplåst session.
+
+## Reply-To och svara-alla
+
+- Om `Reply-To` pekar på en annan adress än `From` skickas inget. Svaret har `status: not_sent`, en
+  varning och båda adresserna. Ett svar skulle annars gå till någon annan än den som syntes skriva, ett
+  vanligt bedrägeriknep. Först när användaren sagt ja anropas `email_reply` igen med
+  `confirm_reply_to=True`; då går svaret till Reply-To, och utkorgspolicyn gäller som vanligt.
+- `reply_all=True` vägras om fler än `mail_dialog.reply_all_max_cc` (standard 20) kopiemottagare skulle
+  få svaret. Inget kortas av i tysthet.
 
 ## Länka många lådor
 
