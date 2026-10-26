@@ -121,7 +121,6 @@ def test_malformed_ipv6_url_raises_plain_valueerror():
     ("http://127.0.0.1/", "127.0.0.1"),
     ("https://10.0.0.5:8443/x", "10.0.0.5"),
     ("http://169.254.169.254/latest/meta-data/", "169.254.169.254"),
-    ("http://user:pw@192.168.1.1/", "192.168.1.1"),
     ("http://[::1]/", "::1"),
     ("http://[::ffff:127.0.0.1]/", "::ffff:127.0.0.1"),
     ("http://[fe80::1]/", "fe80::1"),
@@ -145,10 +144,17 @@ def test_literal_public_ip_allowed_without_dns(url, resolve, dns):
     assert dns.calls == []
 
 
-def test_literal_ip_port_is_not_validated():
-    # Locked as-is: parsed.port is only read on the DNS path.
-    url = "http://8.8.8.8:99999/"
-    assert validate_external_url(url) == url
+def test_literal_ip_out_of_range_port_is_blocked():
+    # urllib3 (what requests sends with) cannot parse the port, so the URL is
+    # refused before the literal-IP shortcut.
+    with pytest.raises(BlockedURLError, match="could not be parsed"):
+        validate_external_url("http://8.8.8.8:99999/")
+
+
+@pytest.mark.parametrize("resolve", [True, False])
+def test_userinfo_is_blocked_even_on_literal_ip(resolve):
+    with pytest.raises(BlockedURLError, match="user info"):
+        validate_external_url("http://user:pw@192.168.1.1/", resolve=resolve)
 
 
 # ---- hostnames / DNS ------------------------------------------------------
@@ -187,10 +193,10 @@ def test_port_zero_falls_back_to_scheme_default(dns):
     assert dns.calls == [("example.com", 80)]
 
 
-def test_out_of_range_port_raises_plain_valueerror_on_dns_path(dns):
-    with pytest.raises(ValueError) as ei:
+def test_out_of_range_port_is_blocked_before_dns(dns):
+    with pytest.raises(BlockedURLError) as ei:
         validate_external_url("http://example.com:99999/x")
-    assert not isinstance(ei.value, BlockedURLError)
+    assert "99999" not in str(ei.value)  # urllib3's own error text carries the URL
     assert dns.calls == []
 
 
