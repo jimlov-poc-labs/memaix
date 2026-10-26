@@ -1191,10 +1191,9 @@ def _validate_channels(channels: list[dict] | None) -> None:
         if url:
             try:
                 validate_external_url(url, resolve=False)
+                _discord_id(url)  # every type: a Discord host is https on 443 only
                 if spec.get("type") == "ntfy":
                     check_ntfy_url(url)
-                else:
-                    _discord_id(url)
             except BlockedURLError as exc:
                 raise ValueError(f"channel url avvisad: {exc}") from exc
 

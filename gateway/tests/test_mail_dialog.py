@@ -1497,6 +1497,12 @@ def test_ntfy_over_http_is_refused(wired, real_requests, srv):
     assert out["rejected_channels"] == [{"index": 0, "type": "ntfy", "reason": _NTFY_HTTPS}]
 
 
+def test_ntfy_on_a_discord_host_still_needs_the_standard_port(wired):
+    spec = {"type": "ntfy", "topic": _TOPIC, "server": "https://discord.com:8443/api/webhooks/123"}
+    with pytest.raises(ValueError, match="https på standardport"):
+        server.brief_configure(True, channels=[spec], ctx=_Ctx("s1"))
+
+
 def test_unlock_code_channel_ntfy_must_be_https():
     with pytest.raises(ValueError, match="https") as exc:
         mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "http://ntfy.sh"}, set())
