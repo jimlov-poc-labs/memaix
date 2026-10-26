@@ -35,6 +35,7 @@ Läs i den ordning som passar din roll.
    · [FEATURE-UNDO-TIMELINE.md](FEATURE-UNDO-TIMELINE.md) — funktion #5: ångra & åtgärdstidslinje (design + byggspec).
    · [FEATURE-DISCOVERABILITY.md](FEATURE-DISCOVERABILITY.md) — funktion #6: upptäckbarhet, guide & förmåge-register (design + byggspec).
    · [FEATURE-CONNECTOR-FRAMEWORK.md](FEATURE-CONNECTOR-FRAMEWORK.md) — funktion #7: pluggbara backend-adaptrar (design + byggspec).
+   · [FEATURE-MAIL-DIALOG.md](FEATURE-MAIL-DIALOG.md) — dialogbaserad mejlklient över alla lådor + sändupplåsning per session (byggspec).
    · [FEATURE-NEXTCLOUD-BACKEND.md](FEATURE-NEXTCLOUD-BACKEND.md) — funktion #8: Nextcloud som förstklassig backend (design + byggspec).
    · [FEATURE-PM-ENGINE.md](FEATURE-PM-ENGINE.md) — funktion #9: PM-planeringsmotor & agent (byggspec).
    · [FEATURE-LLM-ENGINE.md](FEATURE-LLM-ENGINE.md) — funktion #10: LLM-motorn — server-side modell, verktygsbrygga, egen chatt (design + byggspec).
@@ -125,6 +126,7 @@ Läs i den ordning som passar din roll.
 | Hur guidas användaren / vad kan man göra? | FEATURE-DISCOVERABILITY |
 | I vilken ordning byggs allt? | ROADMAP |
 | Pluggbara integrationer / backend-adaptrar? | FEATURE-CONNECTOR-FRAMEWORK |
+| Mejl i dialog: översikt, flaggor, arkiv, svara, sändupplåsning? | FEATURE-MAIL-DIALOG |
 | Nextcloud som förstklassig backend? | FEATURE-NEXTCLOUD-BACKEND |
 | Avancerad PM-motor (kritisk linje, what-if)? | FEATURE-PM-ENGINE |
 | Juridik, GDPR & ansvar? | LEGAL |
