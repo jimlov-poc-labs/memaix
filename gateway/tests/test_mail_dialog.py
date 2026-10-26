@@ -1043,3 +1043,16 @@ def test_reply_all_is_refused_above_the_cc_cap(wired):
     with pytest.raises(ValueError, match="taket är 1"):
         server.email_reply("imap_user:info@box.se|5", "Ok", reply_all=True, project="memaix", ctx=ctx)
     assert wired.sent == []
+
+
+def test_code_channel_error_text_never_contains_the_url():
+    for spec in ({"type": "discord", "url": _DISCORD}, {"type": "ntfy", "topic": _TOPIC}):
+        (ch,) = mu.build_code_channels([spec], set(), _http=_Http(fail=True))
+        with pytest.raises(RuntimeError) as exc:
+            ch.send(mu.UNLOCK_SUBJECT, "x", "kod")
+        assert "HEMLIGT" not in str(exc.value) and _TOPIC not in str(exc.value)
+        assert exc.value.__context__ is None or exc.value.__suppress_context__
+    (ch,) = mu.build_code_channels([{"type": "discord", "url": _DISCORD}], set(), _http=_Http(status=404))
+    with pytest.raises(RuntimeError, match="404") as exc:
+        ch.send(mu.UNLOCK_SUBJECT, "x", "kod")
+    assert "HEMLIGT" not in str(exc.value)
