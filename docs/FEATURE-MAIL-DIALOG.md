@@ -128,23 +128,51 @@ mail_dialog:
   reply_all_max_cc: 20
 ```
 
-**När upplåsningen är påslagen gäller den alla utgående vägar**, oavsett projektets flagga (granskning
-2026-10-26: annars bestämmer det svagaste projektet):
+**När upplåsningen är påslagen gäller den alla utgående vägar som en modell eller ett läst mejl kan
+styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det svagaste projektet):
 
 - `email_send` från en modell kräver en upplåst session i **alla** projekt;
 - `outbox_approve` (MCP-verktyget) av en köad `email_send`/`email_forward`/`email_reply` kräver en upplåst
   session. Kontrollen görs före godkännandet, så en vägrad åtgärd ligger kvar som `pending`;
-- regelåtgärder (`rules`) som skickar mejl vägras, eftersom de saknar session;
+- regelåtgärder (`rules`) som skickar mejl vägras, eftersom de saknar session. Det gäller även
+  `notify`: dess e-postkanaler hoppas över;
+- `notify` från en regel som utlöses av ett mejl (`trigger.type: mail`) vägras helt, så att läst mejl aldrig
+  kedjas till en utgående kanal;
+- `brief_configure` får inte lägga till en **ny** mottagare (e-postadress/projekt, webhook, ntfy-ämne) utan
+  upplåst session och ägarroll. Att behålla, ta bort, ordna om eller byta format på redan sparade mottagare
+  kräver ingen kod. Jämförelsen normaliserar som kodkanalskontrollen (Discord-alias via webhook-id);
 - forward och reply kräver som förut upplåst session.
 
 Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
-människan själv besvarar i klienten) och systemutskick (`_confirmed=True`: bokningsbekräftelser och
-utkorgsåtgärder som en människa godkänt). Med `enabled: false` gäller det gamla: `send_unlock: true` i
+människan själv besvarar i klienten), systemutskick (`_confirmed=True`: bokningsbekräftelser och
+utkorgsåtgärder som en människa godkänt), brief-inställningar i webbgränssnittet (där sitter människan,
+inte modellen) och **utskick till redan sparade brief-mottagare**: den schemalagda briefen, `brief_send_now`
+och `notify` från andra utlösare än mejl. Mottagare som sparades innan spärren slogs på räknas som sparade;
+gå igenom dem (`brief_status`) innan du slår på `enabled`.
+
+**Brief-kanaler och RBAC.** En e-postkanal skickar från projektets låda och kräver därför ägarroll i det
+projektet (`project` är obligatoriskt), både när den sätts (MCP och webben) och vid varje utskick: en sparad
+kanal i ett projekt där användaren inte längre är ägare hoppas över. Briefen tar bara med projekt som
+användaren har grant i, oavsett vad `projects` säger. Med `enabled: false` gäller det gamla: `send_unlock: true` i
 acl.yaml slår på kravet för `email_send` i just det projektet.
 
 **Samspel med `allow_send`.** `allow_send: false` är fortfarande spärren per projekt. Utskick kräver
 ägarroll i **det projekt lådan läses genom** (en upplåsning som ägare i ett projekt ger ingen rätt att
 skicka från ett projekt där du är collaborator), `allow_send` **och** en upplåst session.
+
+**Begränsningar att känna till.**
+
+- **Kodkanalen kan vara läsbar via andra kopplingar än Memaix.** Memaix vägrar kanaler som någon av dess
+  egna mejlverktyg kan läsa, men ser inte klientens övriga kopplingar. En SMTP-låda (eller en Gmail som
+  koden går till) kan vara läsbar för modellen genom t.ex. claude.ai:s Gmail-koppling. Använd därför en
+  **Discord-webhook i en kanal som inga botar kan läsa** som kodkanal.
+- **Kodkanalens webhook måste vara en annan än brief-webhooken** (annat Discord-webhook-id; samma id med
+  annan token eller värdalias räknas som samma webhook och vägras).
+- **Reply-To-varningen är information, inte en spärr.** Modellen kan själv anropa `email_reply` med
+  `confirm_reply_to=True`; den som läser chatten ska se varningen innan det sker.
+- **Det finns ingen hård mottagar-allowlist.** En upplåst session kan skicka till vilken adress som helst.
+  Projektets valfria `allowlist` (acl.yaml) spärrar inte, utan tvingar bara utskick till andra mottagare
+  till granskning i utkorgen.
 
 ## Reply-To och svara-alla
 
