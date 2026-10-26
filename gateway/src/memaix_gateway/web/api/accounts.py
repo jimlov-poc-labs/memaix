@@ -116,7 +116,8 @@ def api_accounts_unlink(request: Request) -> JSONResponse:
 
 
 async def api_accounts_link_imap(request: Request) -> JSONResponse:
-    """POST /app/api/accounts/link-imap {account_email, host, user, password, port?}
+    """POST /app/api/accounts/link-imap {account_email, host, user, password, port?,
+    smtp_host?, smtp_port?}
     → {ok, provider, account}
 
     Cookie-authed, non-OAuth link path for a per-user IMAP mailbox
@@ -144,6 +145,7 @@ async def api_accounts_link_imap(request: Request) -> JSONResponse:
     try:
         result = t_acc.account_link_imap(
             user, account_email, host, imap_user, password, _token_store(), port=port,
+            smtp_host=body.get("smtp_host") or None, smtp_port=body.get("smtp_port"),
         )
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)

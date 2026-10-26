@@ -163,11 +163,15 @@ def account_link_imap(
     password: str,
     store: TokenStore,
     port: int | None = None,
+    *,
+    smtp_host: str | None = None,
+    smtp_port: int | None = None,
 ) -> dict:
     """Store a per-user IMAP mailbox credential (non-OAuth link path).
 
-    Called only from web/api/accounts.py's api_accounts_link_imap — never
-    exposed as an MCP tool, and the password never appears as an MCP-tool
+    Called only from web/api/accounts.py's api_accounts_link_imap and the
+    admin CLI (`cli.py link-imap`, password on stdin) — never exposed as
+    an MCP tool, and the password never appears as an MCP-tool
     argument, log line, or return value (AGENTS.md §2/§3). Returns
     {ok, provider, account} — deliberately NOT the stored token_data, so a
     caller can't reflect the password back out through this function's
@@ -183,6 +187,12 @@ def account_link_imap(
     token_data: dict = {"host": host, "user": user, "password": password}
     if port is not None:
         token_data["port"] = int(port)
+    # Where email_forward/email_reply send from (docs/FEATURE-MAIL-DIALOG.md).
+    # Omitted: derived from an "imap." host, or sending fails with a clear error.
+    if smtp_host:
+        token_data["smtp_host"] = smtp_host
+    if smtp_port is not None:
+        token_data["smtp_port"] = int(smtp_port)
 
     store.store(user_id, "imap", account_email, token_data)
     return {"ok": True, "provider": "imap", "account": account_email}

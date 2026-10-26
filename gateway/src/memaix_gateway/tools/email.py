@@ -43,6 +43,8 @@ _smtp duck type:
 
 Feature gate:
   acl.resource(project, "allow_send") must be truthy to use email_send.
+  With acl.resource(project, "send_unlock") truthy, a model-initiated
+  send also needs an unlocked session (tools/mail_unlock.py).
 
 Outbox gate:
   email_send is outgoing and hard to undo, so it is also routed through the
@@ -773,6 +775,7 @@ def email_send(
     _confirmed: bool = False,
     _outbox=None,
     _cfg: dict | None = None,
+    _send_unlocked: bool = False,
 ) -> dict:
     """Send a message via SMTP.  Requires owner + allow_send feature flag.
 
@@ -782,11 +785,19 @@ def email_send(
     queued for review, so callers passing one should also pass
     _confirmed=True (system-generated attachments, e.g. booking .ics files,
     aren't composed by the LLM and don't need a human approval step).
+
+    In a project with `send_unlock: true` (docs/FEATURE-MAIL-DIALOG.md) a
+    model-initiated send also needs an unlocked MCP session: server.py
+    checks it and passes _send_unlocked=True. Paths without a session — a
+    rule action — are refused; system sends (_confirmed=True: booking,
+    an operator-approved outbox action) are not model-initiated.
     """
     acl.enforce(user_id, project, "owner")
     # Feature gate
     if not acl.resource(project, "allow_send"):
         raise RuntimeError("feature_disabled: allow_send is false")
+    if acl.resource(project, "send_unlock") and not (_confirmed or _send_unlocked):
+        raise PermissionError("send_locked: sessionen är inte upplåst för mejlutskick (email_send_unlock_request)")
 
     if not _confirmed:
         args = {"to": to, "subject": subject, "body": body, "cc": cc}

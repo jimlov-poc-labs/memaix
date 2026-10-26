@@ -182,6 +182,10 @@ class ConnectorRegistry:
             }
         )
 
+    def specs_for(self, capability: str) -> list[ConnectorSpec]:
+        """Every registered spec for `capability`, in registration order."""
+        return [spec for (cap, _), spec in self._specs.items() if cap == capability]
+
     def get_spec(self, capability: str, type_: str) -> "ConnectorSpec | None":
         """Look up a registered spec directly, bypassing acl.resource(...)
         resolution — for callers (e.g. calendar_sources.py) building an
