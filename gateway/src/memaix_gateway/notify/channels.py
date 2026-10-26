@@ -134,10 +134,9 @@ def _header_safe(value: str) -> str:
 
 
 class NtfyChannel:
-    def __init__(self, topic: str, server: str = "https://ntfy.sh", *, token: str | None = None, _http=None) -> None:
+    def __init__(self, topic: str, server: str = "https://ntfy.sh", *, _http=None) -> None:
         self._topic = topic
         self._server = server.rstrip("/")
-        self._token = token
         self._http = _http
 
     # channel interface fixes this signature
@@ -150,8 +149,6 @@ class NtfyChannel:
             from ..safety.net import validate_external_url
             validate_external_url(url)  # authoritative SSRF check before the real request
         headers = {"Title": _header_safe(subject)}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
         # allow_redirects=False — se kommentaren i safety/net.py.
         resp = http.post(
             url,
@@ -182,10 +179,7 @@ def build_channels(specs: list[dict], *, acl=None, _http=None, _smtp=None) -> li
                     raise ValueError("webhook channel needs 'url' or 'url_ref'")
                 channels.append(WebhookChannel(url, spec.get("format", "raw"), _http=_http))
             elif ctype == "ntfy":
-                channels.append(NtfyChannel(
-                    spec["topic"], spec.get("server", "https://ntfy.sh"),
-                    token=cfg_mod.secret(spec.get("token_ref")), _http=_http,
-                ))
+                channels.append(NtfyChannel(spec["topic"], spec.get("server", "https://ntfy.sh"), _http=_http))
             else:
                 logger.warning("unknown notification channel type: %r", ctype)
         except Exception:

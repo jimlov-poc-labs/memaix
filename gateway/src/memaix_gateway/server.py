@@ -1159,6 +1159,14 @@ def _validate_channels(channels: list[dict] | None) -> None:
     from .safety.net import BlockedURLError, validate_external_url
 
     for spec in channels or []:
+        # Brief channels are set by the user — and the model — via
+        # brief_configure / the web API. A *_ref would make the server
+        # resolve a secret of the model's choosing and send it to a URL of
+        # the model's choosing (or point at the unlock channel to lock it
+        # out). Secret refs belong in operator config only.
+        refs = sorted(k for k in spec if str(k).endswith("_ref"))
+        if refs:
+            raise ValueError(f"channel fields {refs} are not allowed here — put the value itself (no secret refs)")
         if spec.get("type") not in _KNOWN_CHANNEL_TYPES:
             raise ValueError(
                 f"unknown channel type {spec.get('type')!r}; must be one of {sorted(_KNOWN_CHANNEL_TYPES)}"

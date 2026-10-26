@@ -102,6 +102,10 @@ Vägras:
 En vägrad begäran räknas mot `max_requests`, så att modellen inte kan pröva sig fram till kodkanalen genom
 att ändra sin brief-kanal och se vilken begäran som vägras.
 
+Brief-kanaler (som användaren och modellen sätter via `brief_configure` eller webben) får inte innehålla
+några `*_ref`-fält: då kunde modellen låta servern slå upp en hemlighet och skicka den till en adress den
+själv valt. Hemlighetsreferenser hör bara hemma i operatörens konfiguration.
+
 `brief_status` och `brief_configure` maskerar ntfy-ämnen (`ab***`), webhook-URL:er (`https://värd/***`) och
 `*_ref`. Brief-leveransens fel rapporteras bara som kanal- och feltyp.
 

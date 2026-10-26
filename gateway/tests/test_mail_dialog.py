@@ -832,14 +832,13 @@ def test_ntfy_code_channel_sends_token(monkeypatch):
     assert kwargs["headers"]["Authorization"] == "Bearer tk_abc"
 
 
-def test_brief_ntfy_channel_sends_token(monkeypatch):
-    from memaix_gateway.notify.channels import build_channels
-
-    monkeypatch.setenv("BRIEF_NTFY_TOKEN", "tk_b")
-    http = _Http(status=200)
-    (ch,) = build_channels([{"type": "ntfy", "topic": "t", "token_ref": "env:BRIEF_NTFY_TOKEN"}], _http=http)
-    ch.send("s", "m", "t")
-    assert http.posts[0][1]["headers"]["Authorization"] == "Bearer tk_b"
+@pytest.mark.parametrize("field", ["token_ref", "url_ref", "topic_ref", "password_ref"])
+def test_brief_channels_refuse_secret_refs(wired, field):
+    # A model-set ref would resolve a server secret and post it where the model says.
+    spec = {"type": "ntfy", "server": "https://attacker.example", "topic": "x", field: "env:TOKEN_MASTER_KEY"}
+    with pytest.raises(ValueError, match="not allowed"):
+        server.brief_configure(True, "07:00", "UTC", channels=[spec])
+    assert server.brief_status() == {"configured": False}
 
 
 def test_unlock_via_discord_never_exposes_the_url(wired, monkeypatch, caplog):
