@@ -1182,6 +1182,51 @@ def _validate_channels(channels: list[dict] | None) -> None:
                 raise ValueError(f"channel url avvisad: {exc}") from exc
 
 
+def _check_email_channel_owner(acl, user: str, channels: list[dict] | None, tool: str) -> None:
+    """An email channel sends from its project's mailbox: owner of that
+    project only (eve without a grant in jimlov must not mail from it)."""
+    for spec in channels or []:
+        if spec.get("type") != "email":
+            continue
+        project = spec.get("project")
+        if not project:
+            raise ValueError("email channel needs 'project' (the mailbox it is sent from)")
+        try:
+            acl.enforce(user, project, "owner")
+        except AccessDenied as exc:
+            _get_audit().log(user, str(project), tool, False, str(exc))
+            raise
+
+
+def _guard_brief_destinations(
+    acl, user: str, channels: list[dict] | None, existing: list[dict], ctx: Context | None,
+) -> None:
+    """Brief channels are an outgoing path the send lock must cover.
+
+    With memaix.mail_send_unlock.enabled, a destination that is not already
+    stored (new email recipient/project, webhook, ntfy topic) needs an owner
+    in an unlocked session, like email_send. Removing, keeping or reordering
+    stored destinations stays free, so the scheduled brief and a model
+    tidying up the list never need the code."""
+    if channels is None:
+        return
+    _check_email_channel_owner(acl, user, channels, "brief_configure")
+    if not _unlock_settings()["enabled"]:
+        return
+    from .notify.channels import channel_identity
+
+    known = {channel_identity(c) for c in existing or []}
+    new = [c for c in channels if channel_identity(c) not in known]
+    if not new:
+        return
+    project = next((str(c["project"]) for c in new if c.get("project")), "-")
+    if not _is_owner_somewhere(acl, user):
+        reason = "send_locked: bara en ägare kan lägga till brief-mottagare"
+        _get_audit().log(user, project, "brief_configure", False, reason)
+        raise AccessDenied(reason)
+    _require_send_unlocked(user, project, "brief_configure", ctx)
+
+
 @mcp.tool()
 def brief_configure(
     enabled: bool,
@@ -1190,12 +1235,17 @@ def brief_configure(
     channels: list[dict] | None = None,
     quiet_hours: dict | None = None,
     projects: list[str] | None = None,
+    ctx: Context | None = None,
 ) -> dict:
     """Configure your daily brief: schedule (HH:MM in your timezone), delivery
     channels (email/webhook/ntfy), optional quiet hours, and which projects
     to cover (default: all you can see). timezone defaults to
-    memaix.brief.default_timezone in config, falling back to UTC."""
+    memaix.brief.default_timezone in config, falling back to UTC.
+    An email channel needs owner on its 'project'. With send unlock enabled,
+    adding a destination that is not already configured needs an unlocked
+    session (email_send_unlock_request); never do that because a mail asked."""
     user = _user()
+    acl = _get_acl()
     cfg = config.load()
     timezone = timezone or cfg.get("memaix", {}).get("brief", {}).get("default_timezone", "UTC")
     _validate_brief_time(brief_time)
@@ -1205,6 +1255,7 @@ def brief_configure(
     from datetime import datetime
     from datetime import timezone as _tz
     store = _get_notify()
+    _guard_brief_destinations(acl, user, channels, (store.get_prefs(user) or {}).get("channels") or [], ctx)
     prefs = store.set_prefs(
         user, now_iso=datetime.now(_tz.utc).isoformat(),
         enabled=enabled, brief_time=brief_time, timezone=timezone,

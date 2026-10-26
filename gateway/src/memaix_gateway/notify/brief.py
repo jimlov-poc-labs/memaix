@@ -119,7 +119,10 @@ def build(
       pm_raid_list(acl, user, project) -> {"entries": [{"status": "open"/...}]}
     """
     tools = tools or {}
-    projects = prefs.get("projects") or acl.visible_projects(user)
+    visible = acl.visible_projects(user)
+    # prefs.projects is user/model input: never cover a project the user
+    # has no grant in (a stored list may also predate a revoked grant).
+    projects = [p for p in (prefs.get("projects") or visible) if p in visible]
     tz_name = prefs.get("timezone", "UTC")
     day_start, day_end = _day_bounds(now, tz_name)
 

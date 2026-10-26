@@ -162,9 +162,48 @@ class NtfyChannel:
             raise_for_status()
 
 
-def build_channels(specs: list[dict], *, acl=None, _http=None, _smtp=None) -> list[NotificationChannel]:
+def channel_identity(spec: dict) -> str:
+    """Comparable identity of a brief channel's destination.
+
+    Email is (sending project, recipient): the project picks the mailbox the
+    mail goes out from. Webhooks and ntfy topics use the same normalisation
+    as the unlock-channel check (Discord host aliases are one webhook id).
+    """
+    from ..tools.mail_unlock import ntfy_identity, webhook_identity
+
+    ctype = (spec or {}).get("type")
+    if ctype == "email":
+        return f"email:{spec.get('project') or ''}:{str(spec.get('to') or '').strip().lower()}"
+    if ctype == "webhook":
+        return webhook_identity(spec.get("url"))
+    if ctype == "ntfy":
+        return ntfy_identity(spec.get("server"), spec.get("topic"))
+    return f"other:{ctype}"
+
+
+def may_send_from(acl, user: str | None, project: str | None) -> bool:
+    """An email channel sends from `project`'s mailbox: only its owner may
+    point that mailbox anywhere (RBAC, AGENTS.md §2)."""
+    if acl is None or not user or not project:
+        return False
+    try:
+        acl.enforce(user, project, "owner")
+    except Exception:  # noqa: BLE001 - AccessDenied, or anything else: fail closed
+        return False
+    return True
+
+
+def build_channels(
+    specs: list[dict], *, acl=None, user: str | None = None, _http=None, _smtp=None,
+) -> list[NotificationChannel]:
     """Build channel adapters from JSON specs, skipping (and logging) any
-    that fail to construct — one bad spec must not disable the others."""
+    that fail to construct — one bad spec must not disable the others.
+
+    An email channel is built only when `user` owns the channel's project.
+    This is checked here, at delivery, and not only when the channel is
+    configured: every sender (brief_send_now, the scheduled brief, rule
+    notify) goes through this function, and a stored spec may predate a
+    grant being revoked."""
     from .. import config as cfg_mod
 
     channels: list[NotificationChannel] = []
@@ -172,6 +211,9 @@ def build_channels(specs: list[dict], *, acl=None, _http=None, _smtp=None) -> li
         ctype = spec.get("type")
         try:
             if ctype == "email":
+                if not may_send_from(acl, user, spec.get("project")):
+                    logger.warning("email channel skipped: user is not owner of its project")
+                    continue
                 channels.append(EmailChannel(acl, spec, _smtp=_smtp))
             elif ctype == "webhook":
                 url = spec.get("url") or cfg_mod.secret(spec.get("url_ref"))

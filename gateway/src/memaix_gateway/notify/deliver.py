@@ -55,7 +55,7 @@ def deliver(
     if brief_content.get("empty") and not brief_content.get("markdown"):
         return {"skipped": "empty"}
 
-    channels = _channels if _channels is not None else build_channels(prefs.get("channels", []), acl=acl)
+    channels = _channels if _channels is not None else build_channels(prefs.get("channels", []), acl=acl, user=user)
 
     delivered = 0
     errors: list[str] = []

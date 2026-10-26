@@ -54,8 +54,14 @@ async def api_brief_set(request: Request) -> JSONResponse:
         return JSONResponse({"error": "bad_request"}, status_code=400)
 
     from ... import config
+    from ...acl import AccessDenied
     from ...notify.scheduler import next_brief_epoch
-    from ...server import _validate_brief_time, _validate_channels, _validate_timezone
+    from ...server import (
+        _check_email_channel_owner,
+        _validate_brief_time,
+        _validate_channels,
+        _validate_timezone,
+    )
 
     cfg = config.load()
     enabled = bool(body.get("enabled", True))
@@ -70,6 +76,15 @@ async def api_brief_set(request: Request) -> JSONResponse:
         _validate_brief_time(brief_time)
         _validate_timezone(tz_name)
         _validate_channels(channels)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    # The human sets destinations here (cookie + no model in the loop), so
+    # the send lock does not apply — but sending from a project's mailbox
+    # still needs owner on that project.
+    try:
+        _check_email_channel_owner(w._get_acl(), user, channels, "web_brief_set")
+    except AccessDenied:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 

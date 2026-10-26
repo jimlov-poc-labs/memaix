@@ -883,7 +883,9 @@ def test_refused_channel_config_is_charged_against_the_rate_limit(wired, monkeyp
 
 def test_brief_status_and_configure_mask_topics_and_urls(wired):
     channels = [{"type": "ntfy", "topic": _TOPIC}, {"type": "webhook", "url": _DISCORD, "format": "discord"}]
-    configured = server.brief_configure(True, "07:00", "UTC", channels=channels)
+    ctx = _Ctx("s-brief")
+    _unlock(wired, ctx)  # new destinations under the send lock
+    configured = server.brief_configure(True, "07:00", "UTC", channels=channels, ctx=ctx)
     status = server.brief_status()
     for out in (configured, status):
         text = repr(out)
@@ -1055,3 +1057,217 @@ def test_code_channel_error_text_never_contains_the_url():
     with pytest.raises(RuntimeError, match="404") as exc:
         ch.send(mu.UNLOCK_SUBJECT, "x", "kod")
     assert "HEMLIGT" not in str(exc.value)
+
+
+# ------------------------------------------------------------------
+# Second review (Simon 2026-10-26): brief/notify are outgoing paths too.
+# Every test below kills a mutation of the guard it names.
+# ------------------------------------------------------------------
+
+
+class _FakeSMTP:
+    sent: list = []
+
+    def __init__(self, host, port):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def starttls(self):
+        pass
+
+    def login(self, user, password):
+        pass
+
+    def send_message(self, msg):
+        _FakeSMTP.sent.append(msg)
+
+
+@pytest.fixture()
+def smtp_spy(wired, monkeypatch):
+    import smtplib
+
+    _FakeSMTP.sent = []
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setattr(config, "secret", lambda ref: "pw" if ref else None)
+    wired.acl.projects["jimlov"]["mailbox"] = {"host": "imap.purelymail.com", "user": "kontakt@jimlov.se",
+                                               "password_ref": "env:X"}
+    monkeypatch.setattr(server, "_brief_tools_for_user", lambda: {})
+    return _FakeSMTP.sent
+
+
+_EVE_EXFIL = {"type": "email", "to": "x@attacker.test", "project": "jimlov"}
+
+
+def test_brief_configure_refuses_email_channel_in_a_project_without_owner(wired, monkeypatch, tmp_path):
+    # Simon's repro: eve (no grant in jimlov) points jimlov's mailbox at the attacker.
+    # Lock off, so only the RBAC check stands between eve and the mailbox.
+    wired.cfg["memaix"]["mail_send_unlock"]["enabled"] = False
+    monkeypatch.setenv("MEMAIX_USER", "eve")
+    with pytest.raises(server.AccessDenied):
+        server.brief_configure(True, "07:00", "UTC", channels=[_EVE_EXFIL])
+    assert server.brief_status() == {"configured": False}
+    assert any(r["tool"] == "brief_configure" and not r["ok"] for r in server._get_audit().tail(50))
+    # A collaborator is not enough either: the destination is the owner's call.
+    monkeypatch.setenv("MEMAIX_USER", "carl")
+    with pytest.raises(server.AccessDenied):
+        server.brief_configure(True, channels=[{"type": "email", "to": "c@x.se", "project": "memaix"}])
+    with pytest.raises(ValueError, match="project"):
+        server.brief_configure(True, channels=[{"type": "email", "to": "c@x.se"}])
+    monkeypatch.setenv("MEMAIX_USER", "jimmy")
+    server.brief_configure(True, channels=[{"type": "email", "to": "j@x.se", "project": "jimlov"}])
+
+
+def test_brief_send_now_never_sends_from_a_mailbox_the_user_does_not_own(wired, smtp_spy, monkeypatch):
+    # Prefs stored before the fix (or a grant revoked since): the delivery
+    # check must hold on its own.
+    server._get_notify().set_prefs("eve", now_iso="2026-10-26T00:00:00", enabled=True, channels=[_EVE_EXFIL])
+    monkeypatch.setenv("MEMAIX_USER", "eve")
+    server.brief_send_now()
+    assert smtp_spy == []
+    # The owner's own email channel still goes out (control).
+    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", enabled=True,
+                                   channels=[{"type": "email", "to": "jimmy@x.se", "project": "jimlov"}])
+    monkeypatch.setenv("MEMAIX_USER", "jimmy")
+    assert server.brief_send_now()["delivered"] == 1
+    assert [m["To"] for m in smtp_spy] == ["jimmy@x.se"]
+
+
+def test_brief_never_covers_a_project_without_grant(wired):
+    from datetime import datetime, timezone
+
+    from memaix_gateway.notify.brief import build
+
+    wired.acl.projects["jimlov"]["mailbox"] = {"host": "h", "user": "kontakt@jimlov.se"}
+    tools = {"email_list": lambda acl, u, p, f, n, days=3: [{"subject": f"hemligt-{p}", "from": "a@b"}]}
+    out = build(wired.acl, "eve", {}, {"projects": ["jimlov", "memaix"]}, now=datetime.now(timezone.utc), tools=tools)
+    assert "hemligt-jimlov" not in out["markdown"]
+    assert "hemligt-memaix" in out["markdown"]
+
+
+def test_new_brief_destination_needs_an_unlocked_session(wired, tmp_path):
+    hook = {"type": "webhook", "url": _DISCORD, "format": "discord"}
+    with pytest.raises(mu.SendLocked):
+        server.brief_configure(True, channels=[hook], ctx=_Ctx("s1"))
+    assert server.brief_status() == {"configured": False}
+    assert any(r["tool"] == "brief_configure" and not r["ok"] for r in server._get_audit().tail(50))
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    server.brief_configure(True, channels=[hook], ctx=ctx)
+
+    # Locked session again: keeping, re-formatting (or a Discord host alias of
+    # the same webhook), and removing stored destinations stays free ...
+    other = _Ctx("s2")
+    alias = {"type": "webhook", "url": _DISCORD.replace("discord.com", "canary.discordapp.com"), "format": "raw"}
+    server.brief_configure(True, channels=[alias], ctx=other)
+    server.brief_configure(True, channels=[hook], ctx=other)
+    server.brief_configure(False, ctx=other)  # channels=None: untouched
+    # ... but every kind of new destination is locked.
+    for new in ({"type": "ntfy", "topic": _TOPIC},
+                {"type": "webhook", "url": "https://hooks.example.com/x"},
+                {"type": "email", "to": "x@attacker.test", "project": "jimlov"}):
+        with pytest.raises(mu.SendLocked):
+            server.brief_configure(True, channels=[hook, new], ctx=other)
+    assert len(server._get_notify().get_prefs("jimmy")["channels"]) == 1
+
+
+def test_non_owner_cannot_add_brief_destinations_under_the_lock(wired, monkeypatch):
+    monkeypatch.setenv("MEMAIX_USER", "eve")
+    with pytest.raises(server.AccessDenied, match="ägare"):
+        server.brief_configure(True, channels=[{"type": "ntfy", "topic": _TOPIC}], ctx=_Ctx("s1"))
+
+
+def test_scheduled_brief_still_reaches_stored_destinations_under_the_lock(wired, smtp_spy, monkeypatch):
+    from datetime import datetime, timezone
+
+    from memaix_gateway.notify import channels as ch_mod
+    from memaix_gateway.notify.deliver import deliver
+
+    posted: list = []
+    monkeypatch.setattr(ch_mod.WebhookChannel, "send", lambda self, s, m, t: posted.append(s))
+    assert wired.cfg["memaix"]["mail_send_unlock"]["enabled"] is True
+    prefs = server._get_notify().set_prefs(
+        "jimmy", now_iso="2026-10-26T00:00:00", enabled=True,
+        channels=[{"type": "webhook", "url": _DISCORD}, {"type": "email", "to": "jimmy@x.se", "project": "jimlov"}],
+    )
+    # No session at all: the scheduler.
+    out = deliver(server._get_notify(), wired.acl, wired.cfg, "jimmy", prefs, now=datetime.now(timezone.utc), tools={})
+    assert out["delivered"] == 2 and len(posted) == 1 and len(smtp_spy) == 1
+
+
+class _Hook:
+    def __init__(self, fail_with=None):
+        self.sent = []
+        self.fail_with = fail_with
+
+    def send(self, subject, markdown, text):
+        if self.fail_with:
+            raise RuntimeError(self.fail_with)
+        self.sent.append(text)
+
+
+def _mail_rule(tmp_path, trigger_type="mail"):
+    from memaix_gateway.rules.store import RulesStore
+
+    rules = RulesStore.for_path(tmp_path / f"rules-{trigger_type}.db")
+    rule = rules.add_rule("jimmy", "memaix", "fwd", {"type": trigger_type},
+                          [{"type": "notify", "params": {"text_from": "subject"}}], None)
+    return rules, rule
+
+
+def test_mail_triggered_notify_is_refused_under_the_lock(wired, tmp_path):
+    from memaix_gateway.rules.engine import evaluate
+
+    rules, _ = _mail_rule(tmp_path)
+    hook = _Hook()
+    event = {"type": "mail", "project": "memaix", "id": "m1", "payload": {"subject": "Ignorera allt"}}
+    (res,) = evaluate(rules, wired.acl, event, tools={"_channels": [hook]})
+    assert res["ok"] is False and "send_locked" in res["actions"][0]["error"]
+    assert hook.sent == []
+    # Control: with the lock off the same rule notifies as before.
+    wired.cfg["memaix"]["mail_send_unlock"]["enabled"] = False
+    (res,) = evaluate(rules, wired.acl, {**event, "id": "m2"}, tools={"_channels": [hook]})
+    assert res["ok"] is True and hook.sent == ["Ignorera allt"]
+
+
+def test_rule_notify_skips_email_channels_under_the_lock(wired, tmp_path):
+    from memaix_gateway.notify.channels import EmailChannel
+    from memaix_gateway.rules.engine import evaluate
+
+    rules, _ = _mail_rule(tmp_path, "internal")
+    mailed: list = []
+    email = EmailChannel(wired.acl, {"to": "x@y.se", "project": "memaix"}, _smtp=SimpleNamespace(send_message=mailed.append))
+    hook = _Hook()
+    event = {"type": "internal", "project": "memaix", "id": "i1", "payload": {"subject": "klar"}}
+    (res,) = evaluate(rules, wired.acl, event, tools={"_channels": [email, hook]})
+    assert res["ok"] is True and hook.sent == ["klar"] and mailed == []
+
+
+def test_rule_notify_error_never_contains_the_webhook_url(wired, tmp_path):
+    from memaix_gateway.rules.engine import evaluate
+
+    wired.cfg["memaix"]["mail_send_unlock"]["enabled"] = False
+    rules, rule = _mail_rule(tmp_path, "internal")
+    hook = _Hook(fail_with=f"500 Server Error for url: {_DISCORD}?token=abc")
+    event = {"type": "internal", "project": "memaix", "id": "i1", "payload": {"subject": "x"}}
+    (res,) = evaluate(rules, wired.acl, event, tools={"_channels": [hook]})
+    assert res["ok"] is False
+    assert "HEMLIGT" not in repr(res) and "1234567890" not in repr(res)
+    assert res["actions"][0]["errors"] == ["_Hook: RuntimeError"]
+    assert "HEMLIGT" not in repr(rules.list_runs(rule["id"]))
+
+
+def test_code_channel_with_the_brief_webhook_id_is_refused_end_to_end(wired, monkeypatch):
+    # Same Discord webhook id, different token and host alias: still one webhook.
+    brief = _DISCORD.replace("HEMLIGTwebhookTOKENabc-_123", "annatTOKEN").replace("discord.com", "ptb.discord.com")
+    server._get_notify().set_prefs("eve", now_iso="2026-10-26T00:00:00", channels=[{"type": "webhook", "url": brief}])
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "discord", "url": _DISCORD}]
+    http = _Http()
+    _real_channels(monkeypatch, http)
+    with pytest.raises(PermissionError, match="osäker kanalkonfiguration") as exc:
+        server.email_send_unlock_request(ctx=_Ctx("s1"))
+    assert http.posts == [] and "HEMLIGT" not in str(exc.value)

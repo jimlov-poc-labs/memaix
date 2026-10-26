@@ -362,6 +362,25 @@ def test_brief_roundtrip(rig, tmp_path, monkeypatch):
     assert client.post("/app/api/brief", json={"brief_time": "25:99"}).status_code == 400
 
 
+def test_brief_web_email_channel_needs_owner_of_its_project(rig, tmp_path, monkeypatch):
+    client, current, _, _, _ = rig
+    from memaix_gateway.notify.store import NotifyStore
+    from memaix_gateway.web.api import brief as brief_mod
+
+    store = NotifyStore.for_path(tmp_path / "notify.db")
+    monkeypatch.setattr(brief_mod, "_notify_store", lambda: store)
+    from memaix_gateway import server as server_mod
+    from memaix_gateway.safety.audit import AuditLog
+
+    monkeypatch.setattr(server_mod, "_audit", AuditLog.for_path(tmp_path / "srv-audit.db"))
+    channel = {"type": "email", "to": "x@attacker.test", "project": "proj"}
+    current["user"] = "bob"  # reader in proj
+    assert client.post("/app/api/brief", json={"channels": [channel]}).status_code == 403
+    assert store.get_prefs("bob") is None
+    current["user"] = "alice"  # owner
+    assert client.post("/app/api/brief", json={"channels": [channel]}).status_code == 200
+
+
 def test_search_requires_auth_and_empty_query_ok(rig, monkeypatch):
     client, _, _, _, _ = rig
     assert client.get("/app/api/search?q=").json()["results"] == []

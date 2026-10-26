@@ -17,7 +17,7 @@ def _run_rule(acl, rule: dict, event: dict, tools, dry_run: bool) -> dict:
     action_results = [
         run_action(
             acl, rule["memaix_user"], action, event.get("payload", {}),
-            tools=tools, dry_run=dry_run,
+            tools=tools, dry_run=dry_run, trigger_type=(rule.get("trigger") or {}).get("type"),
         )
         for action in rule["actions"]
     ]
