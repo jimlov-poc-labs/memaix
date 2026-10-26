@@ -584,8 +584,9 @@ def test_code_never_in_result_audit_or_logs(wired, caplog, tmp_path):
         unlocked = server.email_send_unlock(code, ctx=ctx)
     assert code not in repr(result) and code not in repr(unlocked)
     assert code not in caplog.text
-    audit_bytes = (tmp_path / "audit.db").read_bytes()
-    assert code.encode() not in audit_bytes
+    rows = server._get_audit().tail(200)
+    assert any(r["tool"] == "email_send_unlock" and r["ok"] for r in rows)
+    assert code not in repr(rows)
     assert result["channels"] == ["ntfy-notis"]
 
 
@@ -642,6 +643,25 @@ def test_email_send_in_send_unlock_project_needs_unlock(wired, monkeypatch):
     t_email.email_send(wired.acl, "jimmy", "memaix", "a@x.se", "Hej", "Text",
                        _smtp=SimpleNamespace(send_message=sent.append), _confirmed=True)
     assert len(sent) == 1
+
+
+def test_service_client_overview_is_held_to_its_projects(wired, monkeypatch):
+    monkeypatch.setattr(server, "_service_client", lambda: SimpleNamespace(client_id="n8n", projects=["jimlov"]))
+    result = server.email_overview(ctx=_Ctx("sc"))
+    assert {b["project"] for b in result["boxes"]} == {"jimlov"}
+    assert "shared@memaix.se" not in repr(result)
+    wider = server.email_overview(projects=["memaix", "jimlov"], ctx=_Ctx("sc"))
+    assert {b["project"] for b in wider["boxes"]} == {"jimlov"}
+
+
+def test_hostile_reply_to_is_stopped_by_allowlist(wired):
+    wired.acl.projects["memaix"]["allowlist"] = ["@box.se"]
+    wired.boxes["imap_user:info@box.se"].msgs["9"] = _Msg("9", subject="Faktura", reply_to=("evil@attacker.test",))
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    with pytest.raises(PermissionError, match="review_required"):
+        server.email_reply("imap_user:info@box.se|9", "Betalt", project="memaix", ctx=ctx)
+    assert wired.sent == []
 
 
 def test_injection_in_body_never_triggers_a_send(wired):

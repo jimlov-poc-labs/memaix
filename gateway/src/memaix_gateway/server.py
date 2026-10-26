@@ -2787,6 +2787,11 @@ def email_overview(
 
     user = _user()
     acl = _get_acl()
+    sc = _service_client()
+    if sc is not None:
+        # The dispatch gate only checks a parameter named `project`; this tool
+        # spans projects, so a service client is held to its allowlist here.
+        projects = [p for p in (projects if projects is not None else sc.projects) if p in sc.projects]
     _ensure_fresh_microsoft_mail_token(user)
     _ensure_fresh_google_mail_token(user)
     planned = plan_sources(acl, _get_token_store(), default_registry(), user, projects)
