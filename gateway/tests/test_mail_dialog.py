@@ -820,6 +820,81 @@ def test_discord_code_channel_puts_code_in_content_and_never_waits():
     assert kwargs["allow_redirects"] is False
 
 
+class _SeqHttp(_Http):
+    """Fails (raises, or answers `status`) on the n:th post only."""
+
+    def __init__(self, fail_on: int, status: int | None = None):
+        super().__init__()
+        self.fail_on = fail_on
+        self.fail_status = status
+
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        if len(self.posts) == self.fail_on:
+            if self.fail_status is None:
+                raise RuntimeError(f"500 Server Error for url: {url}")
+            return SimpleNamespace(status_code=self.fail_status, text="")
+        return SimpleNamespace(status_code=204, text='{"id": "999"}')
+
+
+def test_discord_code_comes_alone_after_the_explanation():
+    # Jimmy 2026-10-26: the code in a message of its own, nothing else in
+    # it, so a long press on the phone copies exactly the code.
+    http = _Http()
+    (ch,) = mu.build_code_channels([{"type": "discord", "url": _DISCORD}], set(), _http=http)
+    mu.deliver_code(ch, "12345678", 10)
+    assert len(http.posts) == 2
+    (url1, first), (url2, second) = http.posts
+    assert url1 == url2 == _DISCORD and "wait" not in url1
+    assert first["json"]["content"].startswith(f"**{mu.UNLOCK_SUBJECT}**\nNästa meddelande är din kod")
+    assert "10 minuter" in first["json"]["content"] and "12345678" not in repr(first)
+    assert second["json"] == {"content": "12345678", "allowed_mentions": {"parse": []}}
+    assert first["json"]["allowed_mentions"] == {"parse": []}
+    assert first["allow_redirects"] is False and second["allow_redirects"] is False
+
+
+@pytest.mark.parametrize("status", [None, 500])
+def test_discord_failed_explanation_never_posts_the_code(status):
+    http = _SeqHttp(fail_on=1, status=status)
+    (ch,) = mu.build_code_channels([{"type": "discord", "url": _DISCORD}], set(), _http=http)
+    with pytest.raises(RuntimeError) as exc:
+        mu.deliver_code(ch, "98765432", 10)
+    assert len(http.posts) == 1 and "98765432" not in repr([kw for _url, kw in http.posts])
+    assert "HEMLIGT" not in str(exc.value)
+
+
+@pytest.mark.parametrize("status", [None, 404])
+def test_discord_failed_code_post_fails_the_channel(status):
+    http = _SeqHttp(fail_on=2, status=status)
+    (ch,) = mu.build_code_channels([{"type": "discord", "url": _DISCORD}], set(), _http=http)
+    with pytest.raises(RuntimeError) as exc:
+        mu.deliver_code(ch, "12345678", 10)
+    assert "HEMLIGT" not in str(exc.value)
+
+
+def test_other_code_channels_still_get_one_message():
+    http = _Http(status=200)
+    (ch,) = mu.build_code_channels([{"type": "ntfy", "topic": _TOPIC}], set(), _http=http)
+    mu.deliver_code(ch, "12345678", 10)
+    assert [kw["data"] for _url, kw in http.posts] == [mu.code_message("12345678", 10).encode("utf-8")]
+
+
+def test_unlock_discord_failing_code_post_counts_as_failed_channel(wired, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "discord", "url": _DISCORD}]
+    _real_channels(monkeypatch, _SeqHttp(fail_on=2))
+    with pytest.raises(PermissionError, match="kunde inte levereras"):
+        server.email_send_unlock_request(ctx=_Ctx("s1"))
+    server._rate_limiter._windows.clear()
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [
+        {"type": "discord", "url": _DISCORD}, {"type": "ntfy", "topic": _TOPIC},
+    ]
+    _real_channels(monkeypatch, _SeqHttp(fail_on=2))
+    out = server.email_send_unlock_request(ctx=_Ctx("s2"))
+    assert out["failed_channels"] == 1 and out["channels"] == ["ntfy-notis"]
+    assert "HEMLIGT" not in repr(out) and "HEMLIGT" not in caplog.text
+
+
 def test_ntfy_code_channel_sends_token(monkeypatch):
     monkeypatch.setenv("UNLOCK_NTFY_TOKEN", "tk_abc")
     monkeypatch.setenv("UNLOCK_NTFY_TOPIC", _TOPIC)
@@ -852,7 +927,9 @@ def test_unlock_via_discord_never_exposes_the_url(wired, monkeypatch, caplog):
     assert "HEMLIGT" not in repr(out) and "999" not in repr(out)
     import re
 
-    code = re.search(r"\b\d{8}\b", http.posts[0][1]["json"]["content"]).group(0)
+    assert len(http.posts) == 2
+    code = http.posts[1][1]["json"]["content"]
+    assert re.fullmatch(r"\d{8}", code)
     assert server.email_send_unlock(code, ctx=_Ctx("s1"))["unlocked"] is True
     assert "HEMLIGT" not in caplog.text
 

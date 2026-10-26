@@ -16,21 +16,26 @@ logger = logging.getLogger(__name__)
 def mask_channel(spec: dict) -> dict:
     """A channel spec safe to show: ntfy topics, webhook URLs and tokens
     are masked (a topic or URL is all it takes to read or post to it)."""
+    return {key: _masked(key, value) for key, value in (spec or {}).items()}
+
+
+def _masked(key: str, value):
+    """One channel field as mask_channel shows it."""
+    if key in ("topic", "url") and isinstance(value, str) and value:
+        return _masked_url(value) if key == "url" else f"{value[:2]}***"
+    if key.endswith("_ref") or key in ("token", "password"):
+        return "***"
+    return value
+
+
+def _masked_url(url: str) -> str:
+    """Scheme and host only: the path and query can carry a token."""
     from urllib.parse import urlsplit
 
-    out: dict = {}
-    for key, value in (spec or {}).items():
-        if key in ("topic", "url") and isinstance(value, str) and value:
-            if key == "url":
-                parts = urlsplit(value)
-                out[key] = f"{parts.scheme}://{parts.hostname or ''}/***" if parts.scheme else "***"
-            else:
-                out[key] = f"{value[:2]}***"
-        elif key.endswith("_ref") or key in ("token", "password"):
-            out[key] = "***"
-        else:
-            out[key] = value
-    return out
+    parts = urlsplit(url)
+    if not parts.scheme:
+        return "***"
+    return f"{parts.scheme}://{parts.hostname or ''}/***"
 
 
 def mask_prefs(prefs: dict | None) -> dict | None:
@@ -275,7 +280,8 @@ def may_send_from(acl, user: str | None, project: str | None) -> bool:
         return False
     try:
         acl.enforce(user, project, "owner")
-    except Exception:  # noqa: BLE001 - AccessDenied, or anything else: fail closed
+    except Exception:  # noqa: BLE001
+        # AccessDenied, or anything else: fail closed
         return False
     return True
 
@@ -310,38 +316,49 @@ def build_channels(
     configured: every sender (brief_send_now, the scheduled brief, rule
     notify) goes through this function, and a stored spec may predate a
     grant being revoked."""
-    from .. import config as cfg_mod
-
-    def _reject(index: int, ctype: object, reason: str) -> None:
-        if rejected is not None:
-            shown = ctype if ctype in _KNOWN_TYPES else "okänd"
-            rejected.append({"index": index, "type": shown, "reason": reason})
-
     channels: list[NotificationChannel] = []
     for index, spec in enumerate(specs or []):
         ctype = spec.get("type")
         try:
-            if ctype == "email":
-                if not may_send_from(acl, user, spec.get("project")):
-                    logger.warning("email channel skipped: user is not owner of its project")
-                    _reject(index, ctype, "du är inte ägare av projektet som e-posten skickas från")
-                    continue
-                channels.append(EmailChannel(acl, spec, _smtp=_smtp))
-            elif ctype == "webhook":
-                url = spec.get("url") or cfg_mod.secret(spec.get("url_ref"))
-                if not url:
-                    raise ValueError("webhook channel needs 'url' or 'url_ref'")
-                channels.append(WebhookChannel(url, spec.get("format", "raw"), _http=_http))
-            elif ctype == "ntfy":
-                channels.append(NtfyChannel(spec["topic"], spec.get("server", "https://ntfy.sh"), _http=_http))
-            else:
-                logger.warning("unknown notification channel type: %r", ctype)
-                _reject(index, ctype, "okänd kanaltyp")
+            built = _build_channel(ctype, spec, acl=acl, user=user, _http=_http, _smtp=_smtp)
         except Exception as exc:
             # Not the spec itself: it holds the webhook URL / ntfy topic.
             logger.warning("failed to build notification channel of type %r", ctype)
-            _reject(index, ctype, _refusal_reason(exc))
+            _reject(rejected, index, ctype, _refusal_reason(exc))
+            continue
+        if isinstance(built, str):
+            _reject(rejected, index, ctype, built)
+        else:
+            channels.append(built)
     return channels
+
+
+def _reject(rejected: list[dict] | None, index: int, ctype: object, reason: str) -> None:
+    """Record a skipped spec for build_channels' caller: never the spec itself."""
+    if rejected is not None:
+        shown = ctype if ctype in _KNOWN_TYPES else "okänd"
+        rejected.append({"index": index, "type": shown, "reason": reason})
+
+
+def _build_channel(ctype: object, spec: dict, *, acl, user: str | None, _http, _smtp) -> NotificationChannel | str:
+    """The adapter for one spec, or the reason (shown to the user) it is
+    skipped. Raises if the spec cannot be built."""
+    from .. import config as cfg_mod
+
+    if ctype == "email":
+        if not may_send_from(acl, user, spec.get("project")):
+            logger.warning("email channel skipped: user is not owner of its project")
+            return "du är inte ägare av projektet som e-posten skickas från"
+        return EmailChannel(acl, spec, _smtp=_smtp)
+    if ctype == "webhook":
+        url = spec.get("url") or cfg_mod.secret(spec.get("url_ref"))
+        if not url:
+            raise ValueError("webhook channel needs 'url' or 'url_ref'")
+        return WebhookChannel(url, spec.get("format", "raw"), _http=_http)
+    if ctype == "ntfy":
+        return NtfyChannel(spec["topic"], spec.get("server", "https://ntfy.sh"), _http=_http)
+    logger.warning("unknown notification channel type: %r", ctype)
+    return "okänd kanaltyp"
 
 
 def refused_channels(specs: list[dict], *, acl=None, user: str | None = None) -> list[dict]:

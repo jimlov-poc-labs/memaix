@@ -18,7 +18,8 @@ from __future__ import annotations
 import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
-from typing import Any, Callable
+from itertools import chain
+from typing import Any, Callable, Iterator
 
 from ..acl import AccessDenied
 
@@ -48,6 +49,44 @@ def _can(acl, user: str, project: str, role: str) -> bool:
         return False
 
 
+def _shared_entries(acl, registry, candidates: list[str]) -> Iterator[tuple[str, str, str]]:
+    """(project, label, account) of each candidate's acl.yaml mailbox."""
+    for project in candidates:
+        cfg = _shared_cfg(acl, project)
+        if cfg is None:
+            continue
+        type_ = cfg.get("type", "imap")
+        spec = registry.get_spec("mail", type_)
+        if spec is not None and spec.auth == "shared":
+            yield project, f"{type_}:{project}", cfg.get("user", "")
+
+
+def _first_allowed(token_store, user: str, provider: str, account: str, candidates: list[str]) -> str | None:
+    """First candidate project the linked account is shared with for mail."""
+    return next((p for p in candidates if token_store.is_allowed(user, provider, account, "mail", p)), None)
+
+
+def _usable_accounts(accounts: list[dict], provider: str) -> list[dict]:
+    """The provider's linked accounts, minus those flagged needs_relink."""
+    return [a for a in accounts if a["provider"] == provider and a.get("status") != "needs_relink"]
+
+
+def _linked_entries(token_store, registry, user: str, candidates: list[str]) -> Iterator[tuple[str, str, str]]:
+    """(project, label, account) of each usable linked account."""
+    accounts = token_store.list_accounts(user) if token_store is not None else []
+    for spec in _per_user_mail_specs(registry):
+        provider = spec.provider or spec.type
+        for account in _usable_accounts(accounts, provider):
+            project = _first_allowed(token_store, user, provider, account["account"], candidates)
+            if project is not None:
+                yield project, f"{spec.type}:{account['account']}", account["account"]
+
+
+def _builder(acl, token_store, registry, user: str, project: str, label: str) -> Callable[[], Any]:
+    # A function of its own so each source binds its own project and label.
+    return lambda: build_source(acl, token_store, registry, user, project, label)
+
+
 def plan_sources(acl, token_store, registry, user: str, projects: list[str] | None = None) -> list[PlannedSource]:
     """Every mailbox the user may read, once each, with the project whose
     grant is used. `projects` narrows the projects considered."""
@@ -56,39 +95,16 @@ def plan_sources(acl, token_store, registry, user: str, projects: list[str] | No
     out: list[PlannedSource] = []
     seen_accounts: set[str] = set()
     seen_labels: set[str] = set()
-
-    def add(project: str, label: str, account: str) -> None:
+    entries = chain(_shared_entries(acl, registry, candidates),
+                    _linked_entries(token_store, registry, user, candidates))
+    for project, label, account in entries:
         key = (account or label).lower()
         if key in seen_accounts or label in seen_labels:
-            return
+            continue
         seen_accounts.add(key)
         seen_labels.add(label)
-        out.append(PlannedSource(
-            project, label, account or label,
-            lambda: build_source(acl, token_store, registry, user, project, label),
-        ))
-
-    for project in candidates:
-        cfg = _shared_cfg(acl, project)
-        if cfg is not None:
-            type_ = cfg.get("type", "imap")
-            spec = registry.get_spec("mail", type_)
-            if spec is not None and spec.auth == "shared":
-                add(project, f"{type_}:{project}", cfg.get("user", ""))
-
-    accounts = token_store.list_accounts(user) if token_store is not None else []
-    for spec in _per_user_mail_specs(registry):
-        provider = spec.provider or spec.type
-        for account in accounts:
-            if account["provider"] != provider or account.get("status") == "needs_relink":
-                continue
-            project = next(
-                (p for p in candidates
-                 if token_store.is_allowed(user, provider, account["account"], "mail", p)),
-                None,
-            )
-            if project is not None:
-                add(project, f"{spec.type}:{account['account']}", account["account"])
+        out.append(PlannedSource(project, label, account or label,
+                                 _builder(acl, token_store, registry, user, project, label)))
     return out
 
 
@@ -140,30 +156,40 @@ def _derive_smtp_host(imap_host: str) -> str:
     )
 
 
-def _smtp_settings(acl, token_store, user: str, project: str, label: str) -> tuple[str, int, str, str]:
-    """(host, port, login, password) for sending from `label`. Never logged."""
+def _linked_smtp(token_store, user: str, rest: str) -> tuple[str, int, str, str]:
+    """SMTP settings stored with a linked IMAP account (cli link-imap / account_link_imap)."""
+    token = token_store.load_one(user, "imap", rest) or {}
+    host = token.get("smtp_host") or _derive_smtp_host(token.get("host", ""))
+    port = int(token.get("smtp_port") or 587)
+    login = token.get("smtp_user") or token.get("user", "")
+    password = token.get("password")
+    if not password or not login:
+        raise ValueError(f"kontot {rest!r} saknar inloggning för SMTP")
+    return host, port, login, password
+
+
+def _project_smtp(acl, project: str) -> tuple[str, int, str, str]:
+    """SMTP settings of a project's acl.yaml mailbox; its smtp resource wins."""
     from .. import config
 
+    cfg = _shared_cfg(acl, project) or {}
+    smtp = acl.resource(project, "smtp") or {}
+    host = smtp.get("host") or _derive_smtp_host(cfg.get("host", ""))
+    port = int(smtp.get("port", 587))
+    login = smtp.get("user") or cfg.get("user", "")
+    password = config.secret(smtp.get("password_ref") or cfg.get("password_ref"))
+    if password is None:
+        raise ValueError(f"inget lösenord konfigurerat för projektets låda ({project!r})")
+    return host, port, login, password
+
+
+def _smtp_settings(acl, token_store, user: str, project: str, label: str) -> tuple[str, int, str, str]:
+    """(host, port, login, password) for sending from `label`. Never logged."""
     type_, _, rest = label.partition(":")
     if type_ == "imap_user":
-        token = token_store.load_one(user, "imap", rest) or {}
-        host = token.get("smtp_host") or _derive_smtp_host(token.get("host", ""))
-        port = int(token.get("smtp_port") or 587)
-        login = token.get("smtp_user") or token.get("user", "")
-        password = token.get("password")
-        if not password or not login:
-            raise ValueError(f"kontot {rest!r} saknar inloggning för SMTP")
-        return host, port, login, password
+        return _linked_smtp(token_store, user, rest)
     if type_ == "imap":
-        cfg = _shared_cfg(acl, project) or {}
-        smtp = acl.resource(project, "smtp") or {}
-        host = smtp.get("host") or _derive_smtp_host(cfg.get("host", ""))
-        port = int(smtp.get("port", 587))
-        login = smtp.get("user") or cfg.get("user", "")
-        password = config.secret(smtp.get("password_ref") or cfg.get("password_ref"))
-        if password is None:
-            raise ValueError(f"inget lösenord konfigurerat för projektets låda ({project!r})")
-        return host, port, login, password
+        return _project_smtp(acl, project)
     raise ValueError("utskick stöds bara från IMAP-lådor (inte Gmail/Outlook-kopplade konton)")
 
 

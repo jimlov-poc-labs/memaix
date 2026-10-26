@@ -77,8 +77,11 @@ chatt om det spelar roll.
 **Kanaler.** Grundregeln: koden får inte hamna någonstans där modellen kan läsa den, och inget verktyg
 får visa var den skickas. Felmeddelanden, loggar och audit nämner bara kanaltyp, aldrig URL, ämne eller token.
 
-- `discord` (primär, Jimmys val 2026-10-26): en Discord-webhook, helst som `url_ref`. Koden ligger i
-  `content` så att den syns i push-notisen. Måste vara `https://discord.com/api/webhooks/<id>/<token>`
+- `discord` (primär, Jimmys val 2026-10-26): en Discord-webhook, helst som `url_ref`. Två meddelanden:
+  först en förklaring (vad koden är till, hur länge den gäller), sedan ett eget meddelande vars
+  `content` är **bara koden** — inga andra tecken, ingen kodmarkering — så att den syns i push-notisen
+  och ett långt tryck i mobilen kopierar exakt koden (Jimmy 2026-10-26). Misslyckas något av de två
+  anropen räknas kanalen som misslyckad; misslyckas förklaringen skickas koden inte alls. Måste vara `https://discord.com/api/webhooks/<id>/<token>`
   (eller discordapp.com, ptb., canary.). **Ingen query-sträng**: `?wait=true` får Discord att returnera
   meddelandet med id, och med URL + id går meddelandet att läsa tillbaka. Svaret läses aldrig.
 - `ntfy`: ämnet (`topic` eller hellre `topic_ref`) måste vara minst 24 slumptecken (`A-Z a-z 0-9 _ -`),

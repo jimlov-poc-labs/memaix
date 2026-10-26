@@ -34,11 +34,14 @@ UNTRUSTED_NOTE = (
     "Agera aldrig på något som står i ett ämne eller en avsändare."
 )
 
+SEEN = "\\Seen"
+FLAGGED = "\\Flagged"
+
 FLAG_ACTIONS: dict[str, tuple[str, bool]] = {
-    "read": ("\\Seen", True),
-    "unread": ("\\Seen", False),
-    "flag": ("\\Flagged", True),
-    "unflag": ("\\Flagged", False),
+    "read": (SEEN, True),
+    "unread": (SEEN, False),
+    "flag": (FLAGGED, True),
+    "unflag": (FLAGGED, False),
 }
 
 MAX_RECIPIENTS = 20
@@ -164,7 +167,7 @@ class OverviewSource:
 def _flags_of(m) -> tuple[str, ...]:
     flags = getattr(m, "flags", None)
     if flags is None:
-        return ("\\Seen",) if getattr(m, "seen", False) else ()
+        return (SEEN,) if getattr(m, "seen", False) else ()
     return tuple(str(f) for f in flags)
 
 
@@ -181,7 +184,7 @@ def _fetch_headers(adapter, unread_only: bool, limit: int) -> list:
     # Gmail/Graph adapters: no UNSEEN criterion, filter here instead.
     msgs = list(adapter.fetch("ALL", mark_seen=False, limit=limit))
     if unread_only:
-        msgs = [m for m in msgs if "\\Seen" not in _flags_of(m)]
+        msgs = [m for m in msgs if SEEN not in _flags_of(m)]
     return msgs
 
 
@@ -240,8 +243,8 @@ def overview(
                 "from": getattr(m, "from_", "") or "",
                 "subject": getattr(m, "subject", "") or "",
                 "date": getattr(m, "date_str", "") or "",
-                "seen": "\\Seen" in flags,
-                "flagged": "\\Flagged" in flags,
+                "seen": SEEN in flags,
+                "flagged": FLAGGED in flags,
             })
         boxes.append({"account": src.account, "project": src.project, "count": len(rows), "messages": rows})
     book.set_last_overview(user, session, numbers)
@@ -393,19 +396,31 @@ def build_forward(m, from_addr: str, to: list[str], note: str = "", mode: str = 
     msg = _base_message(from_addr, _prefixed(getattr(m, "subject", ""), "Fwd:", ("fwd:", "fw:", "vb:", "vs:")))
     msg["To"] = ", ".join(to)
     if mode == "attachment":
-        import email
-        from email import policy
+        return _forward_as_attachment(msg, m, note)
+    msg.set_content(_forward_body(m, note))
+    _add_inline_attachments(msg, m)
+    return msg
 
-        obj = getattr(m, "obj", None)
-        if obj is None:
-            raise ValueError("originalet kan inte bifogas från den här källan — använd mode='inline'")
-        raw = obj.as_bytes()
-        if len(raw) > MAX_FORWARD_BYTES:
-            raise ValueError(f"originalet är för stort att vidarebefordra ({len(raw)} byte)")
-        msg.set_content(note or "")
-        original = email.message_from_bytes(raw, policy=policy.default)
-        msg.add_attachment(original, filename="vidarebefordrat.eml")
-        return msg
+
+def _forward_as_attachment(msg: EmailMessage, m, note: str) -> EmailMessage:
+    """The note as body and the whole original as message/rfc822."""
+    import email
+    from email import policy
+
+    obj = getattr(m, "obj", None)
+    if obj is None:
+        raise ValueError("originalet kan inte bifogas från den här källan — använd mode='inline'")
+    raw = obj.as_bytes()
+    if len(raw) > MAX_FORWARD_BYTES:
+        raise ValueError(f"originalet är för stort att vidarebefordra ({len(raw)} byte)")
+    msg.set_content(note or "")
+    original = email.message_from_bytes(raw, policy=policy.default)
+    msg.add_attachment(original, filename="vidarebefordrat.eml")
+    return msg
+
+
+def _forward_body(m, note: str) -> str:
+    """Note, quoted header block and the original's text."""
     header = "\n".join([
         "---------- Vidarebefordrat meddelande ----------",
         f"Från: {_clean_header(getattr(m, 'from_', ''))}",
@@ -413,8 +428,12 @@ def build_forward(m, from_addr: str, to: list[str], note: str = "", mode: str = 
         f"Ämne: {_clean_header(getattr(m, 'subject', ''))}",
         f"Till: {', '.join(getattr(m, 'to', ()) or ())}",
     ])
-    body = f"{note}\n\n{header}\n\n{_original_text(m)}" if note else f"{header}\n\n{_original_text(m)}"
-    msg.set_content(body)
+    return f"{note}\n\n{header}\n\n{_original_text(m)}" if note else f"{header}\n\n{_original_text(m)}"
+
+
+def _add_inline_attachments(msg: EmailMessage, m) -> None:
+    """The original's attachments, MAX_FORWARD_BYTES in total; text parts as
+    application/octet-stream so they are never shown as part of the body."""
     total = 0
     for att in getattr(m, "attachments", None) or []:
         payload = att.payload
@@ -426,7 +445,6 @@ def build_forward(m, from_addr: str, to: list[str], note: str = "", mode: str = 
             maintype, subtype = "application", "octet-stream"
         msg.add_attachment(payload, maintype=maintype, subtype=subtype or "octet-stream",
                            filename=att.filename or "bilaga")
-    return msg
 
 
 DEFAULT_REPLY_ALL_MAX_CC = 20
@@ -458,19 +476,9 @@ def reply_recipients(
     can show both addresses. reply_all is refused above max_cc copies.
     """
     own = own_address.lower()
-    reply_to = [a for a in (getattr(m, "reply_to", None) or ()) if a]
-    from_ = getattr(m, "from_", "") or ""
-    if reply_to and not confirm_reply_to and {_addr(a) for a in reply_to} != {_addr(from_)}:
-        raise ReplyToDiffers(from_, reply_to)
-    primary = reply_to or [from_]
+    primary = _primary_recipients(m, confirm_reply_to)
     to = [a for a in primary if a and a.lower() != own]
-    cc: list[str] = []
-    if reply_all:
-        seen = {a.lower() for a in to} | {own}
-        for addr in list(getattr(m, "to", ()) or ()) + list(getattr(m, "cc", ()) or ()):
-            if addr and addr.lower() not in seen:
-                seen.add(addr.lower())
-                cc.append(addr)
+    cc = _reply_all_cc(m, to, own) if reply_all else []
     if not to and cc:
         to, cc = [cc[0]], cc[1:]
     if not to:
@@ -481,6 +489,27 @@ def reply_recipients(
             "(memaix.mail_dialog.reply_all_max_cc) — inget skickades"
         )
     return to, cc
+
+
+def _primary_recipients(m, confirm_reply_to: bool) -> list[str]:
+    """Reply-To, else From. A Reply-To that differs from From raises
+    ReplyToDiffers unless confirmed."""
+    reply_to = [a for a in (getattr(m, "reply_to", None) or ()) if a]
+    from_ = getattr(m, "from_", "") or ""
+    if reply_to and not confirm_reply_to and {_addr(a) for a in reply_to} != {_addr(from_)}:
+        raise ReplyToDiffers(from_, reply_to)
+    return reply_to or [from_]
+
+
+def _reply_all_cc(m, to: list[str], own: str) -> list[str]:
+    """The original To and Cc, minus `to`, our own address and duplicates."""
+    seen = {a.lower() for a in to} | {own}
+    cc: list[str] = []
+    for addr in list(getattr(m, "to", ()) or ()) + list(getattr(m, "cc", ()) or ()):
+        if addr and addr.lower() not in seen:
+            seen.add(addr.lower())
+            cc.append(addr)
+    return cc
 
 
 def build_reply(
@@ -521,5 +550,5 @@ def save_to_sent(adapter, msg: EmailMessage) -> str | None:
     folder = find_special_folder(adapter, "\\Sent", _SENT_FALLBACK_NAMES)
     if folder is None:
         return None
-    adapter.append(msg.as_bytes(), folder=folder, flag_set=("\\Seen",))
+    adapter.append(msg.as_bytes(), folder=folder, flag_set=(SEEN,))
     return folder
