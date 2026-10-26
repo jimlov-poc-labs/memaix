@@ -345,6 +345,10 @@ def check_channel(spec: dict, readable: set[str], exposed: set[str] | frozenset[
                 f"ntfy-ämnet måste vara minst {MIN_NTFY_TOPIC_LEN} slumpade tecken (A-Z, a-z, 0-9, _ eller -) "
                 "— ett gissningsbart ämne kan vem som helst läsa"
             )
+        from urllib.parse import urlsplit
+
+        if urlsplit(str(spec.get("server") or DEFAULT_NTFY_SERVER)).scheme.lower() != "https":
+            raise ValueError("ntfy-kanalens server måste vara https — ämnet får aldrig gå i klartext")
         if ntfy_identity(spec.get("server"), topic) in exposed:
             raise ValueError("ntfy-ämnet används också av en notiskanal som modellen kan se och ändra")
         return

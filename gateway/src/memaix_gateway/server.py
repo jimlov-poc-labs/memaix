@@ -1157,7 +1157,7 @@ def _validate_timezone(tz_name: str) -> None:
 
 
 def _validate_channels(channels: list[dict] | None) -> None:
-    from .notify.channels import _discord_id, ntfy_url
+    from .notify.channels import _discord_id, check_ntfy_url, ntfy_url
     from .safety.net import BlockedURLError, validate_external_url
 
     for spec in channels or []:
@@ -1178,7 +1178,8 @@ def _validate_channels(channels: list[dict] | None) -> None:
         # notify/channels.py right before the request.
         # Webhook: the URL itself. ntfy: the URL NtfyChannel posts to
         # (server + topic, default server included), so what is checked is
-        # what is sent. A Discord host must be https on the standard port.
+        # what is sent. A Discord host must be https on the standard port,
+        # and ntfy must be https (the topic is as secret as a Discord token).
         url: str | None = None
         if spec.get("type") == "ntfy":
             topic = str(spec.get("topic") or "")
@@ -1190,7 +1191,10 @@ def _validate_channels(channels: list[dict] | None) -> None:
         if url:
             try:
                 validate_external_url(url, resolve=False)
-                _discord_id(url)
+                if spec.get("type") == "ntfy":
+                    check_ntfy_url(url)
+                else:
+                    _discord_id(url)
             except BlockedURLError as exc:
                 raise ValueError(f"channel url avvisad: {exc}") from exc
 
@@ -1307,10 +1311,25 @@ def brief_status() -> dict:
         datetime.fromtimestamp(schedule["last_run"], tz=_tz.utc).isoformat()
         if schedule and schedule.get("last_run") else None
     )
-    from .notify.channels import mask_prefs
+    from .notify.channels import mask_channel, mask_prefs, refused_channels
 
+    # Stored channels a send would skip (http ntfy/Discord, ambiguous URL,
+    # mailbox no longer owned): the same check the scheduled brief and
+    # brief_send_now run, so this is what the next send will refuse.
+    specs = prefs.get("channels") or []
+    warnings = [
+        {
+            **r,
+            "channel": mask_channel(specs[r["index"]]),
+            "warning": f"Kanal {r['index'] + 1} ({r['type']}) vägras och hoppas över vid utskick: {r['reason']}",
+        }
+        for r in refused_channels(specs, acl=_get_acl(), user=user)
+    ]
     # Topics and webhook URLs are masked: anyone holding one can read or post.
-    return {"configured": True, "prefs": mask_prefs(prefs), "next_run": next_run, "last_run": last_run}
+    return {
+        "configured": True, "prefs": mask_prefs(prefs), "next_run": next_run, "last_run": last_run,
+        "channel_warnings": warnings,
+    }
 
 
 def _build_brief_now() -> dict:
@@ -1338,7 +1357,9 @@ def brief_preview() -> dict:
 def brief_send_now() -> dict:
     """Build and deliver your brief immediately via your configured channels.
     Ignores quiet hours and the once-per-day duplicate guard — this is an
-    explicit request, so it always sends."""
+    explicit request, so it always sends. Returns how many channels it was
+    delivered to, and how many stored channels were refused (type and
+    reason per channel; fix them with brief_configure)."""
     user = _user()
     acl = _get_acl()
     store = _get_notify()

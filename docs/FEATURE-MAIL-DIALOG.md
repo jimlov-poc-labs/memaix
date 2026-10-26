@@ -83,7 +83,7 @@ får visa var den skickas. Felmeddelanden, loggar och audit nämner bara kanalty
   meddelandet med id, och med URL + id går meddelandet att läsa tillbaka. Svaret läses aldrig.
 - `ntfy`: ämnet (`topic` eller hellre `topic_ref`) måste vara minst 24 slumptecken (`A-Z a-z 0-9 _ -`),
   eftersom vem som helst som kan ämnet kan läsa det. `token_ref` skickas som `Authorization: Bearer`
-  (för skyddade ämnen på egen server eller ntfy.sh-konto).
+  (för skyddade ämnen på egen server eller ntfy.sh-konto). `server` måste vara https.
 - `webhook`: generisk JSON-post `{subject, text}`, samma krav som discord på https och ingen query-sträng.
 - `smtp`: ett eget avsändarkonto med `host`, `port`, `user`, `password_ref`, `from` och `to`.
 
@@ -108,6 +108,19 @@ själv valt. Hemlighetsreferenser hör bara hemma i operatörens konfiguration.
 
 `brief_status` och `brief_configure` maskerar ntfy-ämnen (`ab***`), webhook-URL:er (`https://värd/***`) och
 `*_ref`. Brief-leveransens fel rapporteras bara som kanal- och feltyp.
+
+**Inga tysta fel för vägrade kanaler** (2026-10-26). En sparad kanal som vägras vid utskick (http-ntfy,
+Discord utan https på standardport, tvetydig URL, e-postlåda i ett projekt där användaren inte längre är
+ägare, okänd typ) hoppas över men syns:
+
+- `brief_send_now` returnerar `delivered` (antal levererade), `rejected` (antal vägrade) och
+  `rejected_channels` med `index`, `type` och `reason` per vägrad kanal, aldrig URL eller ämne. `ok` är
+  `false` om kanaler finns men ingen levererades.
+- `brief_status` visar `channel_warnings`: en varning per kanal som nästa utskick skulle vägra, med den
+  maskerade kanalen. Kontrollen är densamma som vid utskick (inget skickas), så den visar också vad den
+  schemalagda briefen hoppar över.
+- Den schemalagda briefen loggar antal och skäl som varning. Någon historik över tidigare utskick sparas
+  inte: det skulle kräva en ny tabell.
 
 I `memaix.yaml` (filens innehåll hamnar under `memaix.` i konfigurationen):
 
@@ -181,6 +194,9 @@ skicka från ett projekt där du är collaborator), `allow_send` **och** en uppl
   olika. Granskning 2026-10-26: `https://attacker.test\@discord.com/...` var discord.com för kontrollen
   men attacker.test för `requests`. En Discord-värd kräver dessutom `https` på standardport, och ett
   ntfy-ämne får bara innehålla A-Z, a-z, 0-9, `_` och `-`.
+- **ntfy kräver https** (Jimmys beslut 2026-10-26, samma linje som Discord): ämnet är lika hemligt som en
+  Discord-token. http vägras när kanalen sparas (brief och kodkanal) och en redan sparad http-kanal hoppas
+  över vid varje utskick. Porten är fri, eftersom en egen ntfy-server kan köra https på annan port än 443.
 - **Reply-To-varningen är information, inte en spärr.** Modellen kan själv anropa `email_reply` med
   `confirm_reply_to=True`; den som läser chatten ska se varningen innan det sker.
 - **Det finns ingen hård mottagar-allowlist.** En upplåst session kan skicka till vilken adress som helst.
