@@ -6,8 +6,9 @@ project with `send_unlock: true`) needs the MCP session to be unlocked
 first. The flow:
 
   1. email_send_unlock_request — the server makes a one-time code and sends
-     it OUTSIDE the model, through a configured channel (ntfy, webhook, or
-     a dedicated SMTP account). The tool result never contains the code.
+     it OUTSIDE the model, through a configured channel (a Discord webhook,
+     ntfy, a webhook, or a dedicated SMTP account). The tool result never
+     contains the code.
   2. The owner reads the code on their phone/mail and types it in the chat.
   3. email_send_unlock(code) — unlocks exactly this (user, MCP session) for
      a short TTL (default 4 h).
@@ -15,8 +16,11 @@ first. The flow:
 Why the channel is checked: a code mailed to a mailbox the model can read
 through email_list/email_search would let the model unlock itself. A
 channel is refused if its sender or recipient is any address a mail tool can
-read (every acl.yaml mailbox, every linked account of any user). See
-`readable_addresses` and `check_channel`.
+read (every acl.yaml mailbox, every linked account of any user, aliases
+and same-domain addresses included). An ntfy topic or webhook that is also
+a brief channel is refused too: the model sets and reads those itself. The
+webhook URL and the topic are never returned, logged or audited. See
+`readable_addresses`, `exposed_identities` and `check_channel`.
 
 State is in memory on purpose: a restart locks every session again, which
 is the safe direction, and the MCP streamable-HTTP sessions it is bound to
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 import ssl
 import threading
@@ -161,6 +166,11 @@ class SendUnlockStore:
     def is_unlocked(self, user: str, session: str) -> bool:
         return self.unlocked_until(user, session) is not None
 
+    def drop_pending(self, user: str, session: str) -> None:
+        """Forget a pending code (the request is still charged)."""
+        with self._lock:
+            self._pending.pop((user, session), None)
+
     def lock(self, user: str, session: str) -> bool:
         with self._lock:
             self._pending.pop((user, session), None)
@@ -171,11 +181,44 @@ class SendUnlockStore:
 # Delivery channel
 # ------------------------------------------------------------------
 
+# Every error message below is shown to the model (deny()) and written to
+# the audit log, so none of them may contain a webhook URL, an ntfy topic or
+# a token. Only field names and channel types.
+
+DEFAULT_NTFY_SERVER = "https://ntfy.sh"
+# An ntfy topic is the only thing between the world and the messages on it,
+# so the code topic must be unguessable (and should come from topic_ref).
+MIN_NTFY_TOPIC_LEN = 24
+_DISCORD_HOSTS = frozenset({
+    "discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com",
+    "ptb.discordapp.com", "canary.discordapp.com",
+})
+_DISCORD_PATH = re.compile(r"^/api/(?:v\d+/)?webhooks/(\d+)/[A-Za-z0-9_-]+/?$")
+# Domains where every alias is derivable by normalisation (dots, +tag,
+# googlemail.com), so a readable address on them does not have to block the
+# whole domain. Other providers (Outlook, iCloud, Proton, own domains with
+# catch-all) allow aliases we cannot derive: there the whole domain is out.
+_GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
 
 def _norm(addr: str) -> str:
     from email.utils import parseaddr
 
     return parseaddr(addr or "")[1].strip().lower()
+
+
+def canonical_address(addr: str) -> str:
+    """Mailbox an address really lands in: lower case, no +tag, and for
+    Gmail no dots and googlemail.com -> gmail.com."""
+    value = _norm(addr)
+    local, sep, domain = value.rpartition("@")
+    if not sep:
+        return value
+    local = local.split("+", 1)[0]
+    if domain in _GMAIL_DOMAINS:
+        domain = "gmail.com"
+        local = local.replace(".", "")
+    return f"{local}@{domain}"
 
 
 def readable_addresses(acl, token_store, *, users: list[str] | None = None) -> set[str]:
@@ -203,24 +246,199 @@ def readable_addresses(acl, token_store, *, users: list[str] | None = None) -> s
     return out
 
 
-def check_channel(spec: dict, readable: set[str]) -> None:
-    """Raise ValueError if `spec` could put the code where a mail tool reads it."""
+def _readable_hit(value: str, readable: set[str]) -> str | None:
+    """Why `value` may land in a readable mailbox, or None."""
+    canon = canonical_address(value)
+    if canon in {canonical_address(r) for r in readable}:
+        return "är (ett alias för) en låda"
+    domain = canon.rpartition("@")[2]
+    domains = {canonical_address(r).rpartition("@")[2] for r in readable}
+    if domain and domain not in _GMAIL_DOMAINS and domain in domains:
+        return "ligger på en domän där en låda"
+    return None
+
+
+def _resolved(spec: dict, key: str) -> str | None:
+    """spec[key] or the secret behind spec[key + '_ref']."""
+    from .. import config
+
+    value = spec.get(key)
+    if value:
+        return str(value)
+    return config.secret(spec.get(f"{key}_ref"))
+
+
+def ntfy_identity(server: str | None, topic: str | None) -> str:
+    """Comparable identity of an ntfy topic (scheme and case of host ignored)."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit((server or DEFAULT_NTFY_SERVER).strip())
+    base = f"{(parts.hostname or '').lower()}{f':{parts.port}' if parts.port else ''}{parts.path.rstrip('/')}"
+    return f"ntfy:{base}/{(topic or '').strip()}"
+
+
+def webhook_identity(url: str | None) -> str:
+    """Comparable identity of a webhook: the webhook id for Discord (all its
+    host aliases are the same webhook), else host + path."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit((url or "").strip())
+    host = (parts.hostname or "").lower()
+    if host in _DISCORD_HOSTS:
+        m = _DISCORD_PATH.match(parts.path)
+        if m:
+            return f"discord:{m.group(1)}"
+    return f"url:{host}{parts.path.rstrip('/')}"
+
+
+def exposed_identities(notify_store) -> set[str]:
+    """ntfy topics and webhook URLs of every user's brief channels.
+
+    The model sets those itself through brief_configure and can read them
+    back, so a code channel must never be one of them.
+    """
+    out: set[str] = set()
+    if notify_store is None:
+        return out
+    for channels in notify_store.all_channels():
+        for spec in channels or []:
+            ctype = (spec or {}).get("type")
+            try:
+                if ctype == "ntfy" and spec.get("topic"):
+                    out.add(ntfy_identity(spec.get("server"), spec.get("topic")))
+                elif ctype in ("webhook", "discord"):
+                    url = _resolved(spec, "url")
+                    if url:
+                        out.add(webhook_identity(url))
+            except Exception:  # noqa: BLE001 - a broken brief spec is not a code channel
+                continue
+    return out
+
+
+def _check_url(url: str | None, label: str) -> str:
+    from urllib.parse import urlsplit
+
+    if not url:
+        raise ValueError(f"{label}-kanalen behöver 'url' eller 'url_ref'")
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise ValueError(f"{label}-kanalens URL måste vara https")
+    if parts.query or parts.fragment:
+        # ?wait=true would make the service return the message (and its id),
+        # which together with the URL lets anyone read the code back.
+        raise ValueError(f"{label}-kanalens URL får inte ha någon query-sträng (t.ex. ?wait=true)")
+    return url
+
+
+def check_channel(spec: dict, readable: set[str], exposed: set[str] | frozenset[str] = frozenset()) -> None:
+    """Raise ValueError if `spec` could put the code where the model reads it.
+
+    Error texts never contain the URL, topic or token.
+    """
     ctype = spec.get("type")
-    if ctype in ("ntfy", "webhook"):
+    if ctype == "ntfy":
+        topic = _resolved(spec, "topic")
+        if not topic:
+            raise ValueError("ntfy-kanalen behöver 'topic' eller 'topic_ref'")
+        if len(topic) < MIN_NTFY_TOPIC_LEN or not re.fullmatch(r"[A-Za-z0-9_-]+", topic):
+            raise ValueError(
+                f"ntfy-ämnet måste vara minst {MIN_NTFY_TOPIC_LEN} slumpade tecken (A-Z, a-z, 0-9, _ eller -) "
+                "— ett gissningsbart ämne kan vem som helst läsa"
+            )
+        if ntfy_identity(spec.get("server"), topic) in exposed:
+            raise ValueError("ntfy-ämnet används också av en notiskanal som modellen kan se och ändra")
+        return
+    if ctype in ("discord", "webhook"):
+        url = _check_url(_resolved(spec, "url"), ctype)
+        if ctype == "discord" and not webhook_identity(url).startswith("discord:"):
+            raise ValueError("discord-kanalen kräver en Discord-webhook (https://discord.com/api/webhooks/<id>/<token>)")
+        if webhook_identity(url) in exposed:
+            raise ValueError(f"{ctype}-kanalen pekar på samma webhook som en notiskanal som modellen kan se och ändra")
         return
     if ctype != "smtp":
         raise ValueError(
-            f"kanaltyp {ctype!r} stöds inte för upplåsningskoder (använd ntfy, webhook eller smtp)"
+            f"kanaltyp {ctype!r} stöds inte för upplåsningskoder (använd discord, ntfy, webhook eller smtp)"
         )
     for field_name in ("to", "from", "user"):
         value = _norm(str(spec.get(field_name) or ""))
         if field_name in ("to", "from") and not value:
             raise ValueError(f"smtp-kanalen saknar {field_name!r}")
-        if value and value in readable:
+        hit = _readable_hit(value, readable) if value else None
+        if hit:
             raise ValueError(
-                f"smtp-kanalens {field_name} ({value}) är en låda som Memaix mejlverktyg kan läsa — "
-                "då kan modellen läsa koden själv. Välj en låda utanför Memaix, eller ntfy."
+                f"smtp-kanalens {field_name} ({value}) {hit} som Memaix mejlverktyg kan läsa — "
+                "då kan modellen läsa koden själv. Välj en låda utanför Memaix, eller discord."
             )
+
+
+class _HttpCodeChannel:
+    """POSTs the code and throws the response away.
+
+    The response is never read or returned (a Discord message id plus the
+    webhook URL is enough to fetch the message back), and failures are
+    re-raised without the URL: requests' HTTPError text contains it.
+    """
+
+    def __init__(self, label: str, url: str, *, headers: dict | None = None, _http=None) -> None:
+        self._label = label
+        self._url = url
+        self._headers = headers or {}
+        self._http = _http
+
+    def _payload(self, subject: str, text: str) -> dict:
+        return {"json": {"subject": subject, "text": text}}
+
+    def send(self, subject: str, markdown: str, text: str) -> None:  # NOSONAR - channel interface
+        http = self._http
+        try:
+            if http is None:
+                import requests
+
+                from ..safety.net import validate_external_url
+
+                http = requests
+                validate_external_url(self._url)
+            resp = http.post(
+                self._url, headers=self._headers, timeout=10, allow_redirects=False, **self._payload(subject, text),
+            )
+            status = int(getattr(resp, "status_code", 200) or 200)
+        except Exception:  # noqa: BLE001 - the original text can hold the URL
+            raise RuntimeError(f"{self._label}: leveransen misslyckades") from None
+        if not 200 <= status < 300:
+            raise RuntimeError(f"{self._label}: svarade {status}")
+
+
+class DiscordCodeChannel(_HttpCodeChannel):
+    """Discord webhook: the code in `content`, so it shows in the push
+    notification. No ?wait=true (refused in check_channel) and no mentions."""
+
+    def __init__(self, url: str, *, _http=None) -> None:
+        super().__init__("discord", url, _http=_http)
+
+    def _payload(self, subject: str, text: str) -> dict:
+        return {"json": {"content": f"**{subject}**\n{text}"[:2000], "allowed_mentions": {"parse": []}}}
+
+
+class WebhookCodeChannel(_HttpCodeChannel):
+    def __init__(self, url: str, *, _http=None) -> None:
+        super().__init__("webhook", url, _http=_http)
+
+
+class NtfyCodeChannel(_HttpCodeChannel):
+    """ntfy, optionally with an access token (token_ref) for a protected topic."""
+
+    def __init__(self, server: str | None, topic: str, token: str | None = None, *, _http=None) -> None:
+        from ..notify.channels import _header_safe
+
+        headers = {"Title": _header_safe(UNLOCK_SUBJECT)}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        super().__init__(
+            "ntfy", f"{(server or DEFAULT_NTFY_SERVER).rstrip('/')}/{topic}", headers=headers, _http=_http,
+        )
+
+    def _payload(self, subject: str, text: str) -> dict:
+        return {"data": text.encode("utf-8")}
 
 
 class SmtpCodeChannel:
@@ -261,27 +479,28 @@ class SmtpCodeChannel:
             s.send_message(msg)
 
 
-def build_code_channels(specs: list[dict], readable: set[str], *, _http=None, _smtp_factory=None) -> list:
-    """Channel objects for `specs`, each checked against `readable` first.
+def build_code_channels(
+    specs: list[dict], readable: set[str], exposed: set[str] | frozenset[str] = frozenset(),
+    *, _http=None, _smtp_factory=None,
+) -> list:
+    """Channel objects for `specs`, each checked against `readable` and
+    `exposed` first.
 
     Raises ValueError on the first unsafe or unknown channel: a half-safe
     channel list is not something to quietly work around.
     """
-    from ..notify.channels import NtfyChannel, WebhookChannel
-
     channels: list = []
     for spec in specs:
-        check_channel(spec, readable)
+        check_channel(spec, readable, exposed)
         ctype = spec["type"]
         if ctype == "ntfy":
-            channels.append(NtfyChannel(spec["topic"], spec.get("server", "https://ntfy.sh"), _http=_http))
+            channels.append(NtfyCodeChannel(
+                spec.get("server"), _resolved(spec, "topic") or "", _resolved(spec, "token"), _http=_http,
+            ))
+        elif ctype == "discord":
+            channels.append(DiscordCodeChannel(_resolved(spec, "url") or "", _http=_http))
         elif ctype == "webhook":
-            from .. import config
-
-            url = spec.get("url") or config.secret(spec.get("url_ref"))
-            if not url:
-                raise ValueError("webhook-kanalen behöver 'url' eller 'url_ref'")
-            channels.append(WebhookChannel(url, spec.get("format", "raw"), _http=_http))
+            channels.append(WebhookCodeChannel(_resolved(spec, "url") or "", _http=_http))
         else:
             channels.append(SmtpCodeChannel(spec, _smtp_factory=_smtp_factory))
     return channels
@@ -305,4 +524,6 @@ def channel_hint(spec: dict) -> str:
         return f"mejl till {local[:1]}***@{domain}" if domain else "mejl"
     if ctype == "ntfy":
         return "ntfy-notis"
-    return str(ctype)
+    if ctype == "discord":
+        return "Discord"
+    return "webhook" if ctype == "webhook" else "okänd kanal"

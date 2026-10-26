@@ -13,6 +13,32 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 
+def mask_channel(spec: dict) -> dict:
+    """A channel spec safe to show: ntfy topics, webhook URLs and tokens
+    are masked (a topic or URL is all it takes to read or post to it)."""
+    from urllib.parse import urlsplit
+
+    out: dict = {}
+    for key, value in (spec or {}).items():
+        if key in ("topic", "url") and isinstance(value, str) and value:
+            if key == "url":
+                parts = urlsplit(value)
+                out[key] = f"{parts.scheme}://{parts.hostname or ''}/***" if parts.scheme else "***"
+            else:
+                out[key] = f"{value[:2]}***"
+        elif key.endswith("_ref") or key in ("token", "password"):
+            out[key] = "***"
+        else:
+            out[key] = value
+    return out
+
+
+def mask_prefs(prefs: dict | None) -> dict | None:
+    if prefs is None:
+        return None
+    return {**prefs, "channels": [mask_channel(c) for c in prefs.get("channels") or []]}
+
+
 class NotificationChannel(Protocol):
     def send(self, subject: str, markdown: str, text: str) -> None: ...
 
@@ -108,9 +134,10 @@ def _header_safe(value: str) -> str:
 
 
 class NtfyChannel:
-    def __init__(self, topic: str, server: str = "https://ntfy.sh", *, _http=None) -> None:
+    def __init__(self, topic: str, server: str = "https://ntfy.sh", *, token: str | None = None, _http=None) -> None:
         self._topic = topic
         self._server = server.rstrip("/")
+        self._token = token
         self._http = _http
 
     # channel interface fixes this signature
@@ -122,11 +149,14 @@ class NtfyChannel:
             http = requests
             from ..safety.net import validate_external_url
             validate_external_url(url)  # authoritative SSRF check before the real request
+        headers = {"Title": _header_safe(subject)}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
         # allow_redirects=False — se kommentaren i safety/net.py.
         resp = http.post(
             url,
             data=text.encode("utf-8"),
-            headers={"Title": _header_safe(subject)},
+            headers=headers,
             timeout=10,
             allow_redirects=False,
         )
@@ -152,9 +182,13 @@ def build_channels(specs: list[dict], *, acl=None, _http=None, _smtp=None) -> li
                     raise ValueError("webhook channel needs 'url' or 'url_ref'")
                 channels.append(WebhookChannel(url, spec.get("format", "raw"), _http=_http))
             elif ctype == "ntfy":
-                channels.append(NtfyChannel(spec["topic"], spec.get("server", "https://ntfy.sh"), _http=_http))
+                channels.append(NtfyChannel(
+                    spec["topic"], spec.get("server", "https://ntfy.sh"),
+                    token=cfg_mod.secret(spec.get("token_ref")), _http=_http,
+                ))
             else:
                 logger.warning("unknown notification channel type: %r", ctype)
         except Exception:
-            logger.warning("failed to build notification channel %r", spec, exc_info=True)
+            # Not the spec itself: it holds the webhook URL / ntfy topic.
+            logger.warning("failed to build notification channel of type %r", ctype)
     return channels

@@ -64,8 +64,9 @@ def deliver(
             ch.send(brief_content["subject"], brief_content["markdown"], brief_content["text"])
             delivered += 1
         except Exception as exc:
-            errors.append(str(exc))
-            logger.warning("brief channel delivery failed", exc_info=True)
+            # Type only: requests' error text contains the webhook URL / ntfy topic.
+            errors.append(f"{type(ch).__name__}: {type(exc).__name__}")
+            logger.warning("brief channel delivery failed (%s: %s)", type(ch).__name__, type(exc).__name__)
 
     store.record_sent(idem_key, now.isoformat())
 

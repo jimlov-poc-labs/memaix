@@ -203,8 +203,12 @@ def wired(tmp_path, monkeypatch):
         def send(self, subject, markdown, text):
             delivered.append(text)
 
-    monkeypatch.setattr(mu, "build_code_channels", lambda specs, readable, **k: [_Channel() for _ in specs])
+    monkeypatch.setattr(mu, "build_code_channels", lambda specs, readable, exposed=frozenset(), **k: [_Channel() for _ in specs])
     return SimpleNamespace(acl=acl, store=store, boxes=boxes, sent=sent, delivered=delivered, cfg=cfg)
+
+
+_TOPIC = "Kq7xV2mPz9LwR4tYb8NcH3sJ"  # 24 chars, unguessable shape
+_DISCORD = "https://discord.com/api/webhooks/1234567890/HEMLIGTwebhookTOKENabc-_123"
 
 
 def _code(delivered: list[str]) -> str:
@@ -340,7 +344,7 @@ def test_overview_reports_failing_box_and_keeps_others():
 
 def test_build_reply_threads_and_reply_all_excludes_self():
     m = _Msg("7", to=("info@box.se", "kollega@box.se"), cc=("chef@example.com",), reply_to=("svar@example.com",))
-    msg = mc.build_reply(m, "info@box.se", "Tack!", reply_all=True)
+    msg = mc.build_reply(m, "info@box.se", "Tack!", reply_all=True, confirm_reply_to=True)
     assert msg["Subject"] == "Re: Offert"
     assert msg["To"] == "svar@example.com"
     assert "kollega@box.se" in msg["Cc"] and "chef@example.com" in msg["Cc"] and "info@box.se" not in msg["Cc"]
@@ -448,7 +452,7 @@ def test_channel_check_refuses_readable_mailboxes(wired):
     with pytest.raises(ValueError, match="stöds inte"):
         mu.check_channel({"type": "email", "to": "jimmy@annan.se"}, readable)
     mu.check_channel({"type": "smtp", "to": "jimmy@annan.se", "from": "kod@annan.se"}, readable)
-    mu.check_channel({"type": "ntfy", "topic": "x"}, readable)
+    mu.check_channel({"type": "ntfy", "topic": _TOPIC}, readable)
 
 
 def test_smtp_code_channel_sends_code_only_in_body():
@@ -660,7 +664,7 @@ def test_hostile_reply_to_is_stopped_by_allowlist(wired):
     ctx = _Ctx("s1")
     _unlock(wired, ctx)
     with pytest.raises(PermissionError, match="review_required"):
-        server.email_reply("imap_user:info@box.se|9", "Betalt", project="memaix", ctx=ctx)
+        server.email_reply("imap_user:info@box.se|9", "Betalt", project="memaix", confirm_reply_to=True, ctx=ctx)
     assert wired.sent == []
 
 
@@ -729,3 +733,313 @@ def test_smtp_host_derivation():
     assert mail_accounts._derive_smtp_host("imap.purelymail.com") == "smtp.purelymail.com"
     with pytest.raises(ValueError):
         mail_accounts._derive_smtp_host("mail.example.com")
+
+
+# ------------------------------------------------------------------
+# Review fixes (Simon 2026-10-26): every test below kills a mutation
+# ------------------------------------------------------------------
+
+
+class _Http:
+    """requests stand-in that records posts (or fails with the URL in the text)."""
+
+    def __init__(self, status=204, fail=False):
+        self.posts = []
+        self.status = status
+        self.fail = fail
+
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        if self.fail:
+            raise RuntimeError(f"500 Server Error for url: {url}")
+        return SimpleNamespace(status_code=self.status, text='{"id": "999"}')
+
+
+def _real_channels(monkeypatch, http):
+    """Use the real build_code_channels/check_channel with a fake http."""
+    real = _REAL_BUILD
+    monkeypatch.setattr(
+        mu, "build_code_channels",
+        lambda specs, readable, exposed=frozenset(), **k: real(specs, readable, exposed, _http=http),
+    )
+
+
+_REAL_BUILD = mu.build_code_channels
+
+
+# --- 1. The model must not be able to read the code ---------------------
+
+
+def test_ntfy_code_topic_must_be_unguessable():
+    with pytest.raises(ValueError, match="minst 24"):
+        mu.check_channel({"type": "ntfy", "topic": "jimmy-memaix"}, set())
+    mu.check_channel({"type": "ntfy", "topic": _TOPIC}, set())
+
+
+def test_code_channel_sharing_a_brief_ntfy_topic_is_refused(wired, tmp_path):
+    # The brief spec omits server (= ntfy.sh); the code spec spells it differently.
+    server._get_notify().set_prefs("eve", now_iso="2026-10-26T00:00:00", channels=[{"type": "ntfy", "topic": _TOPIC}])
+    exposed = mu.exposed_identities(server._get_notify())
+    with pytest.raises(ValueError, match="notiskanal") as exc:
+        mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "HTTPS://NTFY.SH/"}, set(), exposed)
+    assert _TOPIC not in str(exc.value)
+    mu.check_channel({"type": "ntfy", "topic": _TOPIC[::-1]}, set(), exposed)
+
+
+def test_code_channel_sharing_a_brief_discord_webhook_is_refused(wired):
+    alias = _DISCORD.replace("https://discord.com", "https://canary.discordapp.com")
+    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", channels=[{"type": "webhook", "url": alias}])
+    exposed = mu.exposed_identities(server._get_notify())
+    with pytest.raises(ValueError, match="samma webhook") as exc:
+        mu.check_channel({"type": "discord", "url": _DISCORD}, set(), exposed)
+    assert "HEMLIGT" not in str(exc.value)
+
+
+@pytest.mark.parametrize("url", [_DISCORD + "?wait=true", _DISCORD + "?thread_id=1", _DISCORD.replace("https", "http")])
+def test_code_webhook_url_with_query_or_plain_http_is_refused(url):
+    with pytest.raises(ValueError) as exc:
+        mu.check_channel({"type": "discord", "url": url}, set())
+    assert "HEMLIGT" not in str(exc.value)
+
+
+def test_discord_type_requires_a_discord_webhook():
+    with pytest.raises(ValueError, match="Discord-webhook"):
+        mu.check_channel({"type": "discord", "url": "https://hooks.example.com/x"}, set())
+
+
+def test_discord_code_channel_puts_code_in_content_and_never_waits():
+    http = _Http()
+    (ch,) = mu.build_code_channels([{"type": "discord", "url": _DISCORD}], set(), _http=http)
+    assert ch.send(mu.UNLOCK_SUBJECT, "x", mu.code_message("12345678", 10)) is None
+    url, kwargs = http.posts[0]
+    assert url == _DISCORD and "wait" not in url
+    body = kwargs["json"]
+    assert "12345678" in body["content"] and "embeds" not in body
+    assert body["allowed_mentions"] == {"parse": []}
+    assert kwargs["allow_redirects"] is False
+
+
+def test_ntfy_code_channel_sends_token(monkeypatch):
+    monkeypatch.setenv("UNLOCK_NTFY_TOKEN", "tk_abc")
+    monkeypatch.setenv("UNLOCK_NTFY_TOPIC", _TOPIC)
+    http = _Http(status=200)
+    (ch,) = mu.build_code_channels(
+        [{"type": "ntfy", "topic_ref": "env:UNLOCK_NTFY_TOPIC", "token_ref": "env:UNLOCK_NTFY_TOKEN"}], set(), _http=http,
+    )
+    ch.send(mu.UNLOCK_SUBJECT, "x", "kod")
+    url, kwargs = http.posts[0]
+    assert url == f"https://ntfy.sh/{_TOPIC}"
+    assert kwargs["headers"]["Authorization"] == "Bearer tk_abc"
+
+
+def test_brief_ntfy_channel_sends_token(monkeypatch):
+    from memaix_gateway.notify.channels import build_channels
+
+    monkeypatch.setenv("BRIEF_NTFY_TOKEN", "tk_b")
+    http = _Http(status=200)
+    (ch,) = build_channels([{"type": "ntfy", "topic": "t", "token_ref": "env:BRIEF_NTFY_TOKEN"}], _http=http)
+    ch.send("s", "m", "t")
+    assert http.posts[0][1]["headers"]["Authorization"] == "Bearer tk_b"
+
+
+def test_unlock_via_discord_never_exposes_the_url(wired, monkeypatch, caplog):
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "discord", "url": _DISCORD}]
+    http = _Http()
+    _real_channels(monkeypatch, http)
+    caplog.set_level(logging.DEBUG)
+    out = server.email_send_unlock_request(ctx=_Ctx("s1"))
+    assert out["channels"] == ["Discord"]
+    assert "HEMLIGT" not in repr(out) and "999" not in repr(out)
+    import re
+
+    code = re.search(r"\b\d{8}\b", http.posts[0][1]["json"]["content"]).group(0)
+    assert server.email_send_unlock(code, ctx=_Ctx("s1"))["unlocked"] is True
+    assert "HEMLIGT" not in caplog.text
+
+
+def test_failed_delivery_never_leaks_the_url(wired, monkeypatch, caplog, tmp_path):
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "discord", "url": _DISCORD}]
+    _real_channels(monkeypatch, _Http(fail=True))
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(PermissionError) as exc:
+        server.email_send_unlock_request(ctx=_Ctx("s1"))
+    assert "HEMLIGT" not in str(exc.value)
+    assert "HEMLIGT" not in caplog.text
+    assert b"HEMLIGT" not in (tmp_path / "audit.db").read_bytes()
+
+
+def test_refused_channel_config_is_charged_against_the_rate_limit(wired, monkeypatch, tmp_path):
+    # Probing "is my brief topic the code topic?" must not be free.
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "ntfy", "topic": _TOPIC}]
+    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", channels=[{"type": "ntfy", "topic": _TOPIC}])
+    _real_channels(monkeypatch, _Http())
+    for _ in range(mu.DEFAULT_MAX_REQUESTS):
+        with pytest.raises(PermissionError, match="osäker kanalkonfiguration") as exc:
+            server.email_send_unlock_request(ctx=_Ctx("s1"))
+        assert _TOPIC not in str(exc.value)
+    with pytest.raises(RuntimeError, match="rate_limited"):
+        server.email_send_unlock_request(ctx=_Ctx("s1"))
+    assert b"Kq7xV2" not in (tmp_path / "audit.db").read_bytes()
+
+
+def test_brief_status_and_configure_mask_topics_and_urls(wired):
+    channels = [{"type": "ntfy", "topic": _TOPIC}, {"type": "webhook", "url": _DISCORD, "format": "discord"}]
+    configured = server.brief_configure(True, "07:00", "UTC", channels=channels)
+    status = server.brief_status()
+    for out in (configured, status):
+        text = repr(out)
+        assert _TOPIC not in text and "HEMLIGT" not in text and "1234567890" not in text
+    assert status["prefs"]["channels"][1]["format"] == "discord"
+
+
+def test_brief_delivery_errors_do_not_echo_the_url():
+    from datetime import datetime, timezone
+
+    from memaix_gateway.notify.deliver import deliver
+
+    class _Boom:
+        def send(self, *a):
+            raise RuntimeError(f"500 for url: {_DISCORD}")
+
+    store = SimpleNamespace(already_sent=lambda k: False, get_schedule=lambda u, s: None,
+                            record_sent=lambda k, t: None)
+    import memaix_gateway.notify.deliver as d
+
+    orig = d.build
+    d.build = lambda *a, **k: {"subject": "s", "markdown": "m", "text": "t"}
+    try:
+        out = deliver(store, None, {}, "jimmy", {}, now=datetime.now(timezone.utc), force=True, _channels=[_Boom()])
+    finally:
+        d.build = orig
+    assert out["errors"] and "HEMLIGT" not in repr(out)
+
+
+# --- 2. Aliases of readable mailboxes ------------------------------------
+
+
+@pytest.mark.parametrize("to", [
+    "mrjimlov+kod@gmail.com", "mr.jimlov@gmail.com", "MrJimlov@googlemail.com",
+    "info+x@jimlov.se", "vemsomhelst@jimlov.se", "INFO@JIMLOV.SE",
+])
+def test_smtp_channel_refuses_aliases_and_readable_domains(wired, to):
+    wired.store.store("jimmy", "google", "mrjimlov@gmail.com", {"access_token": "x"})
+    wired.store.store("jimmy", "imap", "info@jimlov.se", {"host": "h", "user": "info@jimlov.se", "password": "pw"})
+    readable = mu.readable_addresses(wired.acl, wired.store)
+    with pytest.raises(ValueError, match="kan läsa"):
+        mu.check_channel({"type": "smtp", "to": to, "from": "kod@annan.se"}, readable)
+
+
+def test_smtp_channel_allows_other_gmail_and_foreign_domains(wired):
+    wired.store.store("jimmy", "google", "mrjimlov@gmail.com", {"access_token": "x"})
+    readable = mu.readable_addresses(wired.acl, wired.store)
+    mu.check_channel({"type": "smtp", "to": "nagon.annan@gmail.com", "from": "kod@annan.se"}, readable)
+
+
+# --- 3. When unlock is on, every outgoing path needs it ------------------
+
+
+def test_enabled_unlock_gates_email_send_in_every_project(wired):
+    import asyncio
+
+    from memaix_gateway.tools import email as t_email
+
+    assert not wired.acl.projects["memaix"].get("send_unlock")
+    with pytest.raises(mu.SendLocked):
+        asyncio.run(server.email_send("memaix", "a@x.se", "Hej", "Text", ctx=_Ctx("s1")))
+    # A rule action (no session) is refused even without the project flag.
+    with pytest.raises(PermissionError, match="send_locked"):
+        t_email.email_send(wired.acl, "jimmy", "memaix", "a@x.se", "Hej", "Text", _smtp=SimpleNamespace(),
+                           _cfg=wired.cfg)
+    # Feature off: the old behaviour.
+    sent = []
+    t_email.email_send(wired.acl, "jimmy", "memaix", "a@x.se", "Hej", "Text",
+                       _smtp=SimpleNamespace(send_message=sent.append), _cfg={"memaix": {"outbox": {"default": "auto"}}})
+    assert len(sent) == 1
+
+
+def test_outbox_approve_of_a_mail_needs_an_unlocked_session(wired, monkeypatch):
+    from memaix_gateway.tools import email as t_email
+
+    delivered = []
+    monkeypatch.setattr(t_email, "_smtp_deliver", lambda msg, *a: delivered.append(msg))
+    aid = server._get_outbox().enqueue("jimmy", "memaix", "email_send",
+                                       {"to": "a@x.se", "subject": "Hej", "body": "Text", "cc": None}, "preview")
+    with pytest.raises(mu.SendLocked):
+        server.outbox_approve(aid, ctx=_Ctx("s1"))
+    assert server._get_outbox().get(aid)["status"] == "pending"
+    assert delivered == []
+    _unlock(wired, _Ctx("s1"))
+    out = server.outbox_approve(aid, ctx=_Ctx("s1"))
+    assert out["ok"] is True and len(delivered) == 1
+
+
+# --- 4. Owner check per project in _send_from_box ------------------------
+
+
+def test_unlock_as_owner_elsewhere_does_not_allow_forward_from_collaborator_project(wired):
+    wired.acl.users["jimmy"]["grants"]["jimlov"] = "collaborator"
+    wired.acl.projects["jimlov"]["allowlist"] = ["@x.se"]
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)  # owner in memaix
+    with pytest.raises(Exception, match="owner"):
+        server.email_forward("imap_user:kontakt@jimlov.se|3", ["a@x.se"], project="jimlov", ctx=ctx)
+    assert wired.sent == []
+
+
+# --- 5. Service clients and credential binding ---------------------------
+
+
+def test_service_client_cannot_use_an_unlocked_session(wired, monkeypatch):
+    wired.acl.projects["memaix"]["allowlist"] = ["@x.se"]
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    monkeypatch.setattr(server, "_service_client",
+                        lambda: SimpleNamespace(client_id="n8n", projects=["memaix"], acts_as="jimmy"))
+    with pytest.raises(mu.SendLocked, match="tjänsteklient"):
+        server.email_forward("imap_user:info@box.se|7", ["a@x.se"], project="memaix", ctx=ctx)
+    assert wired.sent == []
+
+
+def test_unlock_is_bound_to_the_oauth_client(wired, monkeypatch):
+    wired.acl.projects["memaix"]["allowlist"] = ["@x.se"]
+    monkeypatch.setattr(server, "_credential_id", lambda: "claude-ai")
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    monkeypatch.setattr(server, "_credential_id", lambda: "other-client")
+    with pytest.raises(mu.SendLocked):
+        server.email_forward("imap_user:info@box.se|7", ["a@x.se"], project="memaix", ctx=ctx)
+    assert wired.sent == []
+
+
+# --- Notes: Reply-To and reply_all cap ----------------------------------
+
+
+def test_differing_reply_to_returns_a_warning_and_sends_nothing(wired):
+    wired.boxes["imap_user:info@box.se"].msgs["9"] = _Msg("9", subject="Faktura", reply_to=("evil@attacker.test",))
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    out = server.email_reply("imap_user:info@box.se|9", "Betalt", project="memaix", ctx=ctx)
+    assert out["status"] == "not_sent" and out["reply_to"] == ["evil@attacker.test"]
+    assert "confirm_reply_to" in out["next"]
+    assert wired.sent == []
+    sent = server.email_reply("imap_user:info@box.se|9", "Betalt", project="memaix", confirm_reply_to=True, ctx=ctx)
+    assert sent["status"] == "sent" and "evil@attacker.test" in sent["to"]
+
+
+def test_reply_to_equal_to_from_needs_no_confirmation():
+    m = _Msg("1", reply_to=("Kund <KUND@example.com>",))
+    assert mc.build_reply(m, "info@box.se", "Ok")["To"] == "Kund <KUND@example.com>"
+
+
+def test_reply_all_is_refused_above_the_cc_cap(wired):
+    many = tuple(f"p{i}@example.com" for i in range(mc.DEFAULT_REPLY_ALL_MAX_CC + 1))
+    with pytest.raises(ValueError, match="taket"):
+        mc.build_reply(_Msg("1", cc=many), "info@box.se", "Ok", reply_all=True)
+    mc.build_reply(_Msg("1", cc=many[:-1]), "info@box.se", "Ok", reply_all=True)
+    wired.cfg["memaix"]["mail_dialog"] = {"reply_all_max_cc": 1}
+    wired.boxes["imap_user:info@box.se"].msgs["5"] = _Msg("5", cc=("a@example.com", "b@example.com"))
+    ctx = _Ctx("s1")
+    _unlock(wired, ctx)
+    with pytest.raises(ValueError, match="taket är 1"):
+        server.email_reply("imap_user:info@box.se|5", "Ok", reply_all=True, project="memaix", ctx=ctx)
+    assert wired.sent == []

@@ -786,17 +786,22 @@ def email_send(
     _confirmed=True (system-generated attachments, e.g. booking .ics files,
     aren't composed by the LLM and don't need a human approval step).
 
-    In a project with `send_unlock: true` (docs/FEATURE-MAIL-DIALOG.md) a
-    model-initiated send also needs an unlocked MCP session: server.py
-    checks it and passes _send_unlocked=True. Paths without a session — a
-    rule action — are refused; system sends (_confirmed=True: booking,
-    an operator-approved outbox action) are not model-initiated.
+    When send unlock is enabled (memaix.mail_send_unlock.enabled — then in
+    every project) or the project has `send_unlock: true`
+    (docs/FEATURE-MAIL-DIALOG.md), a model-initiated send also needs an
+    unlocked MCP session: server.py checks it and passes
+    _send_unlocked=True. Paths without a session — a rule action — are
+    refused; system sends (_confirmed=True: booking, an approved outbox
+    action) are not model-initiated.
     """
     acl.enforce(user_id, project, "owner")
     # Feature gate
     if not acl.resource(project, "allow_send"):
         raise RuntimeError("feature_disabled: allow_send is false")
-    if acl.resource(project, "send_unlock") and not (_confirmed or _send_unlocked):
+    from .mail_unlock import settings as _unlock_settings
+
+    unlock_on = _unlock_settings(_cfg if _cfg is not None else config.load())["enabled"]
+    if (unlock_on or acl.resource(project, "send_unlock")) and not (_confirmed or _send_unlocked):
         raise PermissionError("send_locked: sessionen är inte upplåst för mejlutskick (email_send_unlock_request)")
 
     if not _confirmed:

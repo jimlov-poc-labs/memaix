@@ -429,11 +429,40 @@ def build_forward(m, from_addr: str, to: list[str], note: str = "", mode: str = 
     return msg
 
 
-def reply_recipients(m, own_address: str, reply_all: bool) -> tuple[list[str], list[str]]:
+DEFAULT_REPLY_ALL_MAX_CC = 20
+
+
+class ReplyToDiffers(ValueError):
+    """Reply-To points somewhere else than From and nobody confirmed it."""
+
+    def __init__(self, from_addr: str, reply_to: list[str]) -> None:
+        super().__init__("reply_to_differs")
+        self.from_addr = from_addr
+        self.reply_to = reply_to
+
+
+def _addr(value: str) -> str:
+    return parseaddr(value or "")[1].strip().lower()
+
+
+def reply_recipients(
+    m, own_address: str, reply_all: bool, *,
+    max_cc: int = DEFAULT_REPLY_ALL_MAX_CC, confirm_reply_to: bool = False,
+) -> tuple[list[str], list[str]]:
     """(to, cc) for a reply: Reply-To (else From); with reply_all also the
-    original To/Cc, minus our own address and duplicates."""
+    original To/Cc, minus our own address and duplicates.
+
+    A Reply-To that differs from From is a classic phishing move (the reply
+    goes to the attacker, not the sender shown). It is only used with
+    confirm_reply_to=True; otherwise ReplyToDiffers is raised so the caller
+    can show both addresses. reply_all is refused above max_cc copies.
+    """
     own = own_address.lower()
-    primary = [a for a in (getattr(m, "reply_to", None) or ()) if a] or [getattr(m, "from_", "")]
+    reply_to = [a for a in (getattr(m, "reply_to", None) or ()) if a]
+    from_ = getattr(m, "from_", "") or ""
+    if reply_to and not confirm_reply_to and {_addr(a) for a in reply_to} != {_addr(from_)}:
+        raise ReplyToDiffers(from_, reply_to)
+    primary = reply_to or [from_]
     to = [a for a in primary if a and a.lower() != own]
     cc: list[str] = []
     if reply_all:
@@ -446,11 +475,21 @@ def reply_recipients(m, own_address: str, reply_all: bool) -> tuple[list[str], l
         to, cc = [cc[0]], cc[1:]
     if not to:
         raise ValueError("hittar ingen mottagare att svara till")
+    if len(cc) > max_cc:
+        raise ValueError(
+            f"reply_all skulle skicka kopia till {len(cc)} mottagare, taket är {max_cc} "
+            "(memaix.mail_dialog.reply_all_max_cc) — inget skickades"
+        )
     return to, cc
 
 
-def build_reply(m, from_addr: str, body: str, *, reply_all: bool = False, quote: bool = True) -> EmailMessage:
-    to, cc = reply_recipients(m, parseaddr(from_addr)[1], reply_all)
+def build_reply(
+    m, from_addr: str, body: str, *, reply_all: bool = False, quote: bool = True,
+    max_cc: int = DEFAULT_REPLY_ALL_MAX_CC, confirm_reply_to: bool = False,
+) -> EmailMessage:
+    to, cc = reply_recipients(
+        m, parseaddr(from_addr)[1], reply_all, max_cc=max_cc, confirm_reply_to=confirm_reply_to,
+    )
     msg = _base_message(from_addr, _prefixed(getattr(m, "subject", ""), "Re:", ("re:", "sv:", "aw:")))
     msg["To"] = ", ".join(to)
     if cc:
