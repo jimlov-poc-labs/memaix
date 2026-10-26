@@ -64,9 +64,52 @@ def _is_literal_ip(host: str) -> bool:
     return True
 
 
+def _norm_host(host: str) -> str:
+    """Comparable form of a hostname: lower case, IDNA (punycode) labels.
+    Raises BlockedURLError if the name is not valid IDNA."""
+    host = host.strip("[]").lower()
+    if _is_literal_ip(host):
+        return host
+    try:
+        return host.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise BlockedURLError("URL host is not a valid hostname") from exc
+
+
+def _reject_ambiguous(url: str, parsed) -> None:
+    """Refuse URLs that stdlib urlparse and urllib3 (which requests sends
+    with) could read as different hosts.
+
+    Seen in review: ``https://attacker.test\\@discord.com/...`` is
+    discord.com to urlparse but attacker.test to urllib3, so the guard (and
+    any identity check built on urlparse) vetted one host while the POST went
+    to another. Python's urlsplit also silently drops tab/CR/LF, so the raw
+    string is checked before anything is parsed. Error texts never contain
+    the URL: it may carry a webhook token.
+    """
+    if "\\" in url:
+        raise BlockedURLError("URL contains a backslash")
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in url):
+        raise BlockedURLError("URL contains whitespace or control characters")
+    if "@" in parsed.netloc:
+        raise BlockedURLError("URL must not contain user info (user@host)")
+    if "%" in parsed.netloc:
+        raise BlockedURLError("URL host must not be percent-encoded")
+    from urllib3.exceptions import LocationParseError
+    from urllib3.util import parse_url
+
+    try:
+        client_host = parse_url(url).host or ""
+    except LocationParseError:  # its text contains the whole URL
+        raise BlockedURLError("URL could not be parsed") from None
+    if _norm_host(client_host) != _norm_host(parsed.hostname or ""):
+        raise BlockedURLError("URL host is ambiguous (parsers disagree)")
+
+
 def _require_http_host(url: str):
     """Parse ``url`` and return (parsed, hostname); raise BlockedURLError for
-    an empty/non-string URL, a non-http(s) scheme or a missing host."""
+    an empty/non-string URL, a non-http(s) scheme, a missing host or a URL
+    whose host the HTTP client could read differently (_reject_ambiguous)."""
     if not url or not isinstance(url, str):
         raise BlockedURLError("empty or non-string URL")
     parsed = urlparse(url)
@@ -75,7 +118,16 @@ def _require_http_host(url: str):
     host = parsed.hostname
     if not host:
         raise BlockedURLError("URL has no host")
+    _reject_ambiguous(url, parsed)
     return parsed, host
+
+
+def sent_host(url: str) -> str:
+    """Normalised host requests/urllib3 will connect to for ``url``.
+    Only meaningful for a URL that passed validate_external_url."""
+    from urllib3.util import parse_url
+
+    return _norm_host(parse_url(url).host or "")
 
 
 def _check_resolved_addresses(host: str, parsed) -> None:

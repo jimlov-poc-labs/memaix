@@ -55,7 +55,18 @@ def deliver(
     if brief_content.get("empty") and not brief_content.get("markdown"):
         return {"skipped": "empty"}
 
-    channels = _channels if _channels is not None else build_channels(prefs.get("channels", []), acl=acl)
+    # Refused channels (http ntfy/Discord, ambiguous URL, mailbox the user
+    # no longer owns) are skipped, but reported: never a silent failure.
+    rejected: list[dict] = []
+    channels = (
+        _channels if _channels is not None
+        else build_channels(prefs.get("channels", []), acl=acl, user=user, rejected=rejected)
+    )
+    if rejected:
+        logger.warning(
+            "brief: %d channel(s) refused for user=%r (%s)",
+            len(rejected), user, ", ".join(f"{r['type']}: {r['reason']}" for r in rejected),
+        )
 
     delivered = 0
     errors: list[str] = []
@@ -64,14 +75,18 @@ def deliver(
             ch.send(brief_content["subject"], brief_content["markdown"], brief_content["text"])
             delivered += 1
         except Exception as exc:
-            errors.append(str(exc))
-            logger.warning("brief channel delivery failed", exc_info=True)
+            # Type only: requests' error text contains the webhook URL / ntfy topic.
+            errors.append(f"{type(ch).__name__}: {type(exc).__name__}")
+            logger.warning("brief channel delivery failed (%s: %s)", type(ch).__name__, type(exc).__name__)
 
     store.record_sent(idem_key, now.isoformat())
 
     return {
-        "ok": delivered > 0 or not channels,
+        # Not ok if something was configured and nothing went out.
+        "ok": delivered > 0 or (not channels and not rejected),
         "delivered": delivered,
         "channels": len(channels),
         "errors": errors,
+        "rejected": len(rejected),
+        "rejected_channels": rejected,
     }

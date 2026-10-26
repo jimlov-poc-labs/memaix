@@ -560,7 +560,7 @@ def test_backlog_status_change_triggers_internal_rule(wired):
     sent = []
     import memaix_gateway.rules.actions as actions_mod
     orig_run_notify = actions_mod._run_notify
-    actions_mod._run_notify = lambda acl, user, params, *, tools: (sent.append(params) or {"ok": True, "errors": [], "channels_used": 0})
+    actions_mod._run_notify = lambda acl, user, params, *, tools, **_: (sent.append(params) or {"ok": True, "errors": [], "channels_used": 0})
     try:
         server.backlog_set_status("proj", item_id, "done", expected_version=1)
     finally:
@@ -578,7 +578,7 @@ def test_backlog_status_change_conflict_does_not_trigger_rule(wired):
     sent = []
     import memaix_gateway.rules.actions as actions_mod
     orig_run_notify = actions_mod._run_notify
-    actions_mod._run_notify = lambda acl, user, params, *, tools: sent.append(1)
+    actions_mod._run_notify = lambda acl, user, params, *, tools, **_: sent.append(1)
     try:
         result = server.backlog_set_status("proj", item_id, "done", expected_version=99)  # wrong version
         assert result.get("conflict") is True

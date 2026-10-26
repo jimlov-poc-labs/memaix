@@ -5,6 +5,10 @@ testing/dry-run). See docs/FEATURE-AUTOMATION-RULES.md §4/§5.
 Outgoing actions (email_send) are NOT treated specially here — email_send's
 own outbox gate (tools/email.py) already queues it for approval when the
 project is in 'review' mode, so a rule can never bypass the outbox.
+`notify` is the exception: it posts to the user's brief channels, so with
+memaix.mail_send_unlock on it skips email channels and is refused outright
+unless the rule was fired by a trigger whose payload is our own (schedule,
+internal). Mail and webhook triggers carry outside content.
 """
 
 from __future__ import annotations
@@ -65,7 +69,28 @@ def _default_action_dispatch() -> dict[str, Callable]:
     }
 
 
-def _run_notify(acl, user: str, params: dict, *, tools: dict | None) -> dict:
+# Triggers whose payload Memaix produced itself. With the send lock on, notify
+# from any other trigger is refused: a mail trigger carries a mail someone
+# sent us, and a webhook trigger carries whatever the caller posted — n8n
+# forwarding mail makes that the same auto-chain "read mail -> outgoing"
+# (AGENTS.md §2). An allowlist, so an unknown or missing trigger type is
+# refused too. Refused rather than limited to owner-approved channels: an
+# approval flag on a brief channel would be one more field the model can
+# set through brief_configure, and the send lock would have to guard it.
+_OWN_CONTENT_TRIGGERS = {"schedule", "internal"}
+
+
+def _send_lock_enabled() -> bool:
+    try:
+        from .. import config
+        from ..tools.mail_unlock import settings
+
+        return bool(settings(config.load())["enabled"])
+    except Exception:  # noqa: BLE001 - unreadable config: fail closed
+        return True
+
+
+def _run_notify(acl, user: str, params: dict, *, tools: dict | None, locked: bool = False) -> dict:
     channels = (tools or {}).get("_channels")
     if channels is None:
         import os
@@ -80,7 +105,14 @@ def _run_notify(acl, user: str, params: dict, *, tools: dict | None) -> dict:
             db_path = Path(os.environ.get("MEMAIX_NOTIFY_DB", str(_data_dir() / "memaix-notify.db")))
             notify_store = NotifyStore.for_path(db_path)
         prefs = notify_store.get_prefs(user) or {}
-        channels = build_channels(prefs.get("channels", []), acl=acl)
+        channels = build_channels(prefs.get("channels", []), acl=acl, user=user)
+
+    if locked:
+        # A rule has no MCP session, so it can never be unlocked: with the
+        # send lock on it may not send mail, notify's email channels included.
+        from ..notify.channels import EmailChannel
+
+        channels = [ch for ch in channels if not isinstance(ch, EmailChannel)]
 
     text = params.get("text", "")
     errors = []
@@ -88,14 +120,19 @@ def _run_notify(acl, user: str, params: dict, *, tools: dict | None) -> dict:
         try:
             ch.send("Memaix — automation", text, text)
         except Exception as exc:  # noqa: BLE001
-            errors.append(str(exc))
+            # Type only: requests' error text contains the webhook URL / ntfy topic.
+            errors.append(f"{type(ch).__name__}: {type(exc).__name__}")
     return {"ok": not errors, "errors": errors, "channels_used": len(channels)}
 
 
 def run_action(
     acl, user: str, action: dict, payload: dict, *, tools: dict | None = None, dry_run: bool = False,
+    trigger_type: str | None = None,
 ) -> dict:
-    """Execute one rule action. Never raises — failures come back as {"ok": False, "error": ...}."""
+    """Execute one rule action. Never raises — failures come back as {"ok": False, "error": ...}.
+
+    trigger_type is the type of the rule's trigger; with the send lock on, a
+    notify is refused unless it is "schedule" or "internal"."""
     action_type = action.get("type")
     if not isinstance(action_type, str):
         return {"ok": False, "error": "action must include a string 'type'"}
@@ -106,7 +143,15 @@ def run_action(
         return {"ok": True, "dry_run": True, "type": action_type, "project": project, "params": params}
 
     if action_type == "notify":
-        result = _run_notify(acl, user, params, tools=tools)
+        locked = _send_lock_enabled()
+        if locked and trigger_type not in _OWN_CONTENT_TRIGGERS:
+            result = {
+                "ok": False,
+                "error": f"send_locked: notify från en regel med utlösaren {trigger_type!r} är spärrad "
+                         "(bara schedule/internal tillåts) när memaix.mail_send_unlock är på (ingen auto-kedja)",
+            }
+        else:
+            result = _run_notify(acl, user, params, tools=tools, locked=locked)
         _audit_action(user, project, action_type, result)
         return result
 

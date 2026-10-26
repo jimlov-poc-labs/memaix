@@ -185,6 +185,9 @@ default-läge**:
 
 - **`allow_send: false` som default.** AI:n skapar mejl*utkast*; `email_send` fungerar bara i projekt
   där du uttryckligen satt `allow_send: true`.
+- **Sändupplåsning per session.** `email_forward`/`email_reply` (och `email_send` i projekt med
+  `send_unlock: true`) kräver dessutom att chattsessionen låsts upp med en engångskod som ägaren får
+  utanför chatten. Se [FEATURE-MAIL-DIALOG.md](FEATURE-MAIL-DIALOG.md).
 - **Utkorgen (approval outbox).** Utgående/svåråterställbara åtgärder (`email_send`,
   `calendar_create/update`) kan kräva mänskligt godkännande. Detta är **opt-in**: sätt
   `outbox: review` på projektet (eller `outbox.default_mode: review` globalt). Utan det körs
@@ -221,6 +224,10 @@ Alla verktyg är projekt-scopade och valideras mot `acl.yaml`. Roll anges där d
 | `email_export_pdf` | collaborator | Mejlet som PDF (avsändare, mottagare, datum, ämne + text), t.ex. kvitton som bara är mejltext. |
 | `email_create_draft` | collaborator | Spara utkast i Drafts. |
 | `email_send` | owner | Skicka (kräver `allow_send: true`; går via utkorgen i `review`). |
+| `email_overview` | collaborator | Rubriker per låda över alla lådor du kan läsa, med korta nummer per session. Se [FEATURE-MAIL-DIALOG.md](FEATURE-MAIL-DIALOG.md). |
+| `email_set_flags` / `email_archive` / `email_move` | collaborator | Läst/oläst/flaggad, arkivera (`\Archive`), flytta. Bara IMAP-lådor. |
+| `email_forward` / `email_reply` | owner | Vidarebefordra/svara via lådans egen SMTP. Kräver `allow_send: true` **och** en upplåst session. |
+| `email_send_unlock_request` / `email_send_unlock` / `email_send_lock` | owner | Lås upp utskick för sessionen med en engångskod som skickas utanför chatten. |
 
 ### Kalender (kräver `calendar:` eller per-user-koppling)
 `calendar_setup` (välj läge: oauth/ical/free_busy), `calendar_status`, `calendar_list`,

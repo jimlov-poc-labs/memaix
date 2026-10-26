@@ -31,7 +31,7 @@ def test_webhook_matching_token_triggers_rule(rig):
     sent = []
     import memaix_gateway.rules.actions as actions_mod
     orig = actions_mod._run_notify
-    actions_mod._run_notify = lambda acl, user, params, *, tools: (sent.append(params) or {"ok": True, "errors": [], "channels_used": 0})
+    actions_mod._run_notify = lambda acl, user, params, *, tools, **_: (sent.append(params) or {"ok": True, "errors": [], "channels_used": 0})
     try:
         rules.add_rule(
             "alice", "proj", "form-submit", {"type": "webhook", "token": "secret123"},
@@ -60,7 +60,7 @@ def test_webhook_retried_payload_is_idempotent(rig):
     sent = []
     import memaix_gateway.rules.actions as actions_mod
     orig = actions_mod._run_notify
-    actions_mod._run_notify = lambda acl, user, params, *, tools: (sent.append(1) or {"ok": True, "errors": [], "channels_used": 0})
+    actions_mod._run_notify = lambda acl, user, params, *, tools, **_: (sent.append(1) or {"ok": True, "errors": [], "channels_used": 0})
     try:
         rules.add_rule(
             "alice", "proj", "r", {"type": "webhook", "token": "tok"},

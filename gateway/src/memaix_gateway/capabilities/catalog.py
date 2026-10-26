@@ -80,6 +80,7 @@ def register_defaults() -> None:
             tools=(
                 "email_list", "email_search", "email_read",
                 "email_attachments", "email_attachment_get", "email_export_pdf",
+                "email_overview", "email_set_flags", "email_archive", "email_move",
             ),
             example_prompts_key="cap.mail.triage.examples",
             needs_role="collaborator", needs_resource="mailbox",
@@ -98,7 +99,10 @@ def register_defaults() -> None:
             key="mail.send", area="mail",
             title_key="cap.mail.send.title",
             summary_key="cap.mail.send.summary",
-            tools=("email_send",),
+            tools=(
+                "email_send", "email_forward", "email_reply",
+                "email_send_unlock_request", "email_send_unlock", "email_send_lock",
+            ),
             example_prompts_key="cap.mail.send.examples",
             needs_role="owner", needs_resource="mailbox",
             tags=("mejl", "skicka", "send"),

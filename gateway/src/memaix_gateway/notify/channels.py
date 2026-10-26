@@ -13,6 +13,32 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 
+def mask_channel(spec: dict) -> dict:
+    """A channel spec safe to show: ntfy topics, webhook URLs and tokens
+    are masked (a topic or URL is all it takes to read or post to it)."""
+    from urllib.parse import urlsplit
+
+    out: dict = {}
+    for key, value in (spec or {}).items():
+        if key in ("topic", "url") and isinstance(value, str) and value:
+            if key == "url":
+                parts = urlsplit(value)
+                out[key] = f"{parts.scheme}://{parts.hostname or ''}/***" if parts.scheme else "***"
+            else:
+                out[key] = f"{value[:2]}***"
+        elif key.endswith("_ref") or key in ("token", "password"):
+            out[key] = "***"
+        else:
+            out[key] = value
+    return out
+
+
+def mask_prefs(prefs: dict | None) -> dict | None:
+    if prefs is None:
+        return None
+    return {**prefs, "channels": [mask_channel(c) for c in prefs.get("channels") or []]}
+
+
 class NotificationChannel(Protocol):
     def send(self, subject: str, markdown: str, text: str) -> None: ...
 
@@ -61,8 +87,72 @@ class EmailChannel:
             s.send_message(msg)
 
 
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
+class ChannelRefused(ValueError):
+    """A channel Memaix will not send through. The message is shown to the
+    user, so it never contains the URL, topic or token."""
+
+
+_NTFY_HTTPS = "ntfy måste vara https: ämnet är lika hemligt som en Discord-token"
+
+
+def _destination(url: str) -> tuple[str, str, int, str, str]:
+    """(scheme, host, port, path, query) the HTTP client will really use.
+
+    Raises BlockedURLError if the URL is not a plain external http(s) URL
+    or its host is ambiguous between parsers (safety/net.py). Parsed with
+    urllib3, the parser requests sends with, so an identity built from it
+    describes where the POST goes — not where urlparse thinks it goes."""
+    from urllib3.util import parse_url
+
+    from ..safety.net import sent_host, validate_external_url
+
+    validate_external_url(url, resolve=False)
+    parts = parse_url(url)
+    scheme = (parts.scheme or "").lower()
+    return scheme, sent_host(url), parts.port or _DEFAULT_PORTS.get(scheme, 0), parts.path or "", parts.query or ""
+
+
+def _discord_id(url: str) -> str | None:
+    """Webhook id if `url` is a Discord webhook Memaix may post to, else None.
+
+    Raises ValueError for a URL on a Discord host that is not https on the
+    standard port: the path carries the webhook token, so plain http or an
+    odd port would send it somewhere it should not go."""
+    from ..tools.mail_unlock import _DISCORD_HOSTS, _DISCORD_PATH
+
+    scheme, host, port, path, _query = _destination(url)
+    if host.rstrip(".") not in _DISCORD_HOSTS:
+        return None
+    if scheme != "https" or port != 443:
+        raise ChannelRefused("Discord-webhooks måste vara https på standardport")
+    m = _DISCORD_PATH.match(path)
+    return m.group(1) if m else None
+
+
+def ntfy_url(server: str | None, topic: str) -> str:
+    """The URL NtfyChannel posts to (one place, so identity and send agree)."""
+    return f"{(server or 'https://ntfy.sh').rstrip('/')}/{topic}"
+
+
+def check_ntfy_url(url: str) -> None:
+    """Raise ChannelRefused unless `url` (from ntfy_url) is https.
+
+    The topic is the only thing between the world and the messages on it,
+    so like a Discord token it never travels in the clear (Jimmy 2026-10-26).
+    Any port: a self-hosted server may serve https elsewhere than 443."""
+    scheme, *_rest = _destination(url)
+    if scheme != "https":
+        raise ChannelRefused(_NTFY_HTTPS)
+
+
 class WebhookChannel:
     def __init__(self, url: str, fmt: str = "raw", *, _http=None) -> None:
+        # Refuse ambiguous / non-https Discord URLs at construction, so an
+        # already stored bad spec is skipped by build_channels on every send.
+        _discord_id(url)
         self._url = url
         self._fmt = fmt
         self._http = _http
@@ -112,21 +202,25 @@ class NtfyChannel:
         self._topic = topic
         self._server = server.rstrip("/")
         self._http = _http
+        # Refused at construction, so an already stored http spec is skipped
+        # by build_channels on every send.
+        check_ntfy_url(ntfy_url(self._server, self._topic))
 
     # channel interface fixes this signature
     def send(self, subject: str, markdown: str, text: str) -> None:  # NOSONAR
         http = self._http
-        url = f"{self._server}/{self._topic}"
+        url = ntfy_url(self._server, self._topic)
         if http is None:
             import requests
             http = requests
             from ..safety.net import validate_external_url
             validate_external_url(url)  # authoritative SSRF check before the real request
+        headers = {"Title": _header_safe(subject)}
         # allow_redirects=False — se kommentaren i safety/net.py.
         resp = http.post(
             url,
             data=text.encode("utf-8"),
-            headers={"Title": _header_safe(subject)},
+            headers=headers,
             timeout=10,
             allow_redirects=False,
         )
@@ -135,16 +229,103 @@ class NtfyChannel:
             raise_for_status()
 
 
-def build_channels(specs: list[dict], *, acl=None, _http=None, _smtp=None) -> list[NotificationChannel]:
+def channel_identity(spec: dict) -> str:
+    """Comparable identity of a brief channel's destination.
+
+    Used to decide whether a destination is already stored, so it must not
+    match loosely: two specs share an identity only if they reach the same
+    place. Email is (sending project, recipient). A Discord webhook is its
+    id, but only over https on the standard port to a Discord host (aliases
+    reach the same webhook). Any other webhook, and ntfy, is scheme + host +
+    port + path + query as the HTTP client parses it. A URL that
+    safety/net.py refuses gets an identity that matches nothing. Unlike the
+    unlock check's webhook_identity, which matches loosely on purpose
+    because there a match means "refuse".
+    """
+    import secrets
+
+    from ..safety.net import BlockedURLError
+
+    ctype = (spec or {}).get("type")
+    if ctype == "email":
+        return f"email:{spec.get('project') or ''}:{str(spec.get('to') or '').strip().lower()}"
+    if ctype not in ("webhook", "ntfy"):
+        return f"other:{ctype}"
+    try:
+        if ctype == "webhook":
+            url = str(spec.get("url") or "")
+            hook_id = _discord_id(url)
+            if hook_id:
+                return f"discord:{hook_id}"
+            prefix = "url"
+        else:
+            url = ntfy_url(spec.get("server"), str(spec.get("topic") or ""))
+            check_ntfy_url(url)
+            prefix = "ntfy"
+        scheme, host, port, path, query = _destination(url)
+    except (BlockedURLError, ValueError):
+        return f"invalid:{secrets.token_hex(8)}"
+    return f"{prefix}:{scheme}://{host}:{port}{path}?{query}"
+
+
+def may_send_from(acl, user: str | None, project: str | None) -> bool:
+    """An email channel sends from `project`'s mailbox: only its owner may
+    point that mailbox anywhere (RBAC, AGENTS.md §2)."""
+    if acl is None or not user or not project:
+        return False
+    try:
+        acl.enforce(user, project, "owner")
+    except Exception:  # noqa: BLE001 - AccessDenied, or anything else: fail closed
+        return False
+    return True
+
+
+def _refusal_reason(exc: Exception) -> str:
+    """Why a channel was skipped, safe to show: never the URL or topic."""
+    from ..safety.net import BlockedURLError
+
+    if isinstance(exc, ChannelRefused):
+        return str(exc)
+    if isinstance(exc, BlockedURLError):
+        return "URL:en vägras (SSRF-skydd eller tvetydig adress)"
+    return f"kanalen kunde inte byggas ({type(exc).__name__})"
+
+
+_KNOWN_TYPES = ("email", "webhook", "ntfy")
+
+
+def build_channels(
+    specs: list[dict], *, acl=None, user: str | None = None, _http=None, _smtp=None,
+    rejected: list[dict] | None = None,
+) -> list[NotificationChannel]:
     """Build channel adapters from JSON specs, skipping (and logging) any
-    that fail to construct — one bad spec must not disable the others."""
+    that fail to construct — one bad spec must not disable the others.
+
+    Every skipped spec is also appended to `rejected` (when given) as
+    {index, type, reason}, so the caller can tell the user instead of
+    failing silently. Never the spec itself: it holds the URL / topic.
+
+    An email channel is built only when `user` owns the channel's project.
+    This is checked here, at delivery, and not only when the channel is
+    configured: every sender (brief_send_now, the scheduled brief, rule
+    notify) goes through this function, and a stored spec may predate a
+    grant being revoked."""
     from .. import config as cfg_mod
 
+    def _reject(index: int, ctype: object, reason: str) -> None:
+        if rejected is not None:
+            shown = ctype if ctype in _KNOWN_TYPES else "okänd"
+            rejected.append({"index": index, "type": shown, "reason": reason})
+
     channels: list[NotificationChannel] = []
-    for spec in specs or []:
+    for index, spec in enumerate(specs or []):
         ctype = spec.get("type")
         try:
             if ctype == "email":
+                if not may_send_from(acl, user, spec.get("project")):
+                    logger.warning("email channel skipped: user is not owner of its project")
+                    _reject(index, ctype, "du är inte ägare av projektet som e-posten skickas från")
+                    continue
                 channels.append(EmailChannel(acl, spec, _smtp=_smtp))
             elif ctype == "webhook":
                 url = spec.get("url") or cfg_mod.secret(spec.get("url_ref"))
@@ -155,6 +336,17 @@ def build_channels(specs: list[dict], *, acl=None, _http=None, _smtp=None) -> li
                 channels.append(NtfyChannel(spec["topic"], spec.get("server", "https://ntfy.sh"), _http=_http))
             else:
                 logger.warning("unknown notification channel type: %r", ctype)
-        except Exception:
-            logger.warning("failed to build notification channel %r", spec, exc_info=True)
+                _reject(index, ctype, "okänd kanaltyp")
+        except Exception as exc:
+            # Not the spec itself: it holds the webhook URL / ntfy topic.
+            logger.warning("failed to build notification channel of type %r", ctype)
+            _reject(index, ctype, _refusal_reason(exc))
     return channels
+
+
+def refused_channels(specs: list[dict], *, acl=None, user: str | None = None) -> list[dict]:
+    """The stored channels a send would skip, with type and reason. Builds
+    the adapters and throws them away; nothing is sent."""
+    rejected: list[dict] = []
+    build_channels(specs, acl=acl, user=user, rejected=rejected)
+    return rejected

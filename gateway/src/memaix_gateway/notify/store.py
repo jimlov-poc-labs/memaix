@@ -78,6 +78,18 @@ class NotifyStore:
             ).fetchone()
         return self._prefs_row_to_dict(row) if row else None
 
+    def all_channels(self) -> list[list[dict]]:
+        """Every user's brief channel list (for the unlock-channel check)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT channels FROM notify_prefs").fetchall()
+        out: list[list[dict]] = []
+        for row in rows:
+            try:
+                out.append(json.loads(row[0]) or [])
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def _prefs_row_to_dict(self, row: sqlite3.Row) -> dict:
         d = dict(row)
         d["enabled"] = bool(d["enabled"])

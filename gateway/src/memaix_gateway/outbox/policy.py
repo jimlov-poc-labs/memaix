@@ -10,7 +10,7 @@ from __future__ import annotations
 
 def _recipients(tool: str, args: dict) -> list[str]:
     """Extract the addresses/handles an outgoing action would reach."""
-    if tool == "email_send":
+    if tool in ("email_send", "email_forward", "email_reply"):
         out: list[str] = []
         for field in ("to", "cc"):
             value = args.get(field)
@@ -43,6 +43,8 @@ def _allowlisted(recipient: str, allowlist: list[str]) -> bool:
 # web-UI API; do not fork this table.
 APPROVAL_ROLE: dict[str, str] = {
     "email_send": "owner",
+    "email_forward": "owner",
+    "email_reply": "owner",
     "calendar_create": "collaborator",
     "calendar_update": "collaborator",
     "project_member_set": "owner",

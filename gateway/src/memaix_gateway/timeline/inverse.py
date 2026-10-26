@@ -101,6 +101,26 @@ def _backlog_add_inverse(tail: tuple, kwargs: dict, result: dict) -> dict | None
 
 
 # ------------------------------------------------------------------
+# Outgoing mail — logged, never undoable (a sent mail can't be recalled)
+# ------------------------------------------------------------------
+
+
+def _mail_summary(verb: str):
+    def _fn(tail: tuple, kwargs: dict, result: dict) -> str:
+        res = result if _is_dict(result) else {}
+        to = res.get("to") or kwargs.get("to") or (tail[0] if tail else "?")
+        subject = res.get("subject") or (tail[1] if len(tail) > 1 else "")
+        account = res.get("account")
+        via = f" från {account}" if account else ""
+        return f'{verb} "{subject}" till {to}{via}'
+    return _fn
+
+
+def _no_inverse(tail: tuple, kwargs: dict, result: dict) -> dict | None:
+    return None
+
+
+# ------------------------------------------------------------------
 # Registry
 # ------------------------------------------------------------------
 
@@ -109,4 +129,7 @@ TOOL_HANDLERS: dict[str, tuple[SummaryBuilder, InverseBuilder]] = {
     "memory_append": (_memory_summary("La till i"), _memory_inverse),
     "calendar_create": (_calendar_create_summary, _calendar_create_inverse),
     "backlog_add": (_backlog_add_summary, _backlog_add_inverse),
+    "email_send": (_mail_summary("Skickade"), _no_inverse),
+    "email_forward": (_mail_summary("Vidarebefordrade"), _no_inverse),
+    "email_reply": (_mail_summary("Svarade på"), _no_inverse),
 }
