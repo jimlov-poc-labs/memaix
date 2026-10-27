@@ -26,7 +26,7 @@ jobs:
           pip install -e "gateway/[dev]"
           pytest gateway/tests/ --cov=gateway/src/memaix_gateway --cov-report=xml:coverage.xml
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -70,7 +70,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Run triage
