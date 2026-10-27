@@ -15,7 +15,7 @@ dependencies = [
     # Mcp-Session-Id till den credential som skapade sessionen
     # (_session_owners; saknas i 1.27.1, finns i 1.27.2/1.28+). Upplåsningen
     # av mejlutskick (FEATURE-MAIL-DIALOG.md) är knuten till sessionen.
-    "mcp>=1.27.2,<2",
+    "mcp>=1.27.2,<3",
     "httpx>=0.27,<1",            # kör 0.28.1
     "uvicorn>=0.29,<1",          # kör 0.52.4
     "pyyaml>=6,<7",              # kör 6.0.3
