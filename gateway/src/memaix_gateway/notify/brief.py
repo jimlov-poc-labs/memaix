@@ -33,6 +33,8 @@ def _short_reason(exc: Exception) -> str:
     return type(exc).__name__
 
 
+# One warning line per brief (the brief runs once a day) is intended: a broken
+# source account must stay visible rather than read as "nothing new".
 def _warn_line(project: str, source: str, exc: Exception, warnings: list[str] | None) -> list[str]:
     reason = _short_reason(exc)
     logger.warning("brief: %s för projekt %s misslyckades: %s", source, project, reason)

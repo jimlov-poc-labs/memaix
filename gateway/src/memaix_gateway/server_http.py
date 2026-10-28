@@ -321,19 +321,26 @@ def _link_success_html(provider: str, account_email: str, public_url: str) -> st
 
 
 def _merge_with_existing(token_store, user_id: str, provider: str, account: str, new: dict) -> dict:
-    """On re-link, never lose what an earlier link granted: union the scope
-    strings and keep the old refresh_token if the new response has none."""
+    """On re-link, keep what the provider's own answer lacks.
+
+    The new response's scope is the truth: with include_granted_scopes Google
+    already returns the union, and a scope the user revoked at Google must not
+    be resurrected. The old scope string is only a fallback when the response
+    carries none. The old refresh_token is kept if the new one has none."""
     try:
         old = token_store.load_one(user_id, provider, account)
-    except Exception:
+    except Exception as exc:
+        # Never log the exception text: it can carry token or key material.
+        _server.logger.warning(
+            "OAuth re-link: could not read existing token for %s (%s); storing without merge",
+            provider, type(exc).__name__,
+        )
         old = None
     if not old:
         return new
     merged = dict(new)
-    scopes = (new.get("scope") or "").split()
-    scopes += [s for s in (old.get("scope") or "").split() if s not in scopes]
-    if scopes:
-        merged["scope"] = " ".join(scopes)
+    if not merged.get("scope") and old.get("scope"):
+        merged["scope"] = old["scope"]
     if not merged.get("refresh_token") and old.get("refresh_token"):
         merged["refresh_token"] = old["refresh_token"]
     return merged

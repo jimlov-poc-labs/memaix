@@ -108,8 +108,34 @@ def test_relink_merges_scopes_and_keeps_refresh_token(cfg, monkeypatch):  # noqa
     old = {"scope": f"openid {GMAIL_RO}", "refresh_token": "old-r"}
     new = {"email": "a@x.se", "access_token": "t", "scope": "openid email calendar"}
     data = _relink(cfg, monkeypatch, old, new)
-    assert set(data["scope"].split()) == {"openid", "email", "calendar", GMAIL_RO}
+    assert data["scope"] == "openid email calendar"  # response is truth: no revived scope
     assert data["refresh_token"] == "old-r"
+
+
+def test_relink_falls_back_to_old_scope_when_response_has_none(cfg, monkeypatch):  # noqa: F811
+    data = _relink(cfg, monkeypatch, {"scope": "a b"}, {"email": "a@x.se", "access_token": "t"})
+    assert data["scope"] == "a b"
+
+
+def test_relink_decrypt_error_logs_and_still_stores(cfg, monkeypatch, caplog):  # noqa: F811
+    class Boom(_Store):
+        def load_one(self, *a):
+            raise ValueError("fernet SECRET-KEY-MATERIAL")
+    store = Boom()
+    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1"})
+    monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
+    monkeypatch.setattr(config_mod, "secret", lambda ref: "x")
+    cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}
+    _fake_async_client(monkeypatch, lambda m, u, kw: _FakeResp(200, {"email": "a@x.se", "scope": "n"}), [])
+    with caplog.at_level("WARNING"):
+        r = _client().get("/link/google/callback?code=c&state=good")
+    assert r.status_code == 200 and store.stored[0][3]["scope"] == "n"
+    assert "ValueError" in caplog.text and "SECRET" not in caplog.text
+
+
+def test_microsoft_link_start_rejects_capabilities_param(cfg):  # noqa: F811
+    r = _client().get("/link/microsoft?state=s&capabilities=mail")
+    assert r.status_code == 400
 
 
 def test_relink_new_refresh_token_wins(cfg, monkeypatch):  # noqa: F811
