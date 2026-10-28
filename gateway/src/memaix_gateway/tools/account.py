@@ -125,8 +125,11 @@ def _purge_expired(now: int) -> None:
 
 
 # uniform tool signature (acl, user_id, ...)
-def account_link(  # NOSONAR
-    acl: Acl, user_id: str, provider: str, public_url: str,
+def account_link(
+    acl: Acl,  # NOSONAR
+    user_id: str,
+    provider: str,
+    public_url: str,
     capabilities: list[str] | None = None,
 ) -> dict:
     """Generate a link URL for the given provider.
