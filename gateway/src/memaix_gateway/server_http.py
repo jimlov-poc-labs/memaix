@@ -358,7 +358,9 @@ async def link_callback(request: Request) -> Response:
 
     from .tools.account import validate_state
     pending = validate_state(state)
-    if not pending:
+    # State is already consumed (single-use); a state minted for another
+    # provider must not be redeemable on this provider's callback.
+    if not pending or pending.get("provider") != provider:
         return _json_error("invalid_or_expired_state", 400)
 
     user_id = pending["user_id"]
