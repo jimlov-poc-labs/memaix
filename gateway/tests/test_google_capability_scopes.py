@@ -94,7 +94,7 @@ class _Store:
 
 def _relink(cfg, monkeypatch, existing, token):  # noqa: F811
     store = _Store(existing)
-    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1"})
+    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1", "provider": "google"})
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
     monkeypatch.setattr(config_mod, "secret", lambda ref: "x")
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}
@@ -122,7 +122,7 @@ def test_relink_decrypt_error_logs_and_still_stores(cfg, monkeypatch, caplog):  
         def load_one(self, *a):
             raise ValueError("fernet SECRET-KEY-MATERIAL")
     store = Boom()
-    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1"})
+    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1", "provider": "google"})
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
     monkeypatch.setattr(config_mod, "secret", lambda ref: "x")
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}

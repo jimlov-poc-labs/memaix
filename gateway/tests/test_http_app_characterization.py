@@ -459,7 +459,7 @@ def link_env(cfg, monkeypatch):
     from memaix_gateway.tools import account
 
     store = _Store()
-    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1"} if s == "good" else None)
+    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1", "provider": "google"} if s == "good" else None)
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
     monkeypatch.setattr(config_mod, "secret", lambda ref: "sekret")
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}
@@ -616,3 +616,20 @@ def test_hook_rate_limited_429(hook_env, monkeypatch):
 
 def test_hook_get_not_allowed(hook_env):
     assert _client().get("/hooks/t1").status_code == 405
+
+
+def test_link_callback_rejects_state_from_other_provider(link_env, monkeypatch):
+    """State minted for one provider cannot be redeemed on another's callback."""
+    import time
+
+    from memaix_gateway.tools import account
+
+    monkeypatch.undo()  # drop link_env's validate_state stub; use the real store
+    monkeypatch.delenv("MEMAIX_STATE_DB", raising=False)
+    account._pending_states.clear()
+    account._put_state("st1", {"user_id": "u1", "provider": "microsoft", "exp": int(time.time()) + 600})
+    r = _client().get("/link/google/callback?code=c&state=st1")
+    assert r.status_code == 400
+    assert r.json() == {"error": "invalid_or_expired_state"}
+    assert "st1" not in account._pending_states  # consumed, no replay
+    assert account.validate_state("st1") is None
