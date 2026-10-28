@@ -425,6 +425,7 @@ def test_link_start_google_redirect(cfg):
         "scope": "a b",
         "access_type": "offline",
         "prompt": "consent",
+        "include_granted_scopes": "true",
     }
 
 
@@ -448,6 +449,9 @@ class _Store:
 
     def store(self, *args):
         self.stored.append(args)
+
+    def load_one(self, user, provider, account):
+        return getattr(self, "existing", None)
 
 
 @pytest.fixture()

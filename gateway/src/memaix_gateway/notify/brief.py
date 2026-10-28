@@ -10,7 +10,36 @@ from the scheduler, outside any MCP request).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
+
+# Source warnings from the most recent build() per user (in memory, reset on
+# restart). brief_status reads this so a broken source is visible without
+# rebuilding (and re-fetching) the whole brief.
+LAST_SOURCE_WARNINGS: dict[str, list[str]] = {}
+
+
+def _short_reason(exc: Exception) -> str:
+    """A short, safe reason for a failed source. Never str(exc) wholesale: it
+    can carry URLs, tokens or server detail."""
+    text = str(exc)
+    if "insufficientPermissions" in text:
+        return "insufficientPermissions"
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return f"HTTP {status}"
+    return type(exc).__name__
+
+
+def _warn_line(project: str, source: str, exc: Exception, warnings: list[str] | None) -> list[str]:
+    reason = _short_reason(exc)
+    logger.warning("brief: %s för projekt %s misslyckades: %s", source, project, reason)
+    line = f"⚠ [{project}] {source} otillgänglig: {reason}"
+    if warnings is not None:
+        warnings.append(line)
+    return [line]
 
 
 def _tz_or_utc(tz_name: str):
@@ -45,7 +74,8 @@ def _fmt_event_time(start: str, tz_name: str) -> str:
     return dt.astimezone(_tz_or_utc(tz_name)).strftime("%H:%M")
 
 
-def _calendar_lines(acl, user: str, project: str, fn, day_start, day_end, tz_name: str) -> list[str]:
+def _calendar_lines(acl, user: str, project: str, fn, day_start, day_end, tz_name: str,
+                    warnings: list[str] | None = None) -> list[str]:
     if not fn or not acl.resource(project, "calendar"):
         return []
     try:
@@ -53,11 +83,12 @@ def _calendar_lines(acl, user: str, project: str, fn, day_start, day_end, tz_nam
             f"- [{project}] {ev.get('title', '(ingen titel)')} — {_fmt_event_time(ev.get('start', ''), tz_name)}"
             for ev in (fn(acl, user, project, day_start, day_end) or [])
         ]
-    except Exception:
-        return []
+    except Exception as exc:
+        return _warn_line(project, "kalender", exc, warnings)
 
 
-def _mail_lines(acl, user: str, project: str, fn, triage_fn, max_mail: int, mail_days: int) -> list[str]:
+def _mail_lines(acl, user: str, project: str, fn, triage_fn, max_mail: int, mail_days: int,
+                warnings: list[str] | None = None) -> list[str]:
     if not fn or not (acl.resource(project, "mailbox") or acl.resource(project, "email")):
         return []
     try:
@@ -74,8 +105,8 @@ def _mail_lines(acl, user: str, project: str, fn, triage_fn, max_mail: int, mail
                 line += f"\n  {m['summary']}"
             lines.append(line)
         return lines
-    except Exception:
-        return []
+    except Exception as exc:
+        return _warn_line(project, "mejl", exc, warnings)
 
 
 def _backlog_lines(acl, user: str, project: str, fn, last_run_iso: str | None) -> list[str]:
@@ -141,16 +172,21 @@ def build(
     mail_lines: list[str] = []
     bl_lines: list[str] = []
     raid_open = 0
+    source_warnings: list[str] = []
 
     for project in projects:
-        cal_lines += _calendar_lines(acl, user, project, calendar_events_fn, day_start, day_end, tz_name)
-        mail_lines += _mail_lines(acl, user, project, email_list_fn, mail_triage_fn, max_mail, mail_days)
+        cal_lines += _calendar_lines(acl, user, project, calendar_events_fn, day_start, day_end, tz_name,
+                              source_warnings)
+        mail_lines += _mail_lines(acl, user, project, email_list_fn, mail_triage_fn, max_mail, mail_days,
+                            source_warnings)
         bl_lines += _backlog_lines(acl, user, project, backlog_list_fn, last_run_iso)
         raid_open += _raid_open_count(acl, user, project, pm_raid_list_fn)
 
+    LAST_SOURCE_WARNINGS[user] = list(source_warnings)
     has_content = bool(cal_lines or mail_lines or bl_lines or raid_open)
     if not has_content and not send_when_empty:
-        return {"subject": "", "markdown": "", "text": "", "empty": True}
+        return {"subject": "", "markdown": "", "text": "", "empty": True,
+                "source_warnings": []}
 
     today_str = now.astimezone(_tz_or_utc(tz_name)).strftime("%Y-%m-%d")
     subject = f"Memaix — din brief {today_str}"
@@ -165,4 +201,5 @@ def build(
     markdown = "\n\n".join(sections)
     text = markdown.replace("# ", "").replace("## ", "").replace("_", "")
 
-    return {"subject": subject, "markdown": markdown, "text": text, "empty": not has_content}
+    return {"subject": subject, "markdown": markdown, "text": text, "empty": not has_content,
+            "source_warnings": source_warnings}
