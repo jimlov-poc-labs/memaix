@@ -224,15 +224,25 @@ def link_start(request: Request) -> "RedirectResponse | JSONResponse":
         return _json_error("unknown_provider", 400)
 
     provider_cfg, _public_url, redirect_uri = _provider_settings(provider)
+    scopes = list(provider_cfg.get("scopes", []))
+    requested = [c for c in request.query_params.get("capabilities", "").split(",") if c]
+    extra = provider_cfg.get("capability_scopes") or {}
+    for cap in dict.fromkeys(requested):
+        if cap not in extra:
+            return _json_error("unknown_capability", 400)
+        scopes += [sc for sc in extra[cap] if sc not in scopes]
     params = {
         _CLIENT_ID: provider_cfg.get(_CLIENT_ID, ""),
         "response_type": "code",
         "redirect_uri": redirect_uri,
         _STATE: state,
-        "scope": " ".join(provider_cfg.get("scopes", [])),
+        "scope": " ".join(scopes),
         "access_type": "offline",
         "prompt": "consent",
     }
+    if provider == _GOOGLE:
+        # Incremental authorization: a re-link keeps scopes granted earlier.
+        params["include_granted_scopes"] = "true"
     return RedirectResponse(_PROVIDER_AUTH_URLS[provider] + "?" + urlencode(params))
 
 
@@ -310,6 +320,32 @@ def _link_success_html(provider: str, account_email: str, public_url: str) -> st
 </html>"""
 
 
+def _merge_with_existing(token_store, user_id: str, provider: str, account: str, new: dict) -> dict:
+    """On re-link, keep what the provider's own answer lacks.
+
+    The new response's scope is the truth: with include_granted_scopes Google
+    already returns the union, and a scope the user revoked at Google must not
+    be resurrected. The old scope string is only a fallback when the response
+    carries none. The old refresh_token is kept if the new one has none."""
+    try:
+        old = token_store.load_one(user_id, provider, account)
+    except Exception as exc:
+        # Never log the exception text: it can carry token or key material.
+        _server.logger.warning(
+            "OAuth re-link: could not read existing token for %s (%s); storing without merge",
+            provider, type(exc).__name__,
+        )
+        old = None
+    if not old:
+        return new
+    merged = dict(new)
+    if not merged.get("scope") and old.get("scope"):
+        merged["scope"] = old["scope"]
+    if not merged.get("refresh_token") and old.get("refresh_token"):
+        merged["refresh_token"] = old["refresh_token"]
+    return merged
+
+
 async def link_callback(request: Request) -> Response:
     """Handle OAuth callback: exchange code for tokens and store them."""
     provider = request.path_params["provider"]
@@ -345,7 +381,9 @@ async def link_callback(request: Request) -> Response:
         return _json_error("token_exchange_failed", 500)
 
     account_email = token_data.get("email", "") or _server._get_account_email(provider, token_data)
-    _server._get_token_store().store(user_id, provider, account_email, _server._stamp_expiry(token_data))
+    token_store = _server._get_token_store()
+    token_data = _merge_with_existing(token_store, user_id, provider, account_email, token_data)
+    token_store.store(user_id, provider, account_email, _server._stamp_expiry(token_data))
     return HTMLResponse(_link_success_html(provider, account_email, public_url))
 
 

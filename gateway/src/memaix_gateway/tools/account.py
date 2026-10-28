@@ -33,6 +33,11 @@ PROVIDERS = {"google", "microsoft"}
 # OAuth flow at all — the user supplies host/user/password directly.
 NON_OAUTH_PROVIDERS = {"imap"}
 
+# Optional extra access per provider, requested on top of the base scopes.
+# The actual scope URLs live in config (oauth_providers.<p>.capability_scopes);
+# this is only the set of names account_link accepts.
+LINK_CAPABILITIES: dict[str, frozenset[str]] = {"google": frozenset({"mail"})}
+
 
 class _PendingStateSQLite:
     """SQLite-backed pending-state store shared across processes."""
@@ -120,7 +125,10 @@ def _purge_expired(now: int) -> None:
 
 
 # uniform tool signature (acl, user_id, ...)
-def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict:  # NOSONAR
+def account_link(  # NOSONAR
+    acl: Acl, user_id: str, provider: str, public_url: str,
+    capabilities: list[str] | None = None,
+) -> dict:
     """Generate a link URL for the given provider.
 
     For OAuth providers (PROVIDERS) this is an authorization-code state URL
@@ -130,12 +138,26 @@ def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict
     with no server-side state token (the form POSTs host/user/password
     directly, nothing to correlate a callback with).
 
+    capabilities (optional, e.g. ["mail"]) asks for extra scopes on top of the
+    provider's base set; unknown names are rejected, empty/omitted means base
+    only. They ride in the link URL rather than the state row (the pending
+    state table has a fixed schema); /link/{provider} re-validates them
+    against config, and the provider's consent screen shows what is granted.
+
     Returns {link_url, expires_in, provider}. expires_in is 600 for OAuth
     providers (matches the state token's TTL); 0 for non-OAuth providers
     (the form page itself has no expiry).
     """
     if provider not in PROVIDERS and provider not in NON_OAUTH_PROVIDERS:
         raise ValueError(f"unknown provider: {provider!r}")
+
+    caps = sorted(set(capabilities or []))
+    allowed = LINK_CAPABILITIES.get(provider, frozenset())
+    bad = [c for c in caps if c not in allowed]
+    if bad:
+        raise ValueError(
+            f"unknown capabilities for {provider}: {bad!r} (allowed: {sorted(allowed)!r})"
+        )
 
     if provider in NON_OAUTH_PROVIDERS:
         link_url = f"{public_url.rstrip('/')}/app/settings#accounts"
@@ -152,6 +174,8 @@ def account_link(acl: Acl, user_id: str, provider: str, public_url: str) -> dict
     _purge_expired(int(time.time()))
 
     link_url = f"{public_url.rstrip('/')}/link/{provider}?state={state}"
+    if caps:
+        link_url += "&capabilities=" + ",".join(caps)
     return {"link_url": link_url, "expires_in": 600, "provider": provider}
 
 

@@ -889,12 +889,16 @@ def _build_tour_for_user(user: str, profile_text: str) -> dict:
 
 
 @mcp.tool()
-def account_link(provider: str) -> dict:
-    """Get an OAuth link URL to connect your account."""
+def account_link(provider: str, capabilities: list[str] | None = None) -> dict:
+    """Get an OAuth link URL to connect your account.
+
+    capabilities: optional extra access to request on top of the base scopes,
+    e.g. ["mail"] to also allow read-only Gmail (Google only). Omit for the
+    default (calendar only)."""
     user = _user()
     cfg = config.load()
     public_url = cfg.get("memaix", {}).get("server", {}).get("public_url", _DEFAULT_PUBLIC_URL)
-    return t_account.account_link(_get_acl(), user, provider, public_url)
+    return t_account.account_link(_get_acl(), user, provider, public_url, capabilities)
 
 
 @mcp.tool()
@@ -1329,6 +1333,7 @@ def brief_status() -> dict:
         datetime.fromtimestamp(schedule["last_run"], tz=_tz.utc).isoformat()
         if schedule and schedule.get("last_run") else None
     )
+    from .notify.brief import LAST_SOURCE_WARNINGS
     from .notify.channels import mask_channel, mask_prefs, refused_channels
 
     # Stored channels a send would skip (http ntfy/Discord, ambiguous URL,
@@ -1347,6 +1352,7 @@ def brief_status() -> dict:
     return {
         "configured": True, "prefs": mask_prefs(prefs), "next_run": next_run, "last_run": last_run,
         "channel_warnings": warnings,
+        "source_warnings": list(LAST_SOURCE_WARNINGS.get(user, [])),
     }
 
 
