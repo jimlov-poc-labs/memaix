@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 WORKDIR /app
 RUN groupadd -r -g 1001 loginapp \
     && useradd -r -u 1001 -g loginapp -d /app -s /sbin/nologin loginapp
