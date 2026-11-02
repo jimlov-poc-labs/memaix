@@ -328,3 +328,18 @@ def test_provenance_does_not_override_explicit_verifierad(acl, store):
     result = memory_write(acl, "carol", "proj", "prov/e.md", content, status="verifierad")
     assert result["status"] == "verifierad"
     assert result["provenance"]["grade"] == "unverifiable"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [".git/config", "sub/.git/HEAD", ".gitattributes", ".gitmodules", "a/.GIT/x", ".git",
+     "sub\\.git\\config", "GIT~1/config", ".git./config"],
+)
+def test_memory_write_refuses_git_state(acl, vault, path):
+    with pytest.raises(ValueError):
+        memory_write(acl, "alice", "proj", path, "[core]\nfsmonitor = x\n")
+    assert not (vault / "memory" / path.replace("\\", "/")).exists()
+
+
+def test_memory_write_normal_names_still_work(acl):
+    memory_write(acl, "alice", "proj", "gitnotes/my.gitignore.md", "x")

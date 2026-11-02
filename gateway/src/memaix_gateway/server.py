@@ -358,6 +358,9 @@ def _index_backlog_add(acl, user, project, tail, kwargs, result):
 
 def _index_files_write(acl, user, project, tail, kwargs, result):
     path, content = tail[0], tail[1]
+    from .tools.files import is_reserved_rel
+    if is_reserved_rel(path):
+        return None
     return ("file", path, path, content)
 
 
