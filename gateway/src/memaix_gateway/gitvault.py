@@ -50,6 +50,17 @@ _IDENTITY = {
 _LOCALE = {"LC_ALL": "C", "LANG": "C", "LANGUAGE": "C"}
 
 
+# Defense in depth: a vault's .git/config is data a writer may have touched.
+# Pin the settings that turn config into code execution, and ignore the
+# system config so nothing outside the vault can re-enable them.
+_HARDEN = [
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.sshCommand=false",
+    "-c", "protocol.ext.allow=never",
+]
+
+
 class GitError(RuntimeError):
     """A git command failed. The message carries git's own stderr.
 
@@ -63,6 +74,7 @@ def env() -> dict:
     merged = os.environ.copy()
     merged.update(_IDENTITY)
     merged.update(_LOCALE)
+    merged["GIT_CONFIG_NOSYSTEM"] = "1"
     return merged
 
 
@@ -74,7 +86,7 @@ def run(vault: Path, args: list[str], *, check: bool = True) -> subprocess.Compl
     FileNotFoundError from Popen and lose which vault it was about.
     """
     proc = subprocess.run(
-        ["git", "-C", str(vault), *args],
+        ["git", "-C", str(vault), *_HARDEN, *args],
         env=env(),
         capture_output=True,
         text=True,
