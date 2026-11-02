@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import frontmatter as fm
+from ..tools.files import is_reserved_rel
 
 # Directories/files that must never be indexed (internal state, secrets, VCS).
 _SKIP_DIR_PARTS = {"_system", ".git", "pm"}
@@ -70,8 +71,10 @@ def index_delete(store, project: str, source_type: str, ref: str) -> None:
 def _is_skippable(vault: Path, path: Path) -> bool:
     if path.name in _SKIP_FILE_NAMES or path.name.startswith("."):
         return True
-    parts = path.relative_to(vault).parts
-    return any(p in _SKIP_DIR_PARTS for p in parts)
+    rel = path.relative_to(vault)
+    if is_reserved_rel(str(rel)):
+        return True  # git state and per-user/system state (same list as files_*)
+    return any(p in _SKIP_DIR_PARTS for p in rel.parts)
 
 
 def _read_text(path: Path) -> str | None:
@@ -116,8 +119,16 @@ def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int,
     return chunks, sources
 
 
+def _purge_reserved_file_rows(store, project: str) -> None:
+    """Drop 'file' rows an older version indexed from reserved paths."""
+    for ref in store.refs(project, "file"):
+        if is_reserved_rel(ref):
+            store.delete(project, "file", ref)
+
+
 def _index_other_files(store, embedder, project: str, vault: Path) -> tuple[int, int]:
     chunks = sources = 0
+    _purge_reserved_file_rows(store, project)
     if not vault.is_dir():
         return chunks, sources
     for p in sorted(vault.rglob("*")):

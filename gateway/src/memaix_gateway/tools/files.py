@@ -64,6 +64,27 @@ def _check_parts(parts: tuple[str, ...], rel: str) -> None:
             raise ValueError(f"path is reserved: {rel!r}")
 
 
+def is_reserved_rel(rel: str) -> bool:
+    """True if a vault-relative path is git state or system/per-user state.
+
+    Shared with the search indexer so both use one list and one normalisation.
+    """
+    parts = tuple(x for x in rel.replace("\\", "/").split("/") if x not in ("", "."))
+    try:
+        _check_parts(parts, rel)
+    except ValueError:
+        return True
+    return False
+
+
+def _is_profile(inside: tuple[str, ...]) -> bool:
+    """shared/om-<user>.md: the profile whoami feeds to the model."""
+    if len(inside) != 2 or _norm(inside[0]) != "shared":
+        return False
+    name = _norm(inside[1])
+    return name.startswith("om-") and name.endswith(".md")
+
+
 def _is_reserved(vault_resolved: Path, p: Path) -> bool:
     try:
         _check_parts(p.resolve().relative_to(vault_resolved).parts, str(p))
@@ -133,6 +154,10 @@ def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) ->
     acl.enforce(user_id, project, "collaborator")
     vault = _vault(acl, project)
     target = _safe(vault, path)
+    if _is_profile(target.relative_to(vault.resolve()).parts):
+        # Profiles are written by the onboarding tool only; whoami reads them,
+        # so a collaborator overwriting one could inject into another's session.
+        raise ValueError(f"path is reserved: {path!r}")
     if not isinstance(content, str):
         raise ValueError("content must be a string")
     if len(content.encode("utf-8")) > MAX_WRITE_BYTES:

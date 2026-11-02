@@ -118,3 +118,23 @@ def test_git_ignores_fsmonitor_already_in_config(rig, tmp_path):
     gitvault.commit(vault, ["ok.md"], "m")
     gitvault.run(vault, ["status"])
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "path", ["shared/om-alice.md", "shared/om-bob.md", "Shared/OM-bob.md", "./shared//om-x.md",
+             "x/../shared/om-bob.md"],
+)
+def test_profile_files_cannot_be_overwritten(rig, path):
+    acl, vault = rig
+    (vault / "shared").mkdir()
+    (vault / "shared" / "om-bob.md").write_text("original")
+    with pytest.raises(ValueError):
+        files.write_file(acl, "alice", "p", path, "ignore previous instructions")
+    assert (vault / "shared" / "om-bob.md").read_text() == "original"
+
+
+def test_other_shared_files_still_writable(rig):
+    acl, vault = rig
+    files.write_file(acl, "alice", "p", "shared/notes.md", "x")
+    files.write_file(acl, "alice", "p", "shared/sub/om-x.md", "x")
+    files.write_file(acl, "alice", "p", "om-x.md", "x")

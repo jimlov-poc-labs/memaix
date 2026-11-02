@@ -53,7 +53,7 @@ def validate_id(value: str, *, kind: str = "id") -> str:
     return value
 
 
-def validate_relative_path(path: str, *, kind: str = "path") -> str:
+def validate_relative_path(path: str, *, kind: str = "path", forbid_git: bool = False) -> str:
     """Validate a multi-segment relative path (e.g. a note like "a/b.md").
 
     Must be relative, non-empty, and contain no ".." components or NUL bytes.
@@ -64,6 +64,11 @@ def validate_relative_path(path: str, *, kind: str = "path") -> str:
         raise ValueError(f"{kind} must be relative: {path!r}")
     if ".." in Path(path).parts:
         raise ValueError(f"{kind} cannot contain '..': {path!r}")
+    # forbid_git: for paths inside a git-backed vault, never name git state
+    # (.git, .gitattributes, .gitmodules at any depth).
+    from .tools.files import _is_git_name
+    if forbid_git and any(_is_git_name(part) for part in path.replace("\\", "/").split("/")):
+        raise ValueError(f"{kind} is reserved: {path!r}")
     return path
 
 

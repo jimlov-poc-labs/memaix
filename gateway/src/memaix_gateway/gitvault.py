@@ -58,6 +58,7 @@ _HARDEN = [
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.sshCommand=false",
     "-c", "protocol.ext.allow=never",
+    "-c", "commit.gpgsign=false",
 ]
 
 
@@ -75,6 +76,7 @@ def env() -> dict:
     merged.update(_IDENTITY)
     merged.update(_LOCALE)
     merged["GIT_CONFIG_NOSYSTEM"] = "1"
+    merged["GIT_CONFIG_GLOBAL"] = "/dev/null"
     return merged
 
 
