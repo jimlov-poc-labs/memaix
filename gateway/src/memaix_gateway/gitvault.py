@@ -189,18 +189,25 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     # Exclude pathspecs (git ignores them for explicit file paths, so those
     # are filtered in Python instead): a nested .gitignore with `!.memaix*` cannot
     # override these, unlike info/exclude.
+    # icase: vault_fs.is_reserved compares case-insensitively, so must git.
+    # Nested .gitignore files are not staged (root one is, it is ours).
     keep_out = [
-        ":(exclude,glob).memaix*",
-        ":(exclude,glob).memaix*/**",
-        ":(exclude,glob)**/.memaix*",
-        ":(exclude,glob)**/.memaix*/**",
+        ":(exclude,icase,glob).memaix*",
+        ":(exclude,icase,glob).memaix*/**",
+        ":(exclude,icase,glob)**/.memaix*",
+        ":(exclude,icase,glob)**/.memaix*/**",
+        ":(exclude,icase,glob)*/.gitignore",
+        ":(exclude,icase,glob)*/**/.gitignore",
     ]
     if all_tracked:
         run(vault, ["add", "-A", "--", ".", *keep_out])
     elif paths:
         files, dirs = [], []
         for p in paths:
-            if any(c.lower().startswith(".memaix") for c in Path(p).parts):
+            parts = Path(p).parts
+            if any(c.lower().startswith(".memaix") for c in parts):
+                continue
+            if len(parts) > 1 and parts[-1].lower() == ".gitignore":
                 continue
             (dirs if (vault / p).is_dir() else files).append(p)
         if files:

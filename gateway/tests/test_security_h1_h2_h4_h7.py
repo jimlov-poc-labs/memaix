@@ -493,3 +493,34 @@ def test_add_directory_path_excludes_memaix(tmp_path):
     gitvault.commit(v, ["a"], "m")
     assert [t for t in _tracked(v) if ".memaix" in t] == []
     assert "a/ok.md" in _tracked(v)
+
+
+# ------------------------------------------------------------ review round 6
+
+
+def _case_tree(tmp_path):
+    v = tmp_path / "v"
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / "a" / ".MEMAIX-up").mkdir(parents=True)
+    (v / "a" / ".MEMAIX-up" / "f").write_text("x")
+    (v / "a" / ".Memaix.db").write_text("x")
+    (v / "a" / ".GITIGNORE").write_text("x")
+    (v / "a" / ".gitignore").write_text("x")
+    (v / "a" / "ok.md").write_text("ok")
+    return v
+
+
+@pytest.mark.parametrize("paths,all_tracked", [([], True), (["a"], False)])
+def test_add_excludes_case_variants_and_nested_gitignore(tmp_path, paths, all_tracked):
+    v = _case_tree(tmp_path)
+    gitvault.commit(v, paths, "m", all_tracked=all_tracked)
+    tracked = [t.lower() for t in _tracked(v)]
+    assert tracked == ["a/ok.md"]
+
+
+def test_root_gitignore_still_staged(tmp_path):
+    v = tmp_path / "v"
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / ".gitignore").write_text(".memaix.db*\n")
+    gitvault.commit(v, [".gitignore"], "m")
+    assert _tracked(v) == [".gitignore"]
