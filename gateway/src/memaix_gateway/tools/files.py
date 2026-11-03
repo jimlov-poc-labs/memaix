@@ -24,10 +24,21 @@ def _safe(vault: Path, rel: str) -> Path:
     resolved = (vault / rel.lstrip("/")).resolve()
     vault_resolved = vault.resolve()
     try:
-        resolved.relative_to(vault_resolved)
+        inside = resolved.relative_to(vault_resolved)
     except ValueError:
         raise ValueError(f"path project-bs vault: {rel!r}")
+    # Check both the requested and the resolved path: a symlink must not
+    # smuggle a request into .git, and `sub/../.git` must not slip past.
+    parts = [*Path(rel.lstrip("/")).parts, *inside.parts]
+    if any(_is_reserved(c) for c in parts):
+        raise ValueError(f"reserved path: {rel!r}")
     return resolved
+
+
+def _is_reserved(component: str) -> bool:
+    """.git (any case) and .memaix* hold repo config and internal state."""
+    c = component.lower()
+    return c == ".git" or c.startswith(".memaix")
 
 
 def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[dict]:

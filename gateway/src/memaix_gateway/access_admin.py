@@ -204,6 +204,14 @@ class AccessAdmin:
             if existing is not None and existing.get("password_hash"):
                 existing.setdefault("grants", {})[project] = role
                 return "granted"
+            if (
+                existing is not None
+                and not acl.is_admin(actor)
+                and any(acl.grants(actor).get(p) != "owner" for p in existing.get("grants") or {})
+            ):
+                # Accepting the token would set the password on an account
+                # that reaches projects the actor does not own.
+                raise AccessError(f"{user} also has access to projects you do not own")
             entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
             entry.setdefault("grants", {})[project] = role
             if email:
