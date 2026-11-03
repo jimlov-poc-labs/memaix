@@ -186,10 +186,16 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     reader can see which caller sweeps up unrelated working-tree changes.
     """
     _exclude_internal(vault)
+    # Exclude pathspecs (git ignores them for explicit file paths, so those
+    # are filtered in Python instead): a nested .gitignore with `!.memaix*` cannot
+    # override these, unlike info/exclude.
+    keep_out = [":(exclude,glob).memaix*", ":(exclude,glob)**/.memaix*"]
     if all_tracked:
-        run(vault, ["add", "-A"])
+        run(vault, ["add", "-A", "--", ".", *keep_out])
     elif paths:
-        run(vault, ["add", "--", *paths])
+        safe = [p for p in paths if not any(c.lower().startswith(".memaix") for c in Path(p).parts)]
+        if safe:
+            run(vault, ["add", "--", *safe])
 
     proc = run(vault, ["commit", "-m", message], check=False)
     if proc.returncode != 0 and not _is_empty_commit(proc):

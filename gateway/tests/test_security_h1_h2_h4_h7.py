@@ -347,3 +347,116 @@ def test_git_run_passes_empty_sshcommand(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", spy)
     gitvault.run(tmp_path, ["--version"], check=False)
     assert "core.sshCommand=" in seen[0] and "core.hooksPath=/dev/null" in seen[0]
+
+
+# ------------------------------------------------------------ review round 4
+# One shared guard (vault_fs); one test per way in.
+
+
+def _evil_vault(tmp_path):
+    v = tmp_path / "vault"
+    v.mkdir()
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / ".git" / "config").write_text("[core]\n")
+    for d in ("memory", "backlog"):
+        (v / d).mkdir()
+        (v / d / "n.md").symlink_to(v / ".git" / "config")
+    (v / "rootlink").symlink_to(v / ".git" / "config")
+    return v
+
+
+def test_memory_store_write_refuses_symlink_to_git_config(tmp_path):
+    from memaix_gateway.backends.memory_store import MemoryStore
+
+    v = _evil_vault(tmp_path)
+    store = MemoryStore.for_vault(v)
+    with pytest.raises(ValueError):
+        store.write("n.md", "[core]\nfsmonitor = touch /tmp/pwn\n", "x")
+    assert (v / ".git" / "config").read_text() == "[core]\n"
+
+
+def test_memory_store_refuses_nested_gitignore_note(tmp_path):
+    from memaix_gateway.backends.memory_store import MemoryStore
+
+    store = MemoryStore.for_vault(tmp_path / "vault2")
+    with pytest.raises(ValueError):
+        store.write("sub/.gitignore", "!.memaix*\n", "x")
+
+
+def test_backlog_walkers_skip_symlink_to_git(tmp_path):
+    from memaix_gateway.board import store as board
+    from memaix_gateway.search.index import _index_backlog_dir
+
+    v = _evil_vault(tmp_path)
+    assert board.list_backlog(v) == []
+    seen = []
+
+    class S:  # index_upsert is patched below
+        pass
+
+    import memaix_gateway.search.index as idx
+
+    orig = idx.index_upsert
+    idx.index_upsert = lambda *a, **k: seen.append(a) or 1
+    try:
+        _index_backlog_dir(S(), S(), "p", v)
+        idx._index_memory_dir(S(), S(), "p", v)
+        idx._index_other_files(S(), S(), "p", v)
+    finally:
+        idx.index_upsert = orig
+    assert seen == []
+
+
+def test_tools_backlog_list_skips_symlink_to_git(tmp_path):
+    from memaix_gateway.tools import backlog as tb
+
+    v = _evil_vault(tmp_path)
+    acl = Acl(users={"c": {"grants": {"p": "owner"}}}, projects={"p": {"vault": str(v)}})
+    assert tb.backlog_list(acl, "c", "p") == []
+
+
+def test_outward_symlink_not_searched_or_indexed(facl, tmp_path):
+    from memaix_gateway.search.index import _is_skippable
+
+    acl, v = facl
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SECRET outside")
+    (v / "out.md").symlink_to(outside)
+    assert files.search_files(acl, "c", "p", "secret", "/") == []
+    assert _is_skippable(v, v / "out.md")
+    assert [e["name"] for e in files.list_files(acl, "c", "p", "/")] == []
+
+
+def test_reserved_name_symlink_is_blocked_by_found_path(facl):
+    from memaix_gateway import vault_fs
+
+    acl, v = facl
+    (v / "ok.md").write_text("fine")
+    (v / ".memaix-link").symlink_to(v / "ok.md")
+    assert vault_fs.is_blocked(v, v / ".memaix-link")
+
+
+def test_nested_gitignore_cannot_readmit_memaix(tmp_path):
+    v = tmp_path / "v"
+    (v / "memory").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / "memory" / ".gitignore").write_text("!.memaix*\n")
+    (v / ".memaix.db").write_text("db")
+    (v / "memory" / ".memaix.db").write_text("db")
+    (v / "memory" / "a.md").write_text("a")
+    gitvault.commit(v, [], "m", all_tracked=True)
+    tracked = subprocess.run(["git", "-C", str(v), "ls-files"], capture_output=True, text=True).stdout.split()
+    assert not [t for t in tracked if ".memaix" in t]
+    assert "memory/a.md" in tracked
+
+
+def test_invite_admin_actor_may_invite_foreign_pending_user(tmp_path):
+    base = {
+        "users": {"root": {"admin": True, "grants": {}}, "bob": {"grants": {"beta": "owner"}}},
+        "projects": {"acme": {"vault": "/a"}, "beta": {"vault": "/b"}},
+    }
+    path = tmp_path / "acl.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    admin = AccessAdmin(AclWriter(path), InviteStore(tmp_path / "i.db"), tmp_path)
+    acl = Acl.from_config(yaml.safe_load(path.read_text(encoding="utf-8")))
+    assert admin.invite(acl, "root", "acme", "bob", "reader")["status"] == "invited"

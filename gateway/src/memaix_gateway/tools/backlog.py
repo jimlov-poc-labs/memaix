@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from .. import frontmatter as fm
+from .. import vault_fs
 from ..acl import Acl
 from ..backlog_schema import BacklogItem
 from ..paths import validate_id
@@ -76,7 +77,7 @@ def _parse_item(path: Path) -> dict:
     out-of-range score, ...) raises ValueError just like a missing
     frontmatter block, so existing `except (ValueError, yaml.YAMLError)`
     callers already treat it as "skip this corrupted item"."""
-    text = path.read_text()
+    text = vault_fs.read_text(path.parent.parent, path)
     meta, body = fm.split(text)
     if not meta:
         raise ValueError(f"missing or malformed frontmatter in {path.name}")
@@ -89,7 +90,7 @@ def _write_item(path: Path, meta: dict) -> None:
     BacklogItem.model_validate(meta)  # reject bad data before it ever reaches disk
     # Pop description before serialising frontmatter
     description = meta.pop("description", "")
-    fm.write_atomic(path, fm.join(meta, description))
+    fm.write_atomic(path, fm.join(meta, description), vault=path.parent.parent)
     meta["description"] = description  # restore in-place
 
 
@@ -149,7 +150,7 @@ def backlog_list(
     acl.enforce(user_id, project, "reader")
     bl_dir = _backlog_dir(acl, project)
     items: list[dict] = []
-    for p in sorted(bl_dir.glob("*.md")):
+    for p in vault_fs.iter_files(bl_dir.parent, bl_dir, "*.md"):
         try:
             item = _parse_item(p)
         except (ValueError, yaml.YAMLError) as exc:
