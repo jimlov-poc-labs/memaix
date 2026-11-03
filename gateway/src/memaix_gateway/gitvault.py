@@ -189,13 +189,25 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     # Exclude pathspecs (git ignores them for explicit file paths, so those
     # are filtered in Python instead): a nested .gitignore with `!.memaix*` cannot
     # override these, unlike info/exclude.
-    keep_out = [":(exclude,glob).memaix*", ":(exclude,glob)**/.memaix*"]
+    keep_out = [
+        ":(exclude,glob).memaix*",
+        ":(exclude,glob).memaix*/**",
+        ":(exclude,glob)**/.memaix*",
+        ":(exclude,glob)**/.memaix*/**",
+    ]
     if all_tracked:
         run(vault, ["add", "-A", "--", ".", *keep_out])
     elif paths:
-        safe = [p for p in paths if not any(c.lower().startswith(".memaix") for c in Path(p).parts)]
-        if safe:
-            run(vault, ["add", "--", *safe])
+        files, dirs = [], []
+        for p in paths:
+            if any(c.lower().startswith(".memaix") for c in Path(p).parts):
+                continue
+            (dirs if (vault / p).is_dir() else files).append(p)
+        if files:
+            run(vault, ["add", "--", *files])
+        if dirs:
+            # -A with exclude pathspecs: a nested .gitignore cannot readmit .memaix*
+            run(vault, ["add", "-A", "--", *dirs, *keep_out])
 
     proc = run(vault, ["commit", "-m", message], check=False)
     if proc.returncode != 0 and not _is_empty_commit(proc):

@@ -70,7 +70,12 @@ def is_blocked(vault: Path, path: Path | str) -> bool:
 
 
 def read_text(vault: Path, path: Path | str, encoding: str = "utf-8") -> str:
-    return check(vault, path).read_text(encoding=encoding)
+    resolved = check(vault, path)
+    # O_NOFOLLOW: the resolved path has no link in its last component; refuse
+    # one swapped in between check and open.
+    fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "r", encoding=encoding) as fh:
+        return fh.read()
 
 
 def exists(vault: Path, path: Path | str) -> bool:

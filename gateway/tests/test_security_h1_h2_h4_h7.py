@@ -460,3 +460,36 @@ def test_invite_admin_actor_may_invite_foreign_pending_user(tmp_path):
     admin = AccessAdmin(AclWriter(path), InviteStore(tmp_path / "i.db"), tmp_path)
     acl = Acl.from_config(yaml.safe_load(path.read_text(encoding="utf-8")))
     assert admin.invite(acl, "root", "acme", "bob", "reader")["status"] == "invited"
+
+
+# ------------------------------------------------------------ review round 5
+
+
+def _tracked(v):
+    return subprocess.run(["git", "-C", str(v), "ls-files"], capture_output=True, text=True).stdout.split()
+
+
+def _memaix_tree(tmp_path):
+    v = tmp_path / "v"
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / "a" / ".memaix-x").mkdir(parents=True)
+    (v / ".memaix-y").mkdir()
+    (v / "a" / ".gitignore").write_text("!.memaix*\n")
+    for f in ("a/.memaix-x/f", ".memaix-y/f", "a/.memaix.db"):
+        (v / f).write_text("x")
+    (v / "a" / "ok.md").write_text("ok")
+    return v
+
+
+def test_add_all_excludes_memaix_directories(tmp_path):
+    v = _memaix_tree(tmp_path)
+    gitvault.commit(v, [], "m", all_tracked=True)
+    assert [t for t in _tracked(v) if ".memaix" in t] == []
+    assert "a/ok.md" in _tracked(v)
+
+
+def test_add_directory_path_excludes_memaix(tmp_path):
+    v = _memaix_tree(tmp_path)
+    gitvault.commit(v, ["a"], "m")
+    assert [t for t in _tracked(v) if ".memaix" in t] == []
+    assert "a/ok.md" in _tracked(v)
