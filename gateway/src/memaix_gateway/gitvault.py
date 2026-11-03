@@ -150,6 +150,28 @@ def _is_empty_commit(proc: subprocess.CompletedProcess) -> bool:
     return "nothing to commit" in said or "nothing added to commit" in said
 
 
+def _exclude_internal(vault: Path) -> None:
+    """Guarantee .memaix* never gets staged, whatever .gitignore says.
+
+    Written to .git/info/exclude (not the user-writable .gitignore), so older
+    vaults and overwritten .gitignore files are covered too.
+    """
+    proc = run(vault, ["rev-parse", "--git-path", "info/exclude"], check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return
+    path = Path(proc.stdout.strip())
+    if not path.is_absolute():
+        path = vault / path
+    try:
+        have = path.read_text().splitlines() if path.exists() else []
+        if ".memaix*" not in have:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as fh:
+                fh.write(("\n" if have and not path.read_text().endswith("\n") else "") + ".memaix*\n")
+    except OSError:
+        pass
+
+
 def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = False) -> str:
     """Stage *paths* and commit them. Returns the resulting commit hash.
 
@@ -163,6 +185,7 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     the vault and committed them with `add -A`. Kept, but named, so that a
     reader can see which caller sweeps up unrelated working-tree changes.
     """
+    _exclude_internal(vault)
     if all_tracked:
         run(vault, ["add", "-A"])
     elif paths:

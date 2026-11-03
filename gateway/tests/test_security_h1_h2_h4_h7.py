@@ -264,3 +264,86 @@ def test_git_run_neutralises_hooks_and_ssh(tmp_path):
     gitvault.run(v, ["add", "f"])
     gitvault.run(v, ["commit", "-q", "-m", "m"], check=False)
     assert not marker.exists()
+
+
+# ------------------------------------------------------------ review round 3
+
+
+def test_symlink_to_git_config_not_searched_or_indexed(facl):
+    from memaix_gateway.search.index import _is_skippable
+
+    acl, v = facl
+    (v / ".git").mkdir()
+    (v / ".git" / "config").write_text("SECRET fsmonitor")
+    (v / "memory").mkdir()
+    (v / "linkfile").symlink_to(v / ".git" / "config")
+    (v / "memory" / "mlink.md").symlink_to(v / ".git" / "config")
+    (v / "ok.md").write_text("SECRET public")
+    assert [h["path"] for h in files.search_files(acl, "c", "p", "secret", "/")] == ["ok.md"]
+    assert _is_skippable(v, v / "linkfile")
+    assert _is_skippable(v, v / "memory" / "mlink.md")
+    assert not _is_skippable(v, v / "ok.md")
+    with pytest.raises(ValueError):
+        files.read_file(acl, "c", "p", "linkfile")
+
+
+def test_gitignore_is_reserved_for_writes(facl):
+    acl, _ = facl
+    with pytest.raises(ValueError):
+        files.write_file(acl, "c", "p", ".gitignore", "")
+
+
+def test_commit_never_stages_memaix_even_without_gitignore(tmp_path):
+    v = tmp_path / "v"
+    v.mkdir()
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / ".memaix.db").write_text("db")
+    (v / ".memaix.db-wal").write_text("wal")
+    (v / "a.md").write_text("a")
+    gitvault.commit(v, [], "m", all_tracked=True)
+    tracked = subprocess.run(["git", "-C", str(v), "ls-files"], capture_output=True, text=True).stdout.split()
+    assert tracked == ["a.md"]
+
+
+def _redeem(adm_env, issuer, user="erin", reset=False, mutate=None):
+    admin, acl, inv = adm_env
+    tok = inv.issue(user, issuer, reset=reset)
+    if mutate:
+        admin._writer.update(mutate)
+    return admin.accept_invite(tok, "a-long-enough-password")
+
+
+def test_reset_rechecked_after_grants_change(adm):
+    admin, _, _ = adm
+    with pytest.raises(AccessError):
+        _redeem(adm, "alice", reset=True,
+                mutate=lambda d: d["users"]["erin"]["grants"].__setitem__("beta", "reader"))
+
+
+def test_reset_ok_for_owner_admin_and_self(adm):
+    admin, _, _ = adm
+    assert _redeem(adm, "alice", reset=True) == "erin"
+    admin._writer.update(lambda d: d["users"].__setitem__("root", {"admin": True, "grants": {}}))
+    assert _redeem(adm, "root", reset=True,
+                   mutate=lambda d: d["users"]["erin"]["grants"].__setitem__("beta", "reader")) == "erin"
+    assert _redeem(adm, "erin", reset=True) == "erin"
+
+
+def test_redeem_fails_closed_for_missing_or_disabled_issuer(adm):
+    with pytest.raises(AccessError):
+        _redeem(adm, "ghost")
+    with pytest.raises(AccessError):
+        _redeem(adm, "alice", mutate=lambda d: d["users"]["alice"].__setitem__("disabled", True))
+
+
+def test_git_run_passes_empty_sshcommand(monkeypatch, tmp_path):
+    seen = []
+    real = subprocess.run
+
+    def spy(cmd, *a, **k):
+        seen.append(cmd)
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    gitvault.run(tmp_path, ["--version"], check=False)
+    assert "core.sshCommand=" in seen[0] and "core.hooksPath=/dev/null" in seen[0]

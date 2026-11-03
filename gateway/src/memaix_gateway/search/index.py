@@ -70,6 +70,10 @@ def index_delete(store, project: str, source_type: str, ref: str) -> None:
 def _is_skippable(vault: Path, path: Path) -> bool:
     if path.name in _SKIP_FILE_NAMES or path.name.startswith("."):
         return True
+    from ..tools.files import is_blocked
+
+    if is_blocked(vault, path):
+        return True
     parts = path.relative_to(vault).parts
     return any(p in _SKIP_DIR_PARTS or p.lower().startswith(".memaix") for p in parts)
 

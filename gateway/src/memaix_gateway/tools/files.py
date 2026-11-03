@@ -36,9 +36,31 @@ def _safe(vault: Path, rel: str) -> Path:
 
 
 def _is_reserved(component: str) -> bool:
-    """.git (any case) and .memaix* hold repo config and internal state."""
+    """.git (any case), .gitignore and .memaix* hold repo config and state."""
     c = component.lower()
-    return c == ".git" or c.startswith(".memaix")
+    return c in (".git", ".gitignore") or c.startswith(".memaix")
+
+
+def is_blocked(vault: Path, path: Path) -> bool:
+    """True if *path* (as found, or after resolving symlinks) is off limits.
+
+    The single check for every vault walker: a symlink named `notes.md` that
+    points at `.git/config` is blocked because its resolved target is, and a
+    link leaving the vault is blocked too.
+    """
+    root = vault.resolve()
+    try:
+        found = path.relative_to(vault).parts
+    except ValueError:
+        try:
+            found = path.relative_to(root).parts
+        except ValueError:
+            return True
+    try:
+        real = path.resolve().relative_to(root).parts
+    except (ValueError, OSError):
+        return True
+    return any(_is_reserved(c) for c in (*found, *real))
 
 
 def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[dict]:
@@ -97,7 +119,7 @@ def search_files(
     for f in candidates:
         if not f.is_file():
             continue
-        if any(_is_reserved(c) for c in f.relative_to(vault.resolve()).parts):
+        if is_blocked(vault, f):
             continue
         try:
             text = f.read_text()

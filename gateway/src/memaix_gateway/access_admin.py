@@ -262,9 +262,10 @@ class AccessAdmin:
             u = data.get("users", {}).get(user)
             if u is None or u.get("disabled") or u.get("admin") is True:
                 raise AccessError(_INVALID_INVITATION)
-            if not is_reset and not u.get("password_hash"):
-                # Re-check ownership at redemption: grants may have changed
-                # since the token was issued. Fail closed on unknown issuer.
+            # Re-check ownership at redemption: grants may have changed since
+            # the token was issued. Fail closed on unknown/disabled issuer.
+            # A user redeeming a reset they issued for themselves is fine.
+            if not (is_reset and issuer == user):
                 actor = data.get("users", {}).get(issuer) if issuer else None
                 if actor is None or actor.get("disabled"):
                     raise AccessError(_INVALID_INVITATION)
