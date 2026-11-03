@@ -524,3 +524,16 @@ def test_root_gitignore_still_staged(tmp_path):
     (v / ".gitignore").write_text(".memaix.db*\n")
     gitvault.commit(v, [".gitignore"], "m")
     assert _tracked(v) == [".gitignore"]
+
+
+def test_explicit_file_paths_deny_memaix_and_nested_gitignore(tmp_path):
+    v = tmp_path / "v"
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    (v / "a").mkdir()
+    (v / "a" / ".gitignore").write_text("!.memaix*\n")
+    (v / "a" / ".memaix.db").write_text("x")
+    (v / "a" / "ok.md").write_text("ok")
+    (v / ".memaix-y").mkdir()
+    (v / ".memaix-y" / "f").write_text("x")
+    gitvault.commit(v, ["a/.memaix.db", "a/.gitignore", ".memaix-y/f", "a/ok.md"], "m")
+    assert _tracked(v) == ["a/ok.md"]
