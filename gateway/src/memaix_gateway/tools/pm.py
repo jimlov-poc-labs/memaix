@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import frontmatter as fm
-from .. import gitvault
+from .. import gitvault, vault_fs
 from ..acl import Acl
 from ..paths import validate_id
 from . import backlog as t_backlog
@@ -31,14 +31,14 @@ def _vault(acl: Acl, project: str) -> Path:
     return Path(v)
 
 
-def _write(path: Path, text: str) -> None:
-    fm.write_atomic(path, text)
+def _write(vault: Path, path: Path, text: str) -> None:
+    fm.write_atomic(path, text, vault=vault)
 
 
-def _read(path: Path) -> str | None:
-    if not path.exists():
+def _read(vault: Path, path: Path) -> str | None:
+    if not vault_fs.exists(vault, path):
         return None
-    return path.read_text(encoding="utf-8")
+    return vault_fs.read_text(vault, path)
 
 
 def _split_fm(text: str) -> tuple[dict, str]:
@@ -84,14 +84,14 @@ def _git_commit(vault: Path, rel_paths: list[str], message: str) -> bool:
 def _stamp_backlog_field(vault: Path, item_id: str, **fields) -> bool:
     """Non-destructively update named frontmatter fields on a backlog item."""
     path = vault / "backlog" / f"{item_id}.md"
-    if not path.exists():
+    if not vault_fs.exists(vault, path):
         return False
-    meta, body = fm.split(path.read_text(encoding="utf-8"))
+    meta, body = fm.split(vault_fs.read_text(vault, path))
     if not meta:
         return False
     meta.update(fields)
     meta["updated_at"] = _now_iso()
-    fm.write_atomic(path, fm.join(meta, body))
+    fm.write_atomic(path, fm.join(meta, body), vault=vault)
     return True
 
 
@@ -139,12 +139,12 @@ def pm_set_methodology(
     vault = _vault(acl, project)
     playbook = vault / _PLAYBOOK_FILE
 
-    text = _read(playbook) or "# Playbook\n"
+    text = _read(vault, playbook) or "# Playbook\n"
     meta, body = _split_fm(text)
     meta["methodology"] = methodology
     meta["sprint_length_days"] = int(sprint_length_days)
     meta["capacity"] = capacity or {}
-    _write(playbook, _join_fm(meta, body))
+    _write(vault, playbook, _join_fm(meta, body))
 
     committed = _git_commit(vault, [_PLAYBOOK_FILE], f"pm: set methodology={methodology}")
     return {
@@ -174,10 +174,10 @@ def pm_status_report(
         if s in counts:
             counts[s] += 1
 
-    pb_meta, _ = _split_fm(_read(vault / _PLAYBOOK_FILE) or "")
+    pb_meta, _ = _split_fm(_read(vault, vault / _PLAYBOOK_FILE) or "")
     methodology = pb_meta.get("methodology", "")
 
-    raid_text = _read(vault / "pm" / _RAID_FILE) or ""
+    raid_text = _read(vault, vault / "pm" / _RAID_FILE) or ""
     open_raids = sum(1 for e in _parse_raid(raid_text) if e.get("status") == "open")
 
     notes_text = ""
@@ -237,7 +237,7 @@ methodology: {methodology}
 """
 
     rel = f"pm/reports/STATUS-{today}.md"
-    _write(vault / "pm" / "reports" / f"STATUS-{today}.md", content)
+    _write(vault, vault / "pm" / "reports" / f"STATUS-{today}.md", content)
     committed = _git_commit(vault, [rel], f"pm: status report {today}")
 
     return {
@@ -252,7 +252,7 @@ methodology: {methodology}
 
 def _sprint_playbook(vault: Path) -> tuple[int | None, int]:
     """(capacity_points or None when uncapped, sprint length in days)."""
-    pb_meta, _ = _split_fm(_read(vault / _PLAYBOOK_FILE) or "")
+    pb_meta, _ = _split_fm(_read(vault, vault / _PLAYBOOK_FILE) or "")
     capacity_map = pb_meta.get("capacity") or {}
     capacity_points = sum(int(v) for v in capacity_map.values()) if capacity_map else None
     return capacity_points, int(pb_meta.get("sprint_length_days", 14))
@@ -267,10 +267,10 @@ def _collect_sprint_items(
     committed_points = 0
     for item_id in item_ids:
         item_path = vault / "backlog" / f"{item_id}.md"
-        if not item_path.exists():
+        if not vault_fs.exists(vault, item_path):
             errors.append(f"{item_id}: not found")
             continue
-        meta, _ = fm.split(item_path.read_text(encoding="utf-8"))
+        meta, _ = fm.split(vault_fs.read_text(vault, item_path))
         estimate = meta.get("estimate")
         if estimate is None:
             warnings.append(f"{item_id}: no estimate, counted as 0")
@@ -341,7 +341,7 @@ def pm_plan_sprint(
         warnings.append(f"committed {committed_points} > capacity {capacity_points}")
 
     cap_display = capacity_points if capacity_points is not None else "uncapped"
-    _write(sprint_path, _render_sprint(sprint_id, goal, sprint_length, cap_display, committed_points, items))
+    _write(vault, sprint_path, _render_sprint(sprint_id, goal, sprint_length, cap_display, committed_points, items))
 
     stamped_rels = [
         f"backlog/{i['id']}.md" for i in items if _stamp_backlog_field(vault, i["id"], sprint=sprint_id)
@@ -378,7 +378,7 @@ def pm_sprint_status(
     validate_id(sprint_id, kind="sprint id")
     vault = _vault(acl, project)
 
-    text = _read(vault / "pm" / "sprints" / f"{sprint_id}.md")
+    text = _read(vault, vault / "pm" / "sprints" / f"{sprint_id}.md")
     if text is None:
         return {"ok": False, "error": f"{sprint_id} not found"}
 
@@ -447,7 +447,7 @@ def pm_raid_add(
 
     vault = _vault(acl, project)
     raid_path = vault / "pm" / _RAID_FILE
-    text = _read(raid_path) or "# RAID Log\n"
+    text = _read(vault, raid_path) or "# RAID Log\n"
 
     existing = re.findall(r"RAID-(\d+)", text)
     next_num = max((int(n) for n in existing), default=0) + 1
@@ -462,7 +462,7 @@ def pm_raid_add(
 - **Summary:** {summary}
 - **Mitigation:** {mitigation}
 """
-    _write(raid_path, text.rstrip() + "\n" + entry)
+    _write(vault, raid_path, text.rstrip() + "\n" + entry)
     committed = _git_commit(vault, ["pm/raid.md"], f"pm: raid {raid_id} {raid_type}")
 
     return {"ok": True, "raid_id": raid_id, "type": raid_type, "committed": committed}
@@ -477,7 +477,7 @@ def pm_raid_list(
     acl.enforce(user_id, project, "reader")
     vault = _vault(acl, project)
 
-    text = _read(vault / "pm" / _RAID_FILE)
+    text = _read(vault, vault / "pm" / _RAID_FILE)
     if text is None:
         return {"ok": True, "entries": [], "count": 0}
 

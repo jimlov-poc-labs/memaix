@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import frontmatter as fm
+from .. import vault_fs
 from ..acl import Acl
 from ..tools import backlog as t_backlog
 from ..tools import memory as t_memory
@@ -65,11 +66,12 @@ def _backlog_dir(acl: Acl, project: str) -> Path:
 
 
 def _stamp(path: Path, *, description: str | None = None, **fields) -> None:
-    meta, body = fm.split(path.read_text(encoding="utf-8"))
+    vault = path.parent.parent  # <vault>/backlog/<id>.md
+    meta, body = fm.split(vault_fs.read_text(vault, path))
     if description is not None:
         body = description
     meta.update(fields)
-    fm.write_atomic(path, fm.join(meta, body))
+    fm.write_atomic(path, fm.join(meta, body), vault=vault)
 
 
 def _apply_deck_to_backlog(path: Path, card: dict) -> None:

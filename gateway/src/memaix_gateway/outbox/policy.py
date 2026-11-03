@@ -7,6 +7,13 @@ unlisted recipient forces 'review' even when the project's mode is 'auto'.
 
 from __future__ import annotations
 
+import re
+from email.utils import getaddresses
+
+_ADDR = re.compile(r"^[^@\s;<>()]+@[^@\s;<>()]+$")
+# Marks an unparseable recipient; never matches an allowlist entry.
+_INVALID = "<invalid>"
+
 
 def _recipients(tool: str, args: dict) -> list[str]:
     """Extract the addresses/handles an outgoing action would reach."""
@@ -15,22 +22,40 @@ def _recipients(tool: str, args: dict) -> list[str]:
         for field in ("to", "cc"):
             value = args.get(field)
             if value:
-                out.extend(a.strip() for a in value.split(",") if a.strip())
+                out.extend(_parse_addresses(str(value)))
         return out
     if tool in ("calendar_create", "calendar_update"):
         return list(args.get("attendees") or [])
     return []
 
 
+def _parse_addresses(value: str) -> list[str]:
+    """Parse an address header; anything malformed becomes _INVALID (-> review)."""
+    out: list[str] = []
+    for _name, addr in getaddresses([value]):
+        addr = addr.strip()
+        if not addr:
+            continue
+        out.append(addr if _ADDR.match(addr) else _INVALID)
+    if value.strip() and not out:
+        out.append(_INVALID)
+    # getaddresses is lenient: reject stray separators it silently dropped.
+    if any(ch in value for ch in ";") or value.count("<") != value.count(">"):
+        out.append(_INVALID)
+    return out
+
+
 def _allowlisted(recipient: str, allowlist: list[str]) -> bool:
     """Exact address match, or '@domain.example' suffix match."""
     r = recipient.strip().lower()
+    if not _ADDR.match(r):
+        return False
     for entry in allowlist:
         e = (entry or "").strip().lower()
         if not e:
             continue
         if e.startswith("@"):
-            if r.endswith(e):
+            if "@" + r.rpartition("@")[2] == e:
                 return True
         elif r == e:
             return True

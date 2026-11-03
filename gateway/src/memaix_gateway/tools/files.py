@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import vault_fs
 from ..acl import Acl
 
 
@@ -20,14 +21,8 @@ def _vault(acl: Acl, project: str) -> Path:
 
 
 def _safe(vault: Path, rel: str) -> Path:
-    """Resolve rel inside vault; raise ValueError if path project-bs."""
-    resolved = (vault / rel.lstrip("/")).resolve()
-    vault_resolved = vault.resolve()
-    try:
-        resolved.relative_to(vault_resolved)
-    except ValueError:
-        raise ValueError(f"path project-bs vault: {rel!r}")
-    return resolved
+    """Resolve rel inside vault via the shared vault_fs check (ValueError)."""
+    return vault_fs.check(vault, vault / rel.lstrip("/"))
 
 
 def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[dict]:
@@ -46,7 +41,7 @@ def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[di
                 "type": "dir" if p.is_dir() else "file",
                 "size": p.stat().st_size if p.is_file() else None,
             }
-            for p in target.iterdir()
+            for p in vault_fs.iter_dir(vault, target)
         ],
         key=lambda e: (e["type"] == "file", e["name"]),
     )
@@ -59,7 +54,7 @@ def read_file(acl: Acl, user_id: str, project: str, path: str) -> str:
     target = _safe(vault, path)
     if not target.is_file():
         raise FileNotFoundError(f"not a file: {path!r}")
-    return target.read_text()
+    return vault_fs.read_text(vault, target)
 
 
 def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) -> str:
@@ -67,8 +62,7 @@ def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) ->
     acl.enforce(user_id, project, "collaborator")
     vault = _vault(acl, project)
     target = _safe(vault, path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
+    vault_fs.write_text(vault, target, content)
     return f"ok: {path}"
 
 
@@ -81,12 +75,12 @@ def search_files(
     target = _safe(vault, path)
     lq = query.lower()
     results: list[dict] = []
-    candidates = target.rglob("*") if target.is_dir() else [target]
+    candidates = vault_fs.iter_files(vault, target, recursive=True) if target.is_dir() else [target]
     for f in candidates:
         if not f.is_file():
             continue
         try:
-            text = f.read_text()
+            text = vault_fs.read_text(vault, f)
         except (UnicodeDecodeError, OSError):
             continue
         hits = [
@@ -95,5 +89,5 @@ def search_files(
             if lq in line.lower()
         ]
         if hits:
-            results.append({"path": str(f.relative_to(vault)), "matches": hits})
+            results.append({"path": str(f.relative_to(vault.resolve())), "matches": hits})
     return results

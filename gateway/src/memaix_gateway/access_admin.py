@@ -204,6 +204,14 @@ class AccessAdmin:
             if existing is not None and existing.get("password_hash"):
                 existing.setdefault("grants", {})[project] = role
                 return "granted"
+            if (
+                existing is not None
+                and not acl.is_admin(actor)
+                and any(acl.grants(actor).get(p) != "owner" for p in existing.get("grants") or {})
+            ):
+                # Accepting the token would set the password on an account
+                # that reaches projects the actor does not own.
+                raise AccessError(f"{user} also has access to projects you do not own")
             entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
             entry.setdefault("grants", {})[project] = role
             if email:
@@ -248,11 +256,23 @@ class AccessAdmin:
         if not isinstance(password, str) or len(password) < MIN_PASSWORD_LEN:
             raise AccessError(f"password must be at least {MIN_PASSWORD_LEN} characters")
         hashed = hash_password(password)
+        issuer = self._invites.issuer(token)
 
         def apply(data: dict) -> None:
             u = data.get("users", {}).get(user)
             if u is None or u.get("disabled") or u.get("admin") is True:
                 raise AccessError(_INVALID_INVITATION)
+            # Re-check ownership at redemption: grants may have changed since
+            # the token was issued. Fail closed on unknown/disabled issuer.
+            # A user redeeming a reset they issued for themselves is fine.
+            if not (is_reset and issuer == user):
+                actor = data.get("users", {}).get(issuer) if issuer else None
+                if actor is None or actor.get("disabled"):
+                    raise AccessError(_INVALID_INVITATION)
+                if actor.get("admin") is not True:
+                    agr = actor.get("grants") or {}
+                    if any(agr.get(p) != "owner" for p in u.get("grants") or {}):
+                        raise AccessError(_INVALID_INVITATION)
             if u.get("password_hash") and not is_reset:
                 raise AccessError(_INVALID_INVITATION)
             u["password_hash"] = hashed

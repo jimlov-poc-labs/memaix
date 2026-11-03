@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import frontmatter as fm
+from .. import vault_fs
 
 # Directories/files that must never be indexed (internal state, secrets, VCS).
 _SKIP_DIR_PARTS = {"_system", ".git", "pm"}
@@ -70,15 +71,17 @@ def index_delete(store, project: str, source_type: str, ref: str) -> None:
 def _is_skippable(vault: Path, path: Path) -> bool:
     if path.name in _SKIP_FILE_NAMES or path.name.startswith("."):
         return True
+    if vault_fs.is_blocked(vault, path):
+        return True
     parts = path.relative_to(vault).parts
-    return any(p in _SKIP_DIR_PARTS for p in parts)
+    return any(p in _SKIP_DIR_PARTS or p.lower().startswith(".memaix") for p in parts)
 
 
-def _read_text(path: Path) -> str | None:
-    """File text, or None if it cannot be read as text."""
+def _read_text(path: Path, vault: Path) -> str | None:
+    """File text, or None if it cannot be read as text or is off limits."""
     try:
-        return path.read_text()
-    except (UnicodeDecodeError, OSError):
+        return vault_fs.read_text(vault, path)
+    except (UnicodeDecodeError, OSError, ValueError):
         return None
 
 
@@ -87,10 +90,10 @@ def _index_memory_dir(store, embedder, project: str, vault: Path) -> tuple[int, 
     chunks = sources = 0
     if not memory_dir.is_dir():
         return chunks, sources
-    for p in sorted(memory_dir.rglob("*")):
+    for p in vault_fs.iter_files(vault, memory_dir, recursive=True):
         if not p.is_file() or _is_skippable(vault, p):
             continue
-        text = _read_text(p)
+        text = _read_text(p, vault)
         if text is None:
             continue
         rel = str(p.relative_to(memory_dir))
@@ -104,8 +107,8 @@ def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int,
     chunks = sources = 0
     if not backlog_dir.is_dir():
         return chunks, sources
-    for p in sorted(backlog_dir.glob("*.md")):
-        text = _read_text(p)
+    for p in vault_fs.iter_files(vault, backlog_dir, "*.md"):
+        text = _read_text(p, vault)
         if text is None:
             continue
         meta, body = fm.split(text)
@@ -120,13 +123,13 @@ def _index_other_files(store, embedder, project: str, vault: Path) -> tuple[int,
     chunks = sources = 0
     if not vault.is_dir():
         return chunks, sources
-    for p in sorted(vault.rglob("*")):
+    for p in vault_fs.iter_files(vault, vault, recursive=True):
         if not p.is_file() or _is_skippable(vault, p):
             continue
         parts = p.relative_to(vault).parts
         if parts and parts[0] in (_MEMORY, _BACKLOG):
             continue  # already covered by the memory/backlog passes
-        text = _read_text(p)
+        text = _read_text(p, vault)
         if text is None:
             continue
         rel = str(p.relative_to(vault))

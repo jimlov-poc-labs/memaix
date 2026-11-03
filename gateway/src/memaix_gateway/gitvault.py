@@ -74,7 +74,11 @@ def run(vault: Path, args: list[str], *, check: bool = True) -> subprocess.Compl
     FileNotFoundError from Popen and lose which vault it was about.
     """
     proc = subprocess.run(
-        ["git", "-C", str(vault), *args],
+        # core.fsmonitor=false: a repo-local config must never name a command
+        # that git then runs on `status` (defence in depth; files_* also
+        # refuse .git paths).
+        ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+         "-c", "core.sshCommand=", "-C", str(vault), *args],
         env=env(),
         capture_output=True,
         text=True,
@@ -146,6 +150,28 @@ def _is_empty_commit(proc: subprocess.CompletedProcess) -> bool:
     return "nothing to commit" in said or "nothing added to commit" in said
 
 
+def _exclude_internal(vault: Path) -> None:
+    """Guarantee .memaix* never gets staged, whatever .gitignore says.
+
+    Written to .git/info/exclude (not the user-writable .gitignore), so older
+    vaults and overwritten .gitignore files are covered too.
+    """
+    proc = run(vault, ["rev-parse", "--git-path", "info/exclude"], check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return
+    path = Path(proc.stdout.strip())
+    if not path.is_absolute():
+        path = vault / path
+    try:
+        have = path.read_text().splitlines() if path.exists() else []
+        if ".memaix*" not in have:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as fh:
+                fh.write(("\n" if have and not path.read_text().endswith("\n") else "") + ".memaix*\n")
+    except OSError:
+        pass
+
+
 def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = False) -> str:
     """Stage *paths* and commit them. Returns the resulting commit hash.
 
@@ -159,10 +185,37 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     the vault and committed them with `add -A`. Kept, but named, so that a
     reader can see which caller sweeps up unrelated working-tree changes.
     """
+    _exclude_internal(vault)
+    # Exclude pathspecs (git ignores them for explicit file paths, so those
+    # are filtered in Python instead): a nested .gitignore with `!.memaix*` cannot
+    # override these, unlike info/exclude.
+    # icase: vault_fs.is_reserved compares case-insensitively, so must git.
+    # Nested .gitignore files are not staged (root one is, it is ours).
+    keep_out = [
+        ":(exclude,icase,glob).memaix*",
+        ":(exclude,icase,glob).memaix*/**",
+        ":(exclude,icase,glob)**/.memaix*",
+        ":(exclude,icase,glob)**/.memaix*/**",
+        ":(exclude,icase,glob)*/.gitignore",
+        ":(exclude,icase,glob)*/**/.gitignore",
+    ]
     if all_tracked:
-        run(vault, ["add", "-A"])
+        run(vault, ["add", "-A", "--", ".", *keep_out])
     elif paths:
-        run(vault, ["add", "--", *paths])
+        files: list[str] = []
+        dirs: list[str] = []
+        for p in paths:
+            parts = Path(p).parts
+            if any(c.lower().startswith(".memaix") for c in parts):
+                continue
+            if len(parts) > 1 and parts[-1].lower() == ".gitignore":
+                continue
+            (dirs if (vault / p).is_dir() else files).append(p)
+        if files:
+            run(vault, ["add", "--", *files])
+        if dirs:
+            # -A with exclude pathspecs: a nested .gitignore cannot readmit .memaix*
+            run(vault, ["add", "-A", "--", *dirs, *keep_out])
 
     proc = run(vault, ["commit", "-m", message], check=False)
     if proc.returncode != 0 and not _is_empty_commit(proc):
