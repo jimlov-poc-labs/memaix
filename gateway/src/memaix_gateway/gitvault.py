@@ -77,7 +77,8 @@ def run(vault: Path, args: list[str], *, check: bool = True) -> subprocess.Compl
         # core.fsmonitor=false: a repo-local config must never name a command
         # that git then runs on `status` (defence in depth; files_* also
         # refuse .git paths).
-        ["git", "-c", "core.fsmonitor=false", "-C", str(vault), *args],
+        ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+         "-c", "core.sshCommand=", "-C", str(vault), *args],
         env=env(),
         capture_output=True,
         text=True,

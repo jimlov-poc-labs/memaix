@@ -201,3 +201,66 @@ def test_notify_channel_starttls_verifies(monkeypatch):
     _Smtp.ctx = "unset"
     EmailChannel(acl, {"to": "to@x.com", "project": "p"}).send("s", "m", "t")
     _assert_strict()
+
+
+# ------------------------------------------------------------ review round 2
+
+
+def test_search_and_list_root_skip_reserved(facl):
+    acl, v = facl
+    (v / ".git").mkdir()
+    (v / ".git" / "config").write_text("SECRET fsmonitor")
+    (v / ".memaix.db").write_text("SECRET db")
+    (v / ".memaix").mkdir()
+    (v / ".memaix" / "x").write_text("SECRET dir")
+    (v / "ok.md").write_text("SECRET public")
+    hits = files.search_files(acl, "c", "p", "secret", "/")
+    assert [h["path"] for h in hits] == ["ok.md"]
+    names = {e["name"] for e in files.list_files(acl, "c", "p", "/")}
+    assert names == {"ok.md"}
+
+
+def test_indexer_skips_memaix_dirs(tmp_path):
+    from memaix_gateway.search.index import _is_skippable
+
+    assert _is_skippable(tmp_path, tmp_path / ".memaix" / "x.md")
+    assert not _is_skippable(tmp_path, tmp_path / "notes" / "x.md")
+
+
+def test_calendar_attendee_injection_needs_review():
+    acl = Acl(users={"a": {"grants": {"p": "owner"}}},
+              projects={"p": {"vault": "/v", "allowlist": ["@ok.com"]}})
+    for att in (["evil@x.com;a@ok.com"], ["evil@x.com@ok.com"], ["Bob <evil@x.com> @ok.com"]):
+        assert action_mode(None, acl, "p", "calendar_create", {"attendees": att}) == "review"
+    assert action_mode(None, acl, "p", "calendar_create", {"attendees": ["a@ok.com"]}) == "auto"
+
+
+def test_accept_invite_rechecks_ownership(adm, tmp_path):
+    admin, acl, inv = adm
+    # carol: pending (no hash), only in acme -> invitable by alice
+    admin.invite(acl(), "alice", "acme", "erin", "collaborator")
+    tok = inv.issue("erin", "alice")
+    # grants change after issue: erin gets a beta grant (alice does not own beta)
+    admin._writer.update(lambda d: d["users"]["erin"]["grants"].__setitem__("beta", "reader"))
+    with pytest.raises(AccessError):
+        admin.accept_invite(tok, "a-long-enough-password")
+
+
+def test_accept_invite_still_works_when_owned(adm):
+    admin, acl, inv = adm
+    out = admin.invite(acl(), "alice", "acme", "newbie", "reader")
+    assert admin.accept_invite(out["token"], "a-long-enough-password") == "newbie"
+
+
+def test_git_run_neutralises_hooks_and_ssh(tmp_path):
+    v = tmp_path / "v"
+    v.mkdir()
+    subprocess.run(["git", "init", "-q", str(v)], check=True)
+    hook = v / ".git" / "hooks" / "pre-commit"
+    marker = tmp_path / "hook-ran"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    (v / "f").write_text("x")
+    gitvault.run(v, ["add", "f"])
+    gitvault.run(v, ["commit", "-q", "-m", "m"], check=False)
+    assert not marker.exists()

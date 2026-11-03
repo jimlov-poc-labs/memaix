@@ -256,11 +256,22 @@ class AccessAdmin:
         if not isinstance(password, str) or len(password) < MIN_PASSWORD_LEN:
             raise AccessError(f"password must be at least {MIN_PASSWORD_LEN} characters")
         hashed = hash_password(password)
+        issuer = self._invites.issuer(token)
 
         def apply(data: dict) -> None:
             u = data.get("users", {}).get(user)
             if u is None or u.get("disabled") or u.get("admin") is True:
                 raise AccessError(_INVALID_INVITATION)
+            if not is_reset and not u.get("password_hash"):
+                # Re-check ownership at redemption: grants may have changed
+                # since the token was issued. Fail closed on unknown issuer.
+                actor = data.get("users", {}).get(issuer) if issuer else None
+                if actor is None or actor.get("disabled"):
+                    raise AccessError(_INVALID_INVITATION)
+                if actor.get("admin") is not True:
+                    agr = actor.get("grants") or {}
+                    if any(agr.get(p) != "owner" for p in u.get("grants") or {}):
+                        raise AccessError(_INVALID_INVITATION)
             if u.get("password_hash") and not is_reset:
                 raise AccessError(_INVALID_INVITATION)
             u["password_hash"] = hashed

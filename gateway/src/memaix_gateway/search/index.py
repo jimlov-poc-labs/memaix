@@ -71,7 +71,7 @@ def _is_skippable(vault: Path, path: Path) -> bool:
     if path.name in _SKIP_FILE_NAMES or path.name.startswith("."):
         return True
     parts = path.relative_to(vault).parts
-    return any(p in _SKIP_DIR_PARTS for p in parts)
+    return any(p in _SKIP_DIR_PARTS or p.lower().startswith(".memaix") for p in parts)
 
 
 def _read_text(path: Path) -> str | None:

@@ -58,6 +58,7 @@ def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[di
                 "size": p.stat().st_size if p.is_file() else None,
             }
             for p in target.iterdir()
+            if not _is_reserved(p.name)
         ],
         key=lambda e: (e["type"] == "file", e["name"]),
     )
@@ -95,6 +96,8 @@ def search_files(
     candidates = target.rglob("*") if target.is_dir() else [target]
     for f in candidates:
         if not f.is_file():
+            continue
+        if any(_is_reserved(c) for c in f.relative_to(vault.resolve()).parts):
             continue
         try:
             text = f.read_text()
