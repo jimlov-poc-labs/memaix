@@ -202,7 +202,8 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     if all_tracked:
         run(vault, ["add", "-A", "--", ".", *keep_out])
     elif paths:
-        files, dirs = [], []
+        files: list[str] = []
+        dirs: list[str] = []
         for p in paths:
             parts = Path(p).parts
             if any(c.lower().startswith(".memaix") for c in parts):

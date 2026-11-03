@@ -80,7 +80,7 @@ def _is_skippable(vault: Path, path: Path) -> bool:
 def _read_text(path: Path, vault: Path) -> str | None:
     """File text, or None if it cannot be read as text or is off limits."""
     try:
-        return vault_fs.read_text(vault, path, encoding=None)
+        return vault_fs.read_text(vault, path)
     except (UnicodeDecodeError, OSError, ValueError):
         return None
 
