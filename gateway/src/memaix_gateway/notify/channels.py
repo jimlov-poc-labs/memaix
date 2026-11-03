@@ -67,8 +67,9 @@ class EmailChannel:
                 f"email channel needs a 'project' with a configured mailbox (got {self._project!r})"
             )
         import smtplib
-        import ssl
         from email.message import EmailMessage
+
+        from ..tls import verified_context
 
         msg = EmailMessage()
         msg["To"] = self._to
@@ -88,7 +89,7 @@ class EmailChannel:
         if password is None:
             raise ValueError(f"no password configured for mailbox (project {self._project!r})")
         with smtplib.SMTP(host, port) as s:
-            s.starttls(context=ssl.create_default_context())
+            s.starttls(context=verified_context())
             s.login(cfg.get("user", ""), password)
             s.send_message(msg)
 

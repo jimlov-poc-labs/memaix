@@ -34,6 +34,27 @@ class AccessError(Exception):
     """Invalid request (bad name, unknown target, rule violation)."""
 
 
+def _require_actor_owns_all(acl: Acl, actor: str, grants: dict, user: str) -> None:
+    """Raise unless *actor* owns every project in *grants* (admins are checked by caller)."""
+    actor_grants = acl.grants(actor)
+    if any(actor_grants.get(p) != "owner" for p in grants):
+        # Accepting the token would set the password on an account
+        # that reaches projects the actor does not own.
+        raise AccessError(f"{user} also has access to projects you do not own")
+
+
+def _check_issuer_still_owns(data: dict, issuer: str | None, target: dict) -> None:
+    """Fail closed (invalid invitation) unless the issuer exists, is enabled
+    and is admin or owns every project the target reaches."""
+    actor = data.get("users", {}).get(issuer) if issuer else None
+    if actor is None or actor.get("disabled"):
+        raise AccessError(_INVALID_INVITATION)
+    if actor.get("admin") is not True:
+        agr = actor.get("grants") or {}
+        if any(agr.get(p) != "owner" for p in target.get("grants") or {}):
+            raise AccessError(_INVALID_INVITATION)
+
+
 def _live_admin(acl: Acl, actor: str) -> bool:
     return actor in acl.users and not acl.is_disabled(actor) and acl.is_admin(actor)
 
@@ -204,14 +225,8 @@ class AccessAdmin:
             if existing is not None and existing.get("password_hash"):
                 existing.setdefault("grants", {})[project] = role
                 return "granted"
-            if (
-                existing is not None
-                and not acl.is_admin(actor)
-                and any(acl.grants(actor).get(p) != "owner" for p in existing.get("grants") or {})
-            ):
-                # Accepting the token would set the password on an account
-                # that reaches projects the actor does not own.
-                raise AccessError(f"{user} also has access to projects you do not own")
+            if existing is not None and not acl.is_admin(actor):
+                _require_actor_owns_all(acl, actor, existing.get("grants") or {}, user)
             entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
             entry.setdefault("grants", {})[project] = role
             if email:
@@ -243,8 +258,8 @@ class AccessAdmin:
         grants = acl.grants(user)
         if project not in grants:
             raise AccessError(f"{user} is not a member of {project}")
-        if not acl.is_admin(actor) and any(acl.grants(actor).get(p) != "owner" for p in grants):
-            raise AccessError(f"{user} also has access to projects you do not own")
+        if not acl.is_admin(actor):
+            _require_actor_owns_all(acl, actor, grants, user)
         token = self._invites.issue(user, actor, ttl_s, reset=True)
         return {"status": "reset", "project": project, "user": user, "token": token}
 
@@ -266,13 +281,7 @@ class AccessAdmin:
             # the token was issued. Fail closed on unknown/disabled issuer.
             # A user redeeming a reset they issued for themselves is fine.
             if not (is_reset and issuer == user):
-                actor = data.get("users", {}).get(issuer) if issuer else None
-                if actor is None or actor.get("disabled"):
-                    raise AccessError(_INVALID_INVITATION)
-                if actor.get("admin") is not True:
-                    agr = actor.get("grants") or {}
-                    if any(agr.get(p) != "owner" for p in u.get("grants") or {}):
-                        raise AccessError(_INVALID_INVITATION)
+                _check_issuer_still_owns(data, issuer, u)
             if u.get("password_hash") and not is_reset:
                 raise AccessError(_INVALID_INVITATION)
             u["password_hash"] = hashed

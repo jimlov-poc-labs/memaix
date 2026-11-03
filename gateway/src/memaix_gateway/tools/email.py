@@ -59,13 +59,13 @@ from __future__ import annotations
 
 import datetime
 import smtplib
-import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Any, NamedTuple
 
 from .. import config
 from ..acl import Acl
+from ..tls import verified_context
 
 _IMAP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -757,7 +757,7 @@ def _smtp_deliver(msg: EmailMessage, project: str, mailbox_cfg: dict, smtp_cfg: 
     if password is None:
         raise ValueError(f"no password configured for mailbox (project {project!r})")
     with smtplib.SMTP(host, port) as s:
-        s.starttls(context=ssl.create_default_context())
+        s.starttls(context=verified_context())
         s.login(user, password)
         s.send_message(msg)
 

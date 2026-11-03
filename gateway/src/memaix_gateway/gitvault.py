@@ -172,6 +172,47 @@ def _exclude_internal(vault: Path) -> None:
         pass
 
 
+# Exclude pathspecs (git ignores them for explicit file paths, so those
+# are filtered in Python instead): a nested .gitignore with `!.memaix*` cannot
+# override these, unlike info/exclude.
+# icase: vault_fs.is_reserved compares case-insensitively, so must git.
+# Nested .gitignore files are not staged (root one is, it is ours).
+_KEEP_OUT = [
+    ":(exclude,icase,glob).memaix*",
+    ":(exclude,icase,glob).memaix*/**",
+    ":(exclude,icase,glob)**/.memaix*",
+    ":(exclude,icase,glob)**/.memaix*/**",
+    ":(exclude,icase,glob)*/.gitignore",
+    ":(exclude,icase,glob)*/**/.gitignore",
+]
+
+
+def _split_paths(vault: Path, paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split *paths* into (files, dirs), dropping reserved and nested .gitignore."""
+    files: list[str] = []
+    dirs: list[str] = []
+    for p in paths:
+        parts = Path(p).parts
+        if any(c.lower().startswith(".memaix") for c in parts):
+            continue
+        if len(parts) > 1 and parts[-1].lower() == ".gitignore":
+            continue
+        (dirs if (vault / p).is_dir() else files).append(p)
+    return files, dirs
+
+
+def _stage(vault: Path, paths: list[str], all_tracked: bool) -> None:
+    if all_tracked:
+        run(vault, ["add", "-A", "--", ".", *_KEEP_OUT])
+    elif paths:
+        files, dirs = _split_paths(vault, paths)
+        if files:
+            run(vault, ["add", "--", *files])
+        if dirs:
+            # -A with exclude pathspecs: a nested .gitignore cannot readmit .memaix*
+            run(vault, ["add", "-A", "--", *dirs, *_KEEP_OUT])
+
+
 def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = False) -> str:
     """Stage *paths* and commit them. Returns the resulting commit hash.
 
@@ -186,36 +227,7 @@ def commit(vault: Path, paths: list[str], message: str, *, all_tracked: bool = F
     reader can see which caller sweeps up unrelated working-tree changes.
     """
     _exclude_internal(vault)
-    # Exclude pathspecs (git ignores them for explicit file paths, so those
-    # are filtered in Python instead): a nested .gitignore with `!.memaix*` cannot
-    # override these, unlike info/exclude.
-    # icase: vault_fs.is_reserved compares case-insensitively, so must git.
-    # Nested .gitignore files are not staged (root one is, it is ours).
-    keep_out = [
-        ":(exclude,icase,glob).memaix*",
-        ":(exclude,icase,glob).memaix*/**",
-        ":(exclude,icase,glob)**/.memaix*",
-        ":(exclude,icase,glob)**/.memaix*/**",
-        ":(exclude,icase,glob)*/.gitignore",
-        ":(exclude,icase,glob)*/**/.gitignore",
-    ]
-    if all_tracked:
-        run(vault, ["add", "-A", "--", ".", *keep_out])
-    elif paths:
-        files: list[str] = []
-        dirs: list[str] = []
-        for p in paths:
-            parts = Path(p).parts
-            if any(c.lower().startswith(".memaix") for c in parts):
-                continue
-            if len(parts) > 1 and parts[-1].lower() == ".gitignore":
-                continue
-            (dirs if (vault / p).is_dir() else files).append(p)
-        if files:
-            run(vault, ["add", "--", *files])
-        if dirs:
-            # -A with exclude pathspecs: a nested .gitignore cannot readmit .memaix*
-            run(vault, ["add", "-A", "--", *dirs, *keep_out])
+    _stage(vault, paths, all_tracked)
 
     proc = run(vault, ["commit", "-m", message], check=False)
     if proc.returncode != 0 and not _is_empty_commit(proc):
