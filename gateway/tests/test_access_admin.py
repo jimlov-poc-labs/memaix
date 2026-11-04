@@ -447,3 +447,131 @@ def test_reset_token_is_single_use_and_expires(env):
     with pytest.raises(AccessError):
         env.admin.accept_invite(token, "brand new password")
 
+
+
+# ------------------------------------- invite: karakteriseringstester (S3776)
+
+
+def _file_data(env):
+    return yaml.safe_load(env.path.read_text())
+
+
+def _put_file_data(env, data):
+    env.path.write_text(yaml.safe_dump(data))
+
+
+def test_invite_requires_project_owner(env):
+    with pytest.raises(AccessDenied):
+        env.admin.invite(env.acl(), "bob", "acme", "newbie", "reader")
+    assert "newbie" not in env.acl().users
+
+
+@pytest.mark.parametrize("role", ["", "god", "OWNER", None])
+def test_invite_rejects_unknown_role(env, role):
+    with pytest.raises(AccessError, match="unknown role"):
+        env.admin.invite(env.acl(), "alice", "acme", "newbie", role)
+    assert "newbie" not in env.acl().users
+
+
+@pytest.mark.parametrize("uid", [None, 5, b"newbie", ["newbie"]])
+def test_invite_rejects_non_string_user(env, uid):
+    with pytest.raises(AccessError, match="user id must be"):
+        env.admin.invite(env.acl(), "alice", "acme", uid, "reader")
+
+
+def test_invite_admin_refused_with_locked_message_and_no_write(env):
+    data = _file_data(env)
+    data["users"]["boss"] = {"admin": True, "grants": {}}
+    _put_file_data(env, data)
+    before = env.path.read_bytes()
+    with pytest.raises(AccessError, match="system admin"):
+        env.admin.invite(env.acl(), "alice", "acme", "boss", "reader")
+    assert env.path.read_bytes() == before
+
+
+def test_invite_refuses_user_who_became_admin_after_snapshot(env):
+    stale = env.acl()
+    data = _file_data(env)
+    data["users"]["newbie"] = {"admin": True, "grants": {}}
+    _put_file_data(env, data)
+    with pytest.raises(AccessError, match="system admin"):
+        env.admin.invite(stale, "alice", "acme", "newbie", "reader")
+    assert env.acl().users["newbie"].get("grants") == {}
+
+
+def test_invite_granted_overwrites_role_and_mints_no_token(env):
+    data = _file_data(env)
+    data["users"]["dave"]["grants"]["acme"] = "owner"
+    _put_file_data(env, data)
+    out = env.admin.invite(env.acl(), "alice", "acme", "dave", "reader")
+    assert out == {"status": "granted", "project": "acme", "user": "dave", "role": "reader"}
+    assert env.acl().grants("dave") == {"beta": "owner", "acme": "reader"}
+    assert env.invites.lookup("anything") is None
+
+
+def test_invite_granted_ignores_email_and_leaves_password(env):
+    env.admin.invite(env.acl(), "alice", "acme", "dave", "reader", email="x@example.com")
+    dave = env.acl().users["dave"]
+    assert "email" not in dave
+    assert dave["password_hash"] == "aa:bb"
+
+
+def test_invite_granted_to_password_user_skips_ownership_check_for_non_admin(env):
+    # dave reaches beta, which alice does not own; a plain grant is still allowed.
+    out = env.admin.invite(env.acl(), "alice", "acme", "dave", "reader")
+    assert out["status"] == "granted"
+
+
+def test_invite_pending_user_in_foreign_project_refused_for_non_admin(env):
+    data = _file_data(env)
+    data["users"]["pend"] = {"oauth_subjects": ["pend"], "grants": {"beta": "reader"}}
+    _put_file_data(env, data)
+    with pytest.raises(AccessError, match="also has access to projects you do not own"):
+        env.admin.invite(env.acl(), "alice", "acme", "pend", "reader")
+    assert env.acl().users["pend"]["grants"] == {"beta": "reader"}
+
+
+def test_invite_pending_user_in_foreign_project_allowed_for_admin(env):
+    data = _file_data(env)
+    data["users"]["pend"] = {"oauth_subjects": ["pend"], "grants": {"beta": "reader"}}
+    _put_file_data(env, data)
+    out = env.admin.invite(env.acl(), "root", "acme", "pend", "collaborator")
+    assert out["status"] == "invited" and out["token"]
+    assert env.acl().users["pend"]["grants"] == {"beta": "reader", "acme": "collaborator"}
+
+
+def test_invite_pending_user_in_own_projects_gets_new_grant_and_keeps_email(env):
+    data = _file_data(env)
+    data["users"]["pend"] = {"oauth_subjects": ["pend"], "grants": {"acme": "reader"}, "email": "old@example.com"}
+    _put_file_data(env, data)
+    out = env.admin.invite(env.acl(), "alice", "acme", "pend", "collaborator")
+    pend = env.acl().users["pend"]
+    assert out["status"] == "invited"
+    assert pend["grants"] == {"acme": "collaborator"}
+    assert pend["email"] == "old@example.com"
+    assert pend["oauth_subjects"] == ["pend"]
+
+
+def test_invite_new_user_without_email_has_no_email_key(env):
+    env.admin.invite(env.acl(), "alice", "acme", "newbie", "reader", email="")
+    newbie = env.acl().users["newbie"]
+    assert "email" not in newbie
+    assert newbie == {"oauth_subjects": ["newbie"], "grants": {"acme": "reader"}}
+
+
+def test_invite_pending_user_without_grants_key_is_accepted(env):
+    data = _file_data(env)
+    data["users"]["pend"] = {"oauth_subjects": ["pend"]}
+    _put_file_data(env, data)
+    out = env.admin.invite(env.acl(), "alice", "acme", "pend", "reader")
+    assert out["status"] == "invited"
+    assert env.acl().users["pend"]["grants"] == {"acme": "reader"}
+
+
+def test_invite_token_is_bound_to_user_issuer_and_ttl(env):
+    out = env.admin.invite(env.acl(), "alice", "acme", "newbie", "reader", ttl_s=-1)
+    assert env.invites.lookup(out["token"]) is None
+    out = env.admin.invite(env.acl(), "alice", "acme", "newbie", "reader")
+    assert env.invites.lookup(out["token"]) == ("newbie", False)
+    assert env.invites.issuer(out["token"]) == "alice"
+    assert set(out) == {"status", "project", "user", "role", "token"}
