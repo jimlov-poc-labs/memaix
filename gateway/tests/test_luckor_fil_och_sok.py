@@ -111,30 +111,131 @@ class _Http:
 
 
 @pytest.mark.parametrize("bad", [
-    "a?x=1", "a#frag", "%2e%2e/x", "a%2fb", "a%2Fb", "a\\b", "..\\x", "a/../b", "a\x00b", "a\nb",
+    "a\\b", "..\\x", "a/../b", "../a", "a\x00b", "a\nb", "./a", "a/./b", "a//b",
+    "x" * 1025, "", "/", "//",
 ])
-def test_webdav_rejects_url_structure_chars(bad):
+def test_webdav_rejects_bad_paths_for_read_and_write(bad):
     http = _Http()
     ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=http)
-    for call in (ad.read_file, lambda p: ad.write_file(p, "x"), ad.list_files):
+    for call in (ad.read_file, lambda p: ad.write_file(p, "x")):
         with pytest.raises(ValueError):
             call(bad)
     assert http.urls == []
 
 
-def test_webdav_encodes_safe_but_special_chars():
+@pytest.mark.parametrize("bad", ["a\\b", "a/../b", "a//b", "./a", "a\x00b", "x" * 1025])
+def test_webdav_rejects_bad_paths_for_listing(bad):
     http = _Http()
     ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=http)
-    ad.read_file("/my dir/åäö.txt")
+    with pytest.raises(ValueError):
+        ad.list_files(bad)
+    assert http.urls == []
+
+
+@pytest.mark.parametrize("raw,enc", [
+    ("a?x=1", "a%3Fx%3D1"), ("a#frag", "a%23frag"), ("100% done/a.md", "100%25%20done/a.md"),
+    ("%2e%2e/x", "%252e%252e/x"), ("a%2fb", "a%252fb"),
+])
+def test_webdav_encodes_literal_special_chars(raw, enc):
+    http = _Http()
+    ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=http)
+    ad.read_file(raw)
+    ad.write_file(raw, "x")
+    assert http.urls == ["https://h/dav/" + enc] * 2
+
+
+def test_webdav_encodes_unicode_and_space():
+    http = _Http()
+    ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=http)
+    ad.read_file("/my dir/\u00e5\u00e4\u00f6.txt")
     assert http.urls == ["https://h/dav/my%20dir/%C3%A5%C3%A4%C3%B6.txt"]
 
 
-def test_webdav_empty_path_is_root_for_listing_only():
+def test_webdav_only_listing_may_address_the_root():
     http = _Http()
     ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=http)
-    # empty/"/" means the collection root: no extra path appended
-    try:
-        ad.list_files("")
-    except Exception:
-        pass
+    with pytest.raises(Exception):
+        ad.list_files("")  # fake body is not XML; the URL is what matters
     assert http.urls == ["https://h/dav/"]
+
+
+def _multistatus(*items):
+    rows = ""
+    for href, is_dir, size in items:
+        rt = "<d:collection/>" if is_dir else ""
+        sz = f"<d:getcontentlength>{size}</d:getcontentlength>" if size is not None else ""
+        rows += (f"<d:response><d:href>{href}</d:href><d:propstat><d:prop>"
+                 f"<d:resourcetype>{rt}</d:resourcetype>{sz}</d:prop></d:propstat></d:response>")
+    return f'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">{rows}</d:multistatus>'
+
+
+class _FakeDav:
+    """Tiny in-memory WebDAV keyed by the *encoded* URL path."""
+
+    def __init__(self):
+        self.listings = {
+            "": _multistatus(("/dav/", True, None), ("/dav/100%25%20done/", True, None)),
+            "100%25%20done": _multistatus(
+                ("/dav/100%25%20done/", True, None), ("/dav/100%25%20done/a%23b%3F.md", False, 11),
+                ("/dav/100%25%20done/broken/", True, None),
+            ),
+        }
+        self.files = {"100%25%20done/a%23b%3F.md": "hello needle"}
+        self.urls = []
+
+    def request(self, method, url, **kw):
+        self.urls.append((method, url))
+        key = url.removeprefix("https://h/dav/").rstrip("/")
+        resp = _Resp()
+        if method == "PROPFIND":
+            if key not in self.listings:
+                raise ValueError("server error")  # an unreadable directory
+            resp.text = self.listings[key]
+        elif method == "PUT":
+            self.files[key] = kw["data"].decode()
+        else:
+            resp.text = self.files[key]
+        return resp
+
+
+def test_webdav_roundtrip_literal_specials_list_read_write_search():
+    dav = _FakeDav()
+    ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=dav)
+    assert ad.list_files("/") == [{"name": "100% done", "type": "dir", "size": None}]
+    assert ad.list_files("/100% done") == [
+        {"name": "broken", "type": "dir", "size": None},
+        {"name": "a#b?.md", "type": "file", "size": 11},
+    ]
+    assert ad.read_file("/100% done/a#b?.md") == "hello needle"
+    ad.write_file("/100% done/new#.md", "x")
+    assert "100%25%20done/new%23.md" in dav.files
+    # _walk: the unreadable 'broken' dir is skipped, the rest is still searched
+    hits = ad.search_files("needle", "/")
+    assert [h["path"] for h in hits] == ["/100% done/a#b?.md"]
+
+
+def test_webdav_search_bad_start_path_raises():
+    ad = WebDavFilesAdapter("https://h/dav/", "u", "p", _http=_FakeDav())
+    with pytest.raises(ValueError):
+        ad.search_files("x", "a/../b")
+
+
+# ---- web API: disabled user gets 403, not 500 ------------------------------
+
+def test_web_search_api_disabled_user_is_403(monkeypatch, tmp_path):
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from memaix_gateway import server
+    from memaix_gateway.web import routes as web_routes_mod
+
+    acl = _acl(True)
+    monkeypatch.setattr(web_routes_mod, "_get_acl", lambda: acl)
+    monkeypatch.setattr(web_routes_mod, "_require_user", lambda request: "u")
+    store = EmbeddingStore.for_path(tmp_path / "i.db")
+    monkeypatch.setattr(server, "_get_search_store", lambda: store)
+    monkeypatch.setattr(server, "_get_search_embedder", lambda: None)
+    client = TestClient(Starlette(routes=web_routes_mod.web_routes))
+    r = client.get("/app/api/search?q=invoice")
+    assert r.status_code == 403
+    assert r.json() == {"error": "forbidden"}
