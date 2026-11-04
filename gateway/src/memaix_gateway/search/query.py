@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from ..acl import AccessDenied
+
 _ROLES = ("reader", "collaborator", "owner")
 _NEED_FOR_SOURCE: dict[str, str] = {
     "memory": "reader", "file": "collaborator", "backlog": "reader", "nc_file": "collaborator",
@@ -31,6 +33,8 @@ def _rank(role: str | None) -> int:
 
 def _scoped_projects(acl, user: str, projects: list[str] | None, source_type: str) -> list[str]:
     """Projects the user may search this source_type in (role-gated)."""
+    if acl.is_disabled(user):
+        return []  # kill-switch, same as Acl.enforce
     need = _NEED_FOR_SOURCE.get(source_type, "reader")
     grants = acl.grants(user)
     candidates = set(projects) if projects else set(grants.keys())
@@ -192,6 +196,10 @@ def search_all(
     as email_list). Left None by default (opt-in — no live network calls
     unless the caller wires one up).
     """
+    # Kill-switch: search has no single project to enforce on, so deny a
+    # disabled user up front (mirrors Acl.enforce) before touching the index.
+    if acl.is_disabled(user):
+        raise AccessDenied(f"{user} is disabled")
     search_cfg = _search_cfg(cfg)
     max_candidates = search_cfg.get("max_candidates", 500)
 

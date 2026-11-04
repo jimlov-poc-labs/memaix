@@ -1132,6 +1132,8 @@ def search_status() -> dict:
     indexed per project you can see."""
     user = _user()
     acl = _get_acl()
+    if acl.is_disabled(user):
+        raise AccessDenied(f"{user} is disabled")
     visible = acl.visible_projects(user)
     return {
         "semantic_enabled": _get_search_embedder() is not None,
