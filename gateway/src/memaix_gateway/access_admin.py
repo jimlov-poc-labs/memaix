@@ -83,6 +83,33 @@ def _other_owners(users: dict, user: str, project: str) -> list[str]:
     ]
 
 
+def _require_inviteable_user(acl: Acl, user: str) -> None:
+    """Fail closed unless *user* is a well-formed, non-reserved, non-admin id."""
+    if not isinstance(user, str) or not _NAME.match(user) or user in _RESERVED_USERS:
+        raise AccessError("user id must be 2-32 chars of a-z, 0-9, '-' or '_' and not reserved")
+    if acl.is_admin(user):
+        raise AccessError(_ADMIN_LOCKED)
+
+
+def _apply_invite(data: dict, acl: Acl, actor: str, project: str, user: str, role: str, email: str | None) -> str:
+    """Write the invited grant into *data*; return "granted" or "invited"."""
+    users = data.setdefault("users", {})
+    existing = users.get(user)
+    if existing is not None and existing.get("admin") is True:
+        raise AccessError(_ADMIN_LOCKED)
+    if existing is not None and existing.get("password_hash"):
+        existing.setdefault("grants", {})[project] = role
+        return "granted"
+    if existing is not None and not acl.is_admin(actor):
+        _require_actor_owns_all(acl, actor, existing.get("grants") or {}, user)
+    entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
+    entry.setdefault("grants", {})[project] = role
+    if email:
+        entry["email"] = email
+    users[user] = entry
+    return "invited"
+
+
 class AccessAdmin:
     def __init__(
         self, writer: AclWriter, invites: InviteStore, vaults_dir: Path, provisioner=provision_project_files,
@@ -212,29 +239,9 @@ class AccessAdmin:
         self._require_project_owner(acl, actor, project)
         if role not in ROLES:
             raise AccessError(f"unknown role: {role}")
-        if not isinstance(user, str) or not _NAME.match(user) or user in _RESERVED_USERS:
-            raise AccessError("user id must be 2-32 chars of a-z, 0-9, '-' or '_' and not reserved")
-        if acl.is_admin(user):
-            raise AccessError(_ADMIN_LOCKED)
+        _require_inviteable_user(acl, user)
 
-        def apply(data: dict) -> str:
-            users = data.setdefault("users", {})
-            existing = users.get(user)
-            if existing is not None and existing.get("admin") is True:
-                raise AccessError(_ADMIN_LOCKED)
-            if existing is not None and existing.get("password_hash"):
-                existing.setdefault("grants", {})[project] = role
-                return "granted"
-            if existing is not None and not acl.is_admin(actor):
-                _require_actor_owns_all(acl, actor, existing.get("grants") or {}, user)
-            entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
-            entry.setdefault("grants", {})[project] = role
-            if email:
-                entry["email"] = email
-            users[user] = entry
-            return "invited"
-
-        status = self._writer.update(apply)
+        status = self._writer.update(lambda data: _apply_invite(data, acl, actor, project, user, role, email))
         if status == "granted":
             return {"status": status, "project": project, "user": user, "role": role}
         token = self._invites.issue(user, actor, ttl_s)
