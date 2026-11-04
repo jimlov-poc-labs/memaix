@@ -16,7 +16,7 @@ be for the local vault.
 
 from __future__ import annotations
 
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import defusedxml.ElementTree as ET
 
@@ -36,7 +36,15 @@ class FileTooLarge(ValueError):
 
 def _safe_rel(path: str) -> str:
     p = (path or "/").strip("/")
-    return validate_relative_path(p) if p else ""
+    if not p:
+        return ""
+    validate_relative_path(p)
+    # Characters that change URL structure or smuggle encoded traversal
+    # (%2e%2e, %2f) are refused outright, never forwarded raw.
+    if any(c in p for c in "?#%\\") or any(ord(c) < 32 or ord(c) == 127 for c in p):
+        raise ValueError(f"path contains forbidden characters: {path!r}")
+    # Everything else is percent-encoded per segment (spaces, unicode, ...).
+    return quote(p, safe="/")
 
 
 class WebDavFilesAdapter:

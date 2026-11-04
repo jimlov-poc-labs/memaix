@@ -193,6 +193,8 @@ class Acl:
         return self.projects.get(project, {}).get(key)
 
     def visible_projects(self, user_id: str) -> list[str]:
+        if self.is_disabled(user_id):
+            return []  # kill-switch: a disabled user sees nothing
         if self.is_admin(user_id):
             return sorted(self.projects.keys())
         return sorted(self.grants(user_id).keys())
