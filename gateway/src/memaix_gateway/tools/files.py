@@ -12,6 +12,9 @@ from pathlib import Path
 from .. import vault_fs
 from ..acl import Acl
 
+# Kept as a name here for callers/tests; the limit itself lives in vault_fs.
+MAX_WRITE_BYTES = vault_fs.MAX_WRITE_BYTES
+
 
 def _vault(acl: Acl, project: str) -> Path:
     vd = acl.resource(project, "vault")
@@ -21,8 +24,13 @@ def _vault(acl: Acl, project: str) -> Path:
 
 
 def _safe(vault: Path, rel: str) -> Path:
-    """Resolve rel inside vault via the shared vault_fs check (ValueError)."""
-    return vault_fs.check(vault, vault / rel.lstrip("/"))
+    """Resolve rel inside vault via the shared vault_fs check (ValueError).
+
+    user_facing: also refuses per-user/system state at the vault root.
+    """
+    if not isinstance(rel, str):
+        raise ValueError("invalid path")
+    return vault_fs.check(vault, vault / rel.lstrip("/"), user_facing=True)
 
 
 def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[dict]:
@@ -41,7 +49,7 @@ def list_files(acl: Acl, user_id: str, project: str, path: str = "/") -> list[di
                 "type": "dir" if p.is_dir() else "file",
                 "size": p.stat().st_size if p.is_file() else None,
             }
-            for p in vault_fs.iter_dir(vault, target)
+            for p in vault_fs.iter_dir(vault, target, user_facing=True)
         ],
         key=lambda e: (e["type"] == "file", e["name"]),
     )
@@ -54,7 +62,7 @@ def read_file(acl: Acl, user_id: str, project: str, path: str) -> str:
     target = _safe(vault, path)
     if not target.is_file():
         raise FileNotFoundError(f"not a file: {path!r}")
-    return vault_fs.read_text(vault, target)
+    return vault_fs.read_text(vault, target, user_facing=True)
 
 
 def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) -> str:
@@ -62,7 +70,7 @@ def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) ->
     acl.enforce(user_id, project, "collaborator")
     vault = _vault(acl, project)
     target = _safe(vault, path)
-    vault_fs.write_text(vault, target, content)
+    vault_fs.write_text(vault, target, content, user_facing=True)
     return f"ok: {path}"
 
 
@@ -75,12 +83,12 @@ def search_files(
     target = _safe(vault, path)
     lq = query.lower()
     results: list[dict] = []
-    candidates = vault_fs.iter_files(vault, target, recursive=True) if target.is_dir() else [target]
+    candidates = vault_fs.iter_files(vault, target, recursive=True, user_facing=True) if target.is_dir() else [target]
     for f in candidates:
         if not f.is_file():
             continue
         try:
-            text = vault_fs.read_text(vault, f)
+            text = vault_fs.read_text(vault, f, user_facing=True)
         except (UnicodeDecodeError, OSError):
             continue
         hits = [

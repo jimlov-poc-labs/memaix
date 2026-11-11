@@ -19,7 +19,7 @@ from typing import NoReturn
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config
+from . import config, vault_fs
 from .acl import AccessDenied, Acl, ServiceClient
 from .capabilities.catalog import register_defaults as _register_default_capabilities
 
@@ -358,6 +358,8 @@ def _index_backlog_add(acl, user, project, tail, kwargs, result):
 
 def _index_files_write(acl, user, project, tail, kwargs, result):
     path, content = tail[0], tail[1]
+    if vault_fs.is_reserved_rel(path):
+        return None
     return ("file", path, path, content)
 
 

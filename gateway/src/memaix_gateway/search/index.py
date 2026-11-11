@@ -71,7 +71,7 @@ def index_delete(store, project: str, source_type: str, ref: str) -> None:
 def _is_skippable(vault: Path, path: Path) -> bool:
     if path.name in _SKIP_FILE_NAMES or path.name.startswith("."):
         return True
-    if vault_fs.is_blocked(vault, path):
+    if vault_fs.is_blocked(vault, path, user_facing=True):
         return True
     parts = path.relative_to(vault).parts
     return any(p in _SKIP_DIR_PARTS or p.lower().startswith(".memaix") for p in parts)
@@ -80,7 +80,7 @@ def _is_skippable(vault: Path, path: Path) -> bool:
 def _read_text(path: Path, vault: Path) -> str | None:
     """File text, or None if it cannot be read as text or is off limits."""
     try:
-        return vault_fs.read_text(vault, path)
+        return vault_fs.read_text(vault, path, user_facing=True)
     except (UnicodeDecodeError, OSError, ValueError):
         return None
 
@@ -90,7 +90,7 @@ def _index_memory_dir(store, embedder, project: str, vault: Path) -> tuple[int, 
     chunks = sources = 0
     if not memory_dir.is_dir():
         return chunks, sources
-    for p in vault_fs.iter_files(vault, memory_dir, recursive=True):
+    for p in vault_fs.iter_files(vault, memory_dir, recursive=True, user_facing=True):
         if not p.is_file() or _is_skippable(vault, p):
             continue
         text = _read_text(p, vault)
@@ -107,7 +107,7 @@ def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int,
     chunks = sources = 0
     if not backlog_dir.is_dir():
         return chunks, sources
-    for p in vault_fs.iter_files(vault, backlog_dir, "*.md"):
+    for p in vault_fs.iter_files(vault, backlog_dir, "*.md", user_facing=True):
         text = _read_text(p, vault)
         if text is None:
             continue
@@ -119,11 +119,18 @@ def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int,
     return chunks, sources
 
 
+def _purge_reserved_file_rows(store, project: str) -> None:
+    """Drop 'file' rows an older version indexed from reserved paths."""
+    for ref in store.refs(project, "file"):
+        if vault_fs.is_reserved_rel(ref):
+            store.delete(project, "file", ref)
+
+
 def _index_other_files(store, embedder, project: str, vault: Path) -> tuple[int, int]:
     chunks = sources = 0
     if not vault.is_dir():
         return chunks, sources
-    for p in vault_fs.iter_files(vault, vault, recursive=True):
+    for p in vault_fs.iter_files(vault, vault, recursive=True, user_facing=True):
         if not p.is_file() or _is_skippable(vault, p):
             continue
         parts = p.relative_to(vault).parts
@@ -145,6 +152,7 @@ def reindex_project(store, embedder, acl, project: str) -> dict:
     if not vault_str:
         raise ValueError(f"project {project!r} has no vault configured")
     vault = Path(vault_str)
+    _purge_reserved_file_rows(store, project)
     total_chunks = 0
     sources = 0
     for index_pass in (_index_memory_dir, _index_backlog_dir, _index_other_files):

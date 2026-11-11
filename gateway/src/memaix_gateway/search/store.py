@@ -122,6 +122,14 @@ class EmbeddingStore:
             )
             conn.commit()
 
+    def refs(self, project: str, source_type: str) -> list[str]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ref FROM chunks WHERE project=? AND source_type=?",
+                (project, source_type),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def candidates(self, projects: list[str], source_types: list[str], limit: int) -> list[dict]:
         """Return chunks with a non-null vector, for cosine ranking."""
         if not projects or not source_types:
