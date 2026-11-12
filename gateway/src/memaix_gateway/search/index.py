@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from .. import frontmatter as fm
 from .. import vault_fs
 
@@ -102,6 +104,18 @@ def _index_memory_dir(store, embedder, project: str, vault: Path) -> tuple[int, 
     return chunks, sources
 
 
+def _scalar_str(value, default: str) -> str:
+    """Frontmatter value as a non-empty string; lists, dicts, None -> default.
+
+    A template such as `title: [short title]` parses as a YAML list, which
+    must never reach an SQL parameter.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return default
+    text = str(value).strip()
+    return text or default
+
+
 def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int, int]:
     backlog_dir = vault / _BACKLOG
     chunks = sources = 0
@@ -111,9 +125,12 @@ def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int,
         text = _read_text(p, vault)
         if text is None:
             continue
-        meta, body = fm.split(text)
-        title = meta.get("title", p.stem)
-        ref = meta.get("id", p.stem)
+        try:
+            meta, body = fm.split(text)
+        except yaml.YAMLError:
+            meta, body = {}, text  # broken frontmatter must not abort the reindex
+        title = _scalar_str(meta.get("title"), p.stem)
+        ref = _scalar_str(meta.get("id"), p.stem)
         chunks += index_upsert(store, embedder, project, _BACKLOG, ref, title, f"{title}\n{body}")
         sources += 1
     return chunks, sources
