@@ -42,7 +42,7 @@ jobs:
       # scanner verifies each against the server's checksum and downloads it
       # again on mismatch, so a restored cache only saves the transfer.
       - name: Cache SonarQube scanner downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.sonar/cache
           key: sonar-${{ runner.os }}-${{ hashFiles('**/sonar-project.properties') }}
