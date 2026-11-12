@@ -26,9 +26,11 @@ collaborator) additionally refuses the per-user and system state directories
 at the vault root (iCal URLs, booking settings, ...), refuses writes to the
 profile files `whoami` feeds to the model, and caps the size of a write.
 Writes under `backlog/`, `pm/`, `memory/` and to `shared/onboarding-interview.md`
-(the prompt the model is fed) need `owner=True`: the dedicated tools check the
-role there, so a collaborator must not reach them through `files_write`. The
-default is False, so a caller that forgets the argument is refused.
+(the prompt the model is fed) need `owner=True`. The dedicated tools
+(backlog_*, pm_*, memory_*) only need collaborator, but they validate what they
+write; a raw `files_write` bypasses that validation, so it is deliberately
+stricter than the tools. The default is False, so a caller that forgets the
+argument is refused.
 
 Writes open with O_NOFOLLOW, so a link swapped in after the check is refused
 rather than followed. Fail closed: anything that cannot be resolved is blocked.

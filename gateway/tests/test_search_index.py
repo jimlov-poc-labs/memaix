@@ -222,6 +222,21 @@ def test_reindex_backlog_template_with_non_string_frontmatter(tmp_path, store, f
     assert ("file", "other.txt", "other.txt", 1) in rows
 
 
+@pytest.mark.parametrize("front", ["title: [unclosed", "title: 'x\nid: : :", "a: b: c"])
+def test_reindex_backlog_broken_frontmatter_does_not_abort(tmp_path, store, front):
+    v = tmp_path / "v"
+    (v / "backlog").mkdir(parents=True)
+    (v / "backlog" / "broken.md").write_text(f"---\n{front}\n---\nkroppen\n")
+    (v / "backlog" / "card1.md").write_text("---\nid: BL-1\ntitle: Titel ett\n---\nbody ett\n")
+    (v / "other.txt").write_text("efter")
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result["sources"] == 3
+    rows = _rows(store)
+    assert ("backlog", "BL-1", "Titel ett", 1) in rows
+    assert ("backlog", "broken", "broken", 1) in rows
+    assert ("file", "other.txt", "other.txt", 1) in rows
+
+
 def test_reindex_files_skip_rules_and_unreadable(tmp_path, store):
     v = tmp_path / "v"
     for d in ("memory", "backlog", "_system", "pm", ".git", "docs/pm", "docs/deep"):

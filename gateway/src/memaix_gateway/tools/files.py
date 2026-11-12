@@ -70,9 +70,10 @@ def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) ->
     acl.enforce(user_id, project, "collaborator")
     vault = _vault(acl, project)
     target = _safe(vault, path)
-    # Owner-only targets (backlog/, pm/, memory/, the onboarding prompt): the
-    # dedicated tools require owner there, so files_write must too. Admin has
-    # implicit owner (acl.enforce). Anything but a clean pass means "not owner".
+    # Owner-only targets (backlog/, pm/, memory/, the onboarding prompt). The
+    # dedicated tools take collaborator but validate their input; a raw write
+    # skips that, so files_write is deliberately stricter than they are. Admin
+    # has implicit owner (acl.enforce). Anything but a clean pass means "not owner".
     try:
         acl.enforce(user_id, project, "owner")
         is_owner = True

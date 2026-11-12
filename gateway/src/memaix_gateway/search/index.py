@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from .. import frontmatter as fm
 from .. import vault_fs
 
@@ -123,7 +125,10 @@ def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int,
         text = _read_text(p, vault)
         if text is None:
             continue
-        meta, body = fm.split(text)
+        try:
+            meta, body = fm.split(text)
+        except yaml.YAMLError:
+            meta, body = {}, text  # broken frontmatter must not abort the reindex
         title = _scalar_str(meta.get("title"), p.stem)
         ref = _scalar_str(meta.get("id"), p.stem)
         chunks += index_upsert(store, embedder, project, _BACKLOG, ref, title, f"{title}\n{body}")
