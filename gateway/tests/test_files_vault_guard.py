@@ -251,3 +251,74 @@ def test_vault_fs_write_text_defaults_to_not_owner(roles):
     with pytest.raises(vault_fs.VaultPathError):
         vault_fs.write_text(vault, vault / "backlog" / "x.md", "x", user_facing=True, owner="yes")  # type: ignore[arg-type]
     vault_fs.write_text(vault, vault / "backlog" / "x.md", "x")  # internal level unchanged
+
+
+def test_user_facing_write_rejects_non_string_content(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    for bad in (b"bytes", None, 5):
+        with pytest.raises(ValueError, match="content must be a string"):
+            vault_fs.write_text(vault, vault / "notes" / "n.md", bad, user_facing=True)  # type: ignore[arg-type]
+    assert not (vault / "notes" / "n.md").exists()
+
+
+def test_user_facing_write_rejects_directory_target(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    with pytest.raises(ValueError, match="is a directory"):
+        vault_fs.write_text(vault, vault / "notes", "x", user_facing=True)
+    assert (vault / "notes").is_dir()
+
+
+def test_user_facing_write_checks_run_before_anything_is_created(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    # owner-only, size and profile refusals must leave no new parent directories behind
+    with pytest.raises(vault_fs.VaultPathError):
+        vault_fs.write_text(vault, "backlog/new/deep/x.md", "x", user_facing=True)
+    with pytest.raises(ValueError):
+        vault_fs.write_text(vault, "fresh/big.txt", "x" * (files.MAX_WRITE_BYTES + 1), user_facing=True)
+    with pytest.raises(vault_fs.VaultPathError):
+        vault_fs.write_text(vault, "shared/om-bob.md", "x", user_facing=True)
+    assert not (vault / "backlog" / "new").exists()
+    assert not (vault / "fresh").exists()
+    assert not (vault / "shared" / "om-bob.md").exists()
+
+
+def test_user_facing_write_accepts_relative_and_absolute_paths(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    vault_fs.write_text(vault, "notes/rel.md", "r", user_facing=True)
+    vault_fs.write_text(vault, str(vault / "notes" / "abs.md"), "a", user_facing=True)
+    assert (vault / "notes" / "rel.md").read_text() == "r"
+    assert (vault / "notes" / "abs.md").read_text() == "a"
+    for p in ("backlog/r.md", str(vault / "backlog" / "a.md"), "sub/../pm/a.md"):
+        with pytest.raises(vault_fs.VaultPathError):
+            vault_fs.write_text(vault, p, "x", user_facing=True)
+
+
+def test_owner_only_seen_through_lexical_spelling_when_link_changes_resolution(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    (vault / "notes" / "a" / "b").mkdir(parents=True)
+    (vault / "notes" / "lnk").symlink_to(vault / "notes" / "a" / "b")
+    # resolved: notes/backlog/x.md (ordinary); lexical: backlog/x.md (owner-only)
+    with pytest.raises(vault_fs.VaultPathError, match="owner-only"):
+        vault_fs.write_text(vault, "notes/lnk/../../backlog/x.md", "x", user_facing=True)
+
+
+def test_owner_only_seen_through_resolved_spelling_of_symlink(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    (vault / "notes" / "l").symlink_to(vault / "backlog")
+    with pytest.raises(vault_fs.VaultPathError):
+        vault_fs.write_text(vault, "notes/l/x.md", "x", user_facing=True, owner=False)
+    assert not (vault / "backlog" / "x.md").exists()
+    vault_fs.write_text(vault, "notes/l/x.md", "ok", user_facing=True, owner=True)
+    assert (vault / "backlog" / "x.md").read_text() == "ok"

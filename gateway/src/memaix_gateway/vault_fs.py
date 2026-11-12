@@ -231,6 +231,39 @@ def exists(vault: Path, path: Path | str, *, user_facing: bool = False) -> bool:
         return False
 
 
+def _write_spellings(vault: Path, path: Path | str, resolved: Path) -> list[tuple[str, ...]]:
+    """Every spelling of the target the owner-only rule must see.
+
+    Spelling as given (lexical, so `x/../backlog/a` and a link into
+    backlog/ are both seen) and the resolved one.
+    """
+    given = Path(path) if Path(path).is_absolute() else Path(vault) / path
+    rels: list[tuple[str, ...]] = [_parts(resolved.relative_to(Path(vault).resolve()))]
+    for base in (Path(vault), Path(vault).resolve()):
+        try:
+            rels.append(_parts(Path(os.path.normpath(given)).relative_to(base)))
+        except ValueError:
+            pass
+    return rels
+
+
+def _check_user_facing_write(
+    vault: Path, path: Path | str, text: str, encoding: str, resolved: Path, owner: bool
+) -> None:
+    if owner is not True and any(is_owner_write_only(r) for r in _write_spellings(vault, path, resolved)):
+        raise VaultPathError(f"owner-only path: {str(path)!r}")
+    if not isinstance(text, str):
+        raise ValueError("content must be a string")
+    if len(text.encode(encoding)) > MAX_WRITE_BYTES:
+        raise ValueError(f"content exceeds {MAX_WRITE_BYTES} bytes")
+    if is_profile(_parts(resolved.relative_to(Path(vault).resolve()))):
+        # Written by onboarding only; whoami reads it, so a collaborator
+        # overwriting one could inject into another user's session.
+        raise VaultPathError(f"reserved path: {str(path)!r}")
+    if resolved.is_dir():
+        raise ValueError(f"is a directory: {str(path)!r}")
+
+
 def write_text(
     vault: Path,
     path: Path | str,
@@ -242,27 +275,7 @@ def write_text(
 ) -> None:
     resolved = check(vault, path, user_facing=user_facing)
     if user_facing:
-        # Spelling as given (lexical, so `x/../backlog/a` and a link into
-        # backlog/ are both seen) and the resolved one.
-        given = Path(path) if Path(path).is_absolute() else Path(vault) / path
-        rels: list[tuple[str, ...]] = [_parts(resolved.relative_to(Path(vault).resolve()))]
-        for base in (Path(vault), Path(vault).resolve()):
-            try:
-                rels.append(_parts(Path(os.path.normpath(given)).relative_to(base)))
-            except ValueError:
-                pass
-        if owner is not True and any(is_owner_write_only(r) for r in rels):
-            raise VaultPathError(f"owner-only path: {str(path)!r}")
-        if not isinstance(text, str):
-            raise ValueError("content must be a string")
-        if len(text.encode(encoding)) > MAX_WRITE_BYTES:
-            raise ValueError(f"content exceeds {MAX_WRITE_BYTES} bytes")
-        if is_profile(_parts(resolved.relative_to(Path(vault).resolve()))):
-            # Written by onboarding only; whoami reads it, so a collaborator
-            # overwriting one could inject into another user's session.
-            raise VaultPathError(f"reserved path: {str(path)!r}")
-        if resolved.is_dir():
-            raise ValueError(f"is a directory: {str(path)!r}")
+        _check_user_facing_write(vault, path, text, encoding, resolved, owner)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     check(vault, resolved, user_facing=user_facing)  # parents created: re-validate
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
