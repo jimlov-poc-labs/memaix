@@ -1750,7 +1750,7 @@ def files_read(project: str, path: str) -> str:
 
 @mcp.tool()
 def files_write(project: str, path: str, content: str) -> str:
-    """Write a file to a project vault."""
+    """Write a file to a project vault. backlog/, pm/, memory/ and shared/onboarding-interview.md need owner (use the backlog_*, pm_*, memory_* tools)."""
     return _tool_call("files_write", project, t_files.write_file, path, content)
 
 

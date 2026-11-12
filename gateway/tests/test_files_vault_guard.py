@@ -85,8 +85,8 @@ def test_root_listing_and_search_hide_reserved(rig):
 
 def test_normal_paths_still_work(rig):
     acl, vault = rig
-    files.write_file(acl, "alice", "p", "memory/n.md", "x")
-    assert files.read_file(acl, "alice", "p", "/memory/n.md") == "x"
+    files.write_file(acl, "alice", "p", "notes/n.md", "x")
+    assert files.read_file(acl, "alice", "p", "/notes/n.md") == "x"
     files.write_file(acl, "alice", "p", "gitnotes.md", "x")  # not a .git name
     files.write_file(acl, "alice", "p", "my.gitignore.md", "x")
 
@@ -138,3 +138,116 @@ def test_other_shared_files_still_writable(rig):
     files.write_file(acl, "alice", "p", "shared/notes.md", "x")
     files.write_file(acl, "alice", "p", "shared/sub/om-x.md", "x")
     files.write_file(acl, "alice", "p", "om-x.md", "x")
+
+
+# --- owner-only write targets: backlog/, pm/, memory/, onboarding prompt ----
+
+OWNER_ONLY = [
+    "backlog/x.md",
+    "/backlog/x.md",
+    "pm/raid.md",
+    "memory/n.md",
+    "memory/deep/er/n.md",
+    "Backlog/x.md",
+    "MEMORY/n.md",
+    "backlog./x.md",
+    "backlog /x.md",
+    "bac\u200bklog/x.md",  # zero-width space
+    "\uff42acklog/x.md",  # fullwidth b (NFKC)
+    "\\backlog\\x.md",
+    "./backlog/x.md",
+    "sub/../backlog/x.md",
+    "notes/../../vault/../backlog/x.md",
+    "BACKLO~1/x.md",
+    "MEMOR~1/n.md",
+    "shared/onboarding-interview.md",
+    "Shared/Onboarding-Interview.MD",
+    "shared/./onboarding-interview.md",
+    "shared//onboarding-interview.md",
+    "shared/onboarding-interview.md.",
+    "shared/onboarding\u200b-interview.md",
+    "shared/ONBOAR~1.MD",
+    "bl/../shared/onboarding-interview.md",
+    "backlog",  # a file named like the directory
+]
+
+
+@pytest.fixture()
+def roles(tmp_path):
+    vault = tmp_path / "v"
+    vault.mkdir()
+    subprocess.run(["git", "init", "-q", str(vault)], check=True)
+    (vault / "backlog").mkdir()
+    (vault / "shared").mkdir()
+    (vault / "notes").mkdir()
+    (vault / "alias").symlink_to(vault / "backlog")
+    acl = Acl(
+        users={
+            "col": {"grants": {"p": "collaborator"}},
+            "own": {"grants": {"p": "owner"}},
+            "adm": {"admin": True, "grants": {}},
+            "rd": {"grants": {"p": "reader"}},
+        },
+        projects={"p": {"vault": str(vault)}},
+    )
+    return acl, vault
+
+
+@pytest.mark.parametrize("path", OWNER_ONLY + ["alias/x.md", "alias/sub/x.md"])
+def test_collaborator_cannot_write_owner_only_paths(roles, path):
+    acl, vault = roles
+    with pytest.raises(ValueError):
+        files.write_file(acl, "col", "p", path, "injected")
+    assert not any(
+        f.read_text() == "injected" for f in vault.rglob("*") if f.is_file() and ".git" not in f.parts
+    )
+
+
+@pytest.mark.parametrize("user", ["own", "adm"])
+@pytest.mark.parametrize("path", ["backlog/x.md", "pm/raid.md", "memory/deep/n.md", "shared/onboarding-interview.md"])
+def test_owner_and_admin_may_write_owner_only_paths(roles, user, path):
+    acl, vault = roles
+    files.write_file(acl, user, "p", path, "ok")
+    assert (vault / path).read_text() == "ok"
+
+
+def test_owner_still_blocked_from_git_and_state(roles):
+    acl, _ = roles
+    for path in (".git/config", "calendar_sources/b.json", "shared/om-bob.md"):
+        with pytest.raises(ValueError):
+            files.write_file(acl, "own", "p", path, "x")
+
+
+def test_reader_and_unknown_cannot_write_at_all(roles):
+    from memaix_gateway.acl import AccessDenied
+
+    acl, _ = roles
+    for user in ("rd", "ghost"):
+        for path in ("backlog/x.md", "notes/x.md"):
+            with pytest.raises(AccessDenied):
+                files.write_file(acl, user, "p", path, "x")
+
+
+@pytest.mark.parametrize("path", ["notes/a.md", "shared/other.md", "shared/om.md.txt", "backlogs/x.md", "docs/backlog/x.md", "memorandum.md", "pmx/a.md"])
+def test_collaborator_still_writes_ordinary_files(roles, path):
+    acl, vault = roles
+    files.write_file(acl, "col", "p", path, "fine")
+    assert (vault / path).read_text() == "fine"
+
+
+def test_collaborator_still_reads_owner_only_paths(roles):
+    acl, vault = roles
+    (vault / "backlog" / "a.md").write_text("card")
+    assert files.read_file(acl, "col", "p", "backlog/a.md") == "card"
+    assert {e["name"] for e in files.list_files(acl, "col", "p", "backlog")} == {"a.md"}
+
+
+def test_vault_fs_write_text_defaults_to_not_owner(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    with pytest.raises(vault_fs.VaultPathError):
+        vault_fs.write_text(vault, vault / "backlog" / "x.md", "x", user_facing=True)
+    with pytest.raises(vault_fs.VaultPathError):
+        vault_fs.write_text(vault, vault / "backlog" / "x.md", "x", user_facing=True, owner="yes")  # type: ignore[arg-type]
+    vault_fs.write_text(vault, vault / "backlog" / "x.md", "x")  # internal level unchanged

@@ -70,7 +70,15 @@ def write_file(acl: Acl, user_id: str, project: str, path: str, content: str) ->
     acl.enforce(user_id, project, "collaborator")
     vault = _vault(acl, project)
     target = _safe(vault, path)
-    vault_fs.write_text(vault, target, content, user_facing=True)
+    # Owner-only targets (backlog/, pm/, memory/, the onboarding prompt): the
+    # dedicated tools require owner there, so files_write must too. Admin has
+    # implicit owner (acl.enforce). Anything but a clean pass means "not owner".
+    try:
+        acl.enforce(user_id, project, "owner")
+        is_owner = True
+    except Exception:  # AccessDenied or anything unexpected: fail closed
+        is_owner = False
+    vault_fs.write_text(vault, target, content, user_facing=True, owner=is_owner)
     return f"ok: {path}"
 
 

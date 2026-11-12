@@ -25,6 +25,10 @@ above. `user_facing=True` (the `files_*` tools, which act on behalf of a
 collaborator) additionally refuses the per-user and system state directories
 at the vault root (iCal URLs, booking settings, ...), refuses writes to the
 profile files `whoami` feeds to the model, and caps the size of a write.
+Writes under `backlog/`, `pm/`, `memory/` and to `shared/onboarding-interview.md`
+(the prompt the model is fed) need `owner=True`: the dedicated tools check the
+role there, so a collaborator must not reach them through `files_write`. The
+default is False, so a caller that forgets the argument is refused.
 
 Writes open with O_NOFOLLOW, so a link swapped in after the check is refused
 rather than followed. Fail closed: anything that cannot be resolved is blocked.
@@ -119,6 +123,34 @@ def is_profile(parts: tuple[str, ...]) -> bool:
     return name.startswith("om-") and name.endswith(".md")
 
 
+# Owner-only write targets for the `files_*` tools (see module docstring).
+OWNER_WRITE_DIRS = ("backlog", "pm", "memory")
+_ONBOARDING = ("shared", "onboarding-interview.md")
+_SHORT_ANY_RE = re.compile(r"^([^~]+)~\d+(\..*)?$")
+
+
+def _is_name(component: str, name: str) -> bool:
+    """*component* names *name* after folding, or is its 8.3 short form."""
+    c = _fold(component)
+    if c == name:
+        return True
+    m = _SHORT_ANY_RE.match(c)
+    if not m:
+        return False
+    # Over-blocks on purpose: any 8.3 short form whose stem starts like the name.
+    return name.partition(".")[0].startswith(m.group(1))
+
+
+def is_owner_write_only(parts: tuple[str, ...]) -> bool:
+    """True if a write to *parts* (vault-relative) needs the owner role."""
+    comps = [c for p in parts for c in _split(p)]
+    if not comps:
+        return False
+    if any(_is_name(comps[0], d) for d in OWNER_WRITE_DIRS):
+        return True
+    return len(comps) == 2 and _is_name(comps[0], _ONBOARDING[0]) and _is_name(comps[1], _ONBOARDING[1])
+
+
 def is_reserved_rel(rel: str, *, root_state: bool = True) -> bool:
     """Pure-string decision for a vault-relative path (no filesystem access).
 
@@ -198,10 +230,27 @@ def exists(vault: Path, path: Path | str, *, user_facing: bool = False) -> bool:
 
 
 def write_text(
-    vault: Path, path: Path | str, text: str, encoding: str = "utf-8", *, user_facing: bool = False
+    vault: Path,
+    path: Path | str,
+    text: str,
+    encoding: str = "utf-8",
+    *,
+    user_facing: bool = False,
+    owner: bool = False,
 ) -> None:
     resolved = check(vault, path, user_facing=user_facing)
     if user_facing:
+        # Spelling as given (lexical, so `x/../backlog/a` and a link into
+        # backlog/ are both seen) and the resolved one.
+        given = Path(path) if Path(path).is_absolute() else Path(vault) / path
+        rels: list[tuple[str, ...]] = [_parts(resolved.relative_to(Path(vault).resolve()))]
+        for base in (Path(vault), Path(vault).resolve()):
+            try:
+                rels.append(_parts(Path(os.path.normpath(given)).relative_to(base)))
+            except ValueError:
+                pass
+        if owner is not True and any(is_owner_write_only(r) for r in rels):
+            raise VaultPathError(f"owner-only path: {str(path)!r}")
         if not isinstance(text, str):
             raise ValueError("content must be a string")
         if len(text.encode(encoding)) > MAX_WRITE_BYTES:

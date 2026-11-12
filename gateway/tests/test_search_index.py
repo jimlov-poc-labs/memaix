@@ -196,6 +196,32 @@ def test_reindex_backlog_frontmatter_and_fallbacks(tmp_path, store):
     assert "Titel ett\nbody ett" in hits[0]["text"]
 
 
+@pytest.mark.parametrize(
+    "front",
+    [
+        "title: [short title]\nid: [x, y]",
+        "title: {a: 1}\nid: {b: 2}",
+        "title:\nid:",
+        "title: ''\nid: ''",
+        "title: true\nid: false",
+    ],
+)
+def test_reindex_backlog_template_with_non_string_frontmatter(tmp_path, store, front):
+    """backlog/TEMPLATE.md has `title: [short title]` (a YAML list): must not
+    reach SQL, and the rest of the reindex must still run."""
+    v = tmp_path / "v"
+    (v / "backlog").mkdir(parents=True)
+    (v / "backlog" / "TEMPLATE.md").write_text(f"---\n{front}\n---\nmall\n")
+    (v / "backlog" / "card1.md").write_text("---\nid: BL-1\ntitle: Titel ett\n---\nbody ett\n")
+    (v / "other.txt").write_text("efter")
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result == {"chunks": 3, "sources": 3}
+    rows = _rows(store)
+    assert ("backlog", "BL-1", "Titel ett", 1) in rows
+    assert ("backlog", "TEMPLATE", "TEMPLATE", 1) in rows
+    assert ("file", "other.txt", "other.txt", 1) in rows
+
+
 def test_reindex_files_skip_rules_and_unreadable(tmp_path, store):
     v = tmp_path / "v"
     for d in ("memory", "backlog", "_system", "pm", ".git", "docs/pm", "docs/deep"):
