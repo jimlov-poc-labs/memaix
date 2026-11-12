@@ -310,3 +310,15 @@ def test_owner_only_seen_through_lexical_spelling_when_link_changes_resolution(r
     # resolved: notes/backlog/x.md (ordinary); lexical: backlog/x.md (owner-only)
     with pytest.raises(vault_fs.VaultPathError, match="owner-only"):
         vault_fs.write_text(vault, "notes/lnk/../../backlog/x.md", "x", user_facing=True)
+
+
+def test_owner_only_seen_through_resolved_spelling_of_symlink(roles):
+    from memaix_gateway import vault_fs
+
+    _, vault = roles
+    (vault / "notes" / "l").symlink_to(vault / "backlog")
+    with pytest.raises(vault_fs.VaultPathError):
+        vault_fs.write_text(vault, "notes/l/x.md", "x", user_facing=True, owner=False)
+    assert not (vault / "backlog" / "x.md").exists()
+    vault_fs.write_text(vault, "notes/l/x.md", "ok", user_facing=True, owner=True)
+    assert (vault / "backlog" / "x.md").read_text() == "ok"
