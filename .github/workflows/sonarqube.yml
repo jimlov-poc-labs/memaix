@@ -9,6 +9,8 @@ on:
 jobs:
   sonarqube:
     name: SonarQube Scan
+    # Dependabot-körningar får inga Actions-secrets (SONAR_TOKEN) och skulle bara ge 401; hoppas över.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
