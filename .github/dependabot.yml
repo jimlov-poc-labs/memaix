@@ -1,61 +1,78 @@
-# Veckovisa beroendeuppdateringar; minor och patch grupperas till en PR per ekosystem.
+# Månadsvisa beroendeuppdateringar. Minor och patch grupperas till en PR per ekosystem;
+# major-hopp ignoreras och tas medvetet ett i taget. GitHub Actions kommer som en gruppad
+# PR per månad, major-hopp inkluderade. Säkerhetsuppdateringar styrs inte av ignore-regeln.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: "/gateway/web-tests"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+    open-pull-requests-limit: 5
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: pip
     directories:
       - "/gateway"
       - "/login-app"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+    open-pull-requests-limit: 5
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: docker
     directories:
       - "/gateway"
       - "/login-app"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+    open-pull-requests-limit: 5
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: docker-compose
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+    open-pull-requests-limit: 5
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+    open-pull-requests-limit: 5
     groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
+      actions:
+        patterns:
+          - "*"
