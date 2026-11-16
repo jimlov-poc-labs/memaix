@@ -12,15 +12,36 @@ TODO(perf): batch async git commits via a queue.Queue + background thread
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import gitvault, vault_fs
+
+log = logging.getLogger(__name__)
+
+
+class IndexSyncError(RuntimeError):
+    """A revert was committed in git but the SQLite index could not be fully
+    updated.  The revert is NOT undone; ``failed`` lists the notes whose index
+    row is stale.  Recover with MemoryStore.reindex(path) -- do not revert again."""
+
+    def __init__(self, commit: str, failed: dict[str, str]) -> None:
+        self.commit = commit
+        self.failed = failed
+        detail = "; ".join(f"{p}: {e}" for p, e in failed.items())
+        super().__init__(
+            f"revert was made (committed as {commit}, committad) but indexing failed "
+            f"for {len(failed)} note(s): {detail}. Re-run reindex() for these notes; "
+            "do not revert again."
+        )
+
 
 # FTS5 metacharacters that indicate an already-structured query: quotes,
 # parentheses, prefix-match wildcard, column filter colon, caret (initial
@@ -255,7 +276,20 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _index(self, path: str, content: str | None) -> None:
-        """Make SQLite (notes + notes_fts) match *content*; None removes the row."""
+        """Make SQLite (notes + notes_fts) match *content*; None removes the row.
+
+        A short bounded retry (3 tries) covers "database is locked" from another
+        connection to the same file (e.g. the audit log)."""
+        for attempt in range(3):
+            try:
+                self._index_once(path, content)
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+
+    def _index_once(self, path: str, content: str | None) -> None:
         with self._db_lock:
             try:
                 self._conn.execute("DELETE FROM notes_fts WHERE path = ?", (path,))
@@ -329,18 +363,42 @@ class MemoryStore:
             self._resync(reverted)
             return reverted
 
+    def reindex(self, path: str) -> None:
+        """Re-read one note from disk into the index (removes the row if the
+        file is gone).  Recovery after IndexSyncError, without a new revert."""
+        with self.write_lock:
+            target = self.memory_dir / path
+            if target.is_file() and not target.is_symlink():
+                self._index(path, self._read_disk(target, path))
+            else:
+                self._index(path, None)
+
+    @staticmethod
+    def _read_disk(target: Path, note: str) -> str:
+        # errors="replace": a note that is not valid UTF-8 must not block the
+        # rest of the resync.  Indexed lossy (and logged) rather than skipped,
+        # so a stale pre-revert row never survives next to the reverted file.
+        data = target.read_bytes()
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            log.warning("memory note %s is not valid UTF-8; indexing with replacement", note)
+            return data.decode("utf-8", errors="replace")
+
     def _resync(self, commit: str) -> None:
         """Bring notes/notes_fts in line with disk for files changed by *commit*."""
         out = self._run(
             ["diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "-z", commit]
         ).stdout
+        failed: dict[str, str] = {}
         for rel in filter(None, out.split("\0")):
             parts = Path(rel).parts
             if len(parts) < 2 or parts[0] != "memory":
                 continue
             note = str(Path(*parts[1:]))
-            target = self.memory_dir / note
-            if target.is_file() and not target.is_symlink():
-                self._index(note, target.read_text(encoding="utf-8"))
-            else:
-                self._index(note, None)
+            try:
+                self.reindex(note)
+            except Exception as e:  # noqa: BLE001 - collect, keep indexing the rest
+                failed[note] = f"{type(e).__name__}: {e}"
+        if failed:
+            raise IndexSyncError(commit, failed)

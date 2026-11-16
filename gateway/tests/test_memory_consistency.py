@@ -9,7 +9,7 @@ import pytest
 
 from memaix_gateway import gitvault
 from memaix_gateway.acl import Acl
-from memaix_gateway.backends.memory_store import MemoryStore
+from memaix_gateway.backends.memory_store import IndexSyncError, MemoryStore
 from memaix_gateway.tools.memory import memory_set_status
 
 
@@ -131,3 +131,49 @@ def test_concurrent_reads_and_search_vs_write(store):
         stop.set()
         [r.join() for r in rs]
     assert errors == []
+
+
+def _commit_raw(store, vault, files: dict[str, bytes], msg: str) -> str:
+    for name, data in files.items():
+        (vault / "memory" / name).write_bytes(data)
+    return gitvault.commit(vault, [f"memory/{n}" for n in files], msg)
+
+
+def test_revert_non_utf8_does_not_block_other_notes(store, vault):
+    _commit_raw(store, vault, {"a-bad.md": b"caf\xe9 one", "z-ok.md": b"orig kiwi"}, "raw1")
+    store.reindex("a-bad.md")
+    store.reindex("z-ok.md")
+    second = _commit_raw(store, vault, {"a-bad.md": b"new", "z-ok.md": b"changed plum"}, "raw2")
+    store.reindex("a-bad.md")
+    store.reindex("z-ok.md")
+    store.revert(second)  # must not raise
+    assert store.read("z-ok.md") == "orig kiwi"
+    assert store.search("plum") == []
+    assert store.read("a-bad.md").startswith("caf")
+
+
+def test_revert_index_failure_indexes_rest_and_reports(store, vault, monkeypatch):
+    _commit_raw(store, vault, {"a.md": b"one", "b.md": b"two"}, "raw1")
+    store.reindex("a.md")
+    store.reindex("b.md")
+    second = _commit_raw(store, vault, {"a.md": b"A2", "b.md": b"B2"}, "raw2")
+    store.reindex("a.md")
+    store.reindex("b.md")
+    real = store._index
+
+    def flaky(path, content):
+        if path == "a.md":
+            raise RuntimeError("boom")
+        return real(path, content)
+
+    monkeypatch.setattr(store, "_index", flaky)
+    with pytest.raises(IndexSyncError) as ei:
+        store.revert(second)
+    msg = str(ei.value)
+    assert "reverted" in msg.lower() or "revert was made" in msg
+    assert "committad" in msg and "a.md" in msg and "b.md" not in msg
+    assert store.read("b.md") == "two"  # others still indexed
+    assert store.read("a.md") == "A2"  # stale, as reported
+    monkeypatch.undo()
+    store.reindex("a.md")  # recovery without a new revert
+    assert store.read("a.md") == "one"
