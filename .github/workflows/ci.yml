@@ -10,8 +10,8 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Installera gateway + dev-beroenden
@@ -25,7 +25,7 @@ jobs:
       - name: Testsvit
         working-directory: gateway
         run: python -m pytest -q
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -59,8 +59,8 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Installera gateway + e2e-beroenden
@@ -74,7 +74,7 @@ jobs:
   container-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Den saknade våningen i testpyramiden: fram till nu byggde ingen del av
       # CI imagen eller startade containern, så Dockerfile och bind-mounts var
       # otestade artefakter. Kärnlöftet -- versionerat minne -- hade därför
@@ -86,13 +86,13 @@ jobs:
   sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Generera SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
         with:
           format: cyclonedx-json
           output-file: sbom.cdx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: sbom.cdx.json
@@ -107,10 +107,10 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Skapa GitHub-release om commits kvalificerar
