@@ -398,7 +398,9 @@ class MemoryStore:
             note = str(Path(*parts[1:]))
             try:
                 self.reindex(note)
-            except Exception as e:  # noqa: BLE001 - collect, keep indexing the rest
-                failed[note] = f"{type(e).__name__}: {e}"
+            # Collect and keep indexing the rest; the detail is logged, not returned.
+            except Exception as e:  # noqa: BLE001
+                log.warning("reindex failed for %r after revert %s", note, commit, exc_info=True)
+                failed[note] = type(e).__name__
         if failed:
             raise IndexSyncError(commit, failed)

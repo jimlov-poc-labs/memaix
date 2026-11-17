@@ -172,6 +172,7 @@ def test_revert_index_failure_indexes_rest_and_reports(store, vault, monkeypatch
     msg = str(ei.value)
     assert "reverted" in msg.lower() or "revert was made" in msg
     assert "committad" in msg and "a.md" in msg and "b.md" not in msg
+    assert "RuntimeError" in msg and "boom" not in msg  # type only, no detail leak
     assert store.read("b.md") == "two"  # others still indexed
     assert store.read("a.md") == "A2"  # stale, as reported
     monkeypatch.undo()
