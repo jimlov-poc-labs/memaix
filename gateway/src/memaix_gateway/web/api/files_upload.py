@@ -52,6 +52,7 @@ ALLOWED_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "pdf"})
 MAX_PATH_CHARS = 1024
 BODY_TIMEOUT_S = 120  # total time allowed for streaming the body in (slow-body guard)
 MAX_CONCURRENT_UPLOADS = 4  # simultaneous uploads to Nextcloud (each holds a pool thread)
+_BAD_PATH = "bad path"
 _HEAD_BYTES = 16
 _SPOOL_MEMORY = 1024 * 1024
 
@@ -94,18 +95,18 @@ def normalise_path(raw) -> str:
     absolute (leading '/'), '..', backslash, control chars, hidden segments,
     too long."""
     if not isinstance(raw, str) or not raw or raw.startswith("/"):
-        raise ValueError("bad path")
+        raise ValueError(_BAD_PATH)
     if len(raw) > MAX_PATH_CHARS or "\\" in raw or any(ord(c) < 32 or ord(c) == 127 for c in raw):
-        raise ValueError("bad path")
+        raise ValueError(_BAD_PATH)
     segments = [s for s in raw.split("/") if s not in ("", ".")]
     if not segments or any(s.startswith(".") or s.rstrip() != s for s in segments):
-        raise ValueError("bad path")  # includes '..' and hidden names
+        raise ValueError(_BAD_PATH)  # includes '..' and hidden names
     rel = "/".join(segments)
     validate_relative_path(rel)
     # A '%2e%2e' that survived decoding once would become '..' in the WebDAV
     # server; refuse a path that changes meaning when decoded again.
     if any(s in ("..", ".") for s in unquote(rel).split("/")):
-        raise ValueError("bad path")
+        raise ValueError(_BAD_PATH)
     return rel
 
 
@@ -155,7 +156,8 @@ def _server():
 def _audit(user: str, project: str, ok: bool, msg: str) -> None:
     try:
         _server()._get_audit().log(user, project, TOOL_NAME, ok, msg)
-    except Exception:  # noqa: BLE001 - audit trouble must not turn a denial into an allow or a 500
+    # Audit trouble must not turn a denial into an allow or a 500.
+    except Exception:  # noqa: BLE001
         logger.warning("audit write failed for %s", TOOL_NAME)
 
 
@@ -245,41 +247,56 @@ def _declared_length(request: Request) -> int:
     return length
 
 
+class _BodyState:
+    """Running totals for one streamed body: size, sha256, first bytes, spool."""
+
+    def __init__(self, declared: int, ext: str):
+        self.declared = declared
+        self.ext = ext
+        # Closed by _spool_body on every failure path, by _store otherwise.
+        self.spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORY)  # noqa: SIM115
+        self.digest = hashlib.sha256()
+        self.head = b""
+        self.total = 0
+
+    def feed(self, chunk: bytes) -> None:
+        self.total += len(chunk)
+        if self.total > self.declared or self.total > MAX_UPLOAD_BYTES:
+            raise _Deny("too_large", 413, "body longer than declared")
+        if len(self.head) < _HEAD_BYTES:
+            self.head += chunk[: _HEAD_BYTES - len(self.head)]
+            if len(self.head) >= _HEAD_BYTES and not magic_matches(self.ext, self.head):
+                raise _Deny("bad_content", 415, "content does not match extension")
+        self.digest.update(chunk)
+        self.spool.write(chunk)
+
+    def finish(self) -> None:
+        if self.total == 0:
+            raise _Deny("empty_file", 400)
+        if self.total != self.declared:
+            raise _Deny("bad_length", 400, "body shorter than declared")
+        if not magic_matches(self.ext, self.head):
+            raise _Deny("bad_content", 415, "content does not match extension")
+
+
 async def _spool_body(request: Request, declared: int, ext: str):
     """Stream the body to a temp file. Returns (spool, size, sha256 hex).
     Aborts at once on more bytes than declared (Content-Length can lie), on
     a short body, or on the wrong magic bytes. Caller closes the spool."""
-    spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORY)  # noqa: SIM115 - closed by the caller
-    digest = hashlib.sha256()
-    head = b""
-    total = 0
+    state = _BodyState(declared, ext)
     try:
         async with asyncio.timeout(BODY_TIMEOUT_S):
             async for chunk in request.stream():
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > declared or total > MAX_UPLOAD_BYTES:
-                    raise _Deny("too_large", 413, "body longer than declared")
-                if len(head) < _HEAD_BYTES:
-                    head += chunk[: _HEAD_BYTES - len(head)]
-                    if len(head) >= _HEAD_BYTES and not magic_matches(ext, head):
-                        raise _Deny("bad_content", 415, "content does not match extension")
-                digest.update(chunk)
-                spool.write(chunk)
-        if total == 0:
-            raise _Deny("empty_file", 400)
-        if total != declared:
-            raise _Deny("bad_length", 400, "body shorter than declared")
-        if not magic_matches(ext, head):
-            raise _Deny("bad_content", 415, "content does not match extension")
+                if chunk:
+                    state.feed(chunk)
+        state.finish()
     except TimeoutError as exc:
-        spool.close()
+        state.spool.close()
         raise _Deny("timeout", 408, "denied: timeout") from exc
     except BaseException:
-        spool.close()
+        state.spool.close()
         raise
-    return spool, total, digest.hexdigest()
+    return state.spool, state.total, state.digest.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +332,8 @@ async def api_files_upload(request: Request) -> JSONResponse:
         else:
             logger.info("files upload refused: %s", deny.code)
         return _err(deny.code, deny.status, deny.headers)
-    except Exception:  # noqa: BLE001 - fail closed with a bare code, detail only in the server log
+    # Fail closed with a bare code; detail goes only to the server log.
+    except Exception:  # noqa: BLE001
         logger.exception("files upload failed unexpectedly")
         if user != "-":
             _audit(user, project, False, "internal error")
