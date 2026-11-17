@@ -315,6 +315,80 @@ Token URL `https://mcp.din-domän.se/oauth2/token`, Basic auth och body-paramete
 
 ---
 
+## Filuppladdning från skript (`nc_files_upload`)
+
+För binära filer (bilder, pdf) som ett skript på din dator ska lägga i ett projekts Nextcloud-filarea.
+Filen strömmas från disk till gatewayen och passerar aldrig en AI-modells kontext, vilket ett MCP-verktyg
+med base64 i argumentet inte kan garantera. Vägen är `PUT /api/files/{projekt}/{sökväg}` med filen som
+rå request-kropp. Den använder samma Hydra-JWT som MCP, men ligger utanför MCP-dispatchen och gör
+sina egna kontroller i den här ordningen (varje steg nekar vid saknad eller trasig indata):
+
+1. Giltig JWT (signatur, issuer, audience, `exp` finns och är framåt i tiden) annars 401.
+2. Subjektet är en service-klient i `acl.yaml`. En vanlig användartoken nekas (403).
+3. Klientens `tools` innehåller pseudo-verktyget `nc_files_upload` och `projects` innehåller projektet.
+   Tom lista nekar allt. Namnet är bara ett värde i listan; `acl.yaml`-valideringen kontrollerar inte
+   verktygsnamn och `tools/list` döljer det eftersom inget MCP-verktyg heter så.
+4. `acts_as`-användaren får **aldrig** vara admin: routen nekar (403) en klient vars `acts_as` har
+   `admin: true`, även om `tools` och `projects` är rätt. Därefter krävs minst `collaborator` i projektet.
+5. Högst 10 uppladdningar per minut och klient (429). Kontrollen sker före auktoriseringen, och
+   begränsade försök skrivs inte till audit-loggen (bara serverloggen), så en giltig men felaktig token
+   inte kan fylla loggen.
+6. `Content-Length` måste finnas och vara 1 byte till 10 MB (411/400/413, före all läsning av kroppen).
+   Byteantalet räknas dessutom under strömning och avbryts vid fler byte än deklarerat.
+7. Sökvägen är relativ, utan `..`, backslash eller dolda segment. `./a.png` och `a.png` är samma fil.
+   Filnamnet har exakt en punkt och en ändelse: png, jpg, jpeg, webp, gif eller pdf (versaler går bra).
+   `x.png.exe` och `x.exe.png` nekas, och det gör även `min.bild.v2.png` (använd bindestreck:
+   `min-bild-v2.png`).
+8. De första byten måste stämma med ändelsen (PNG, JPEG, GIF, WEBP, PDF-signatur) annars 415.
+9. Filen skrivs till projektets egna Nextcloud-konto, aldrig över en befintlig fil (409). Saknade
+   undermappar skapas.
+
+Kroppen måste strömmas in inom 120 s (408 annars), och högst 4 uppladdningar körs samtidigt mot
+Nextcloud; är alla platser upptagna svarar routen 503 med `Retry-After: 5`, försök igen då.
+**EXIF och annan metadata rensas inte**: en bild med GPS-position eller kameradata lagras som den är.
+Rensa persondata i bilden innan den laddas upp.
+
+Svaret (201) är JSON med `project`, `path`, `size` och `sha256`; jämför mot din lokala `shasum -a 256`.
+Både lyckade och nekade försök hamnar i audit-loggen (verktyg `nc_files_upload`, utan filinnehåll).
+
+**Skapa klienten (en gång, av driftansvarig):**
+
+1. En dedikerad användare i `acl.yaml` som är `collaborator` i rätt projekt och ingenting annat.
+   Aldrig `admin: true` (admin är implicit ägare överallt och släpper igenom rollkontrollen i alla projekt).
+2. En Hydra-klient med `client_credentials`, som i avsnittet ovan (`hydra create oauth2-client`, audience
+   är gatewayens publika adress). Behåll UUID:t.
+3. Lägg in den i `acl.yaml`:
+
+```yaml
+service_clients:
+  <hydra-client-uuid>:
+    acts_as: <dedikerad-uppladdningsanvändare>
+    tools: [nc_files_upload]
+    projects: [<projekt>]
+```
+
+4. Starta om gatewayn. Token gäller 1 timme; hämta en ny per körning (steg 4 ovan).
+
+**Anropa (exempel, utan riktiga värden):**
+
+```bash
+TOKEN=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" https://mcp.din-domän.se/oauth2/token \
+  -d grant_type=client_credentials -d audience=https://mcp.din-domän.se | jq -r .access_token)
+
+curl -sS -X PUT "https://mcp.din-domän.se/api/files/<projekt>/bilder/omslag.png" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'If-None-Match: *' \
+  --data-binary @omslag.png
+```
+
+`--data-binary` strömmar filen och sätter `Content-Length`; använd inte `-d`, som kan ändra innehållet.
+Hjälphuvudet `If-None-Match: *` är valfritt (servern skriver aldrig över i alla fall) men gör avsikten tydlig.
+Felkoder: 400 `bad_path`/`empty_file`/`bad_length`, 401, 403, 404 `no_files` (projektet saknar filarea),
+409 `exists`, 411, 413, 415 `bad_content`, 408 `timeout`, 429, 502 `upstream_error`, 503 `busy`.
+Caddy stoppar kroppar över 11 MB på `/api/files/*` innan de når gatewayn.
+
+---
+
 ## Felsökning
 
 **"Authorization failed" / "ofid_..."**
