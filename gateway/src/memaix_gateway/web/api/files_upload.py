@@ -52,7 +52,6 @@ ALLOWED_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "pdf"})
 MAX_PATH_CHARS = 1024
 BODY_TIMEOUT_S = 120  # total time allowed for streaming the body in (slow-body guard)
 MAX_CONCURRENT_UPLOADS = 4  # simultaneous uploads to Nextcloud (each holds a pool thread)
-SLOT_WAIT_S = 0.5  # how long a request waits for a free slot before 503
 _HEAD_BYTES = 16
 _SPOOL_MEMORY = 1024 * 1024
 
@@ -323,18 +322,26 @@ async def api_files_upload(request: Request) -> JSONResponse:
         return _err("internal_error", 500)
 
 
+def _busy() -> _Deny:
+    return _Deny("busy", 503, "denied: busy", headers={"Retry-After": "5"})
+
+
 async def _store(request: Request, sc: ServiceClient, project: str, rel: str, ext: str, declared: int):
     acl = _server()._get_acl()
     backend = _files_backend(acl, sc.acts_as, project)
     if backend is None:
         raise _Deny("no_files", 404, "project has no files area")
-    spool, size, sha256 = await _spool_body(request, declared, ext)
     sem = _slot_semaphore()
-    try:
-        await asyncio.wait_for(sem.acquire(), SLOT_WAIT_S)
-    except TimeoutError as exc:
+    # First line of defence: refuse before reading a single body byte.
+    if sem.locked():
+        raise _busy()
+    spool, size, sha256 = await _spool_body(request, declared, ext)
+    # Second line: the slots may have filled while the body streamed in. No
+    # await between locked() and acquire(), so a free slot is taken atomically.
+    if sem.locked():
         spool.close()
-        raise _Deny("busy", 503, "denied: busy", headers={"Retry-After": "5"}) from exc
+        raise _busy()
+    await sem.acquire()
     try:
         try:
             await run_in_threadpool(backend.put_stream, rel, spool, size)

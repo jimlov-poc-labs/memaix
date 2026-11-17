@@ -547,7 +547,6 @@ def test_slow_body_times_out_408_and_is_audited(rig, monkeypatch):
 
 
 def test_concurrency_cap_fifth_gets_503_and_slots_are_released(rig, monkeypatch):
-    monkeypatch.setattr(up, "SLOT_WAIT_S", 0.05)
     gate = threading.Event()
     entered = threading.Semaphore(0)
     original = rig.backend.put_stream
@@ -595,3 +594,76 @@ def test_slot_released_when_backend_raises(rig, monkeypatch):
             return codes
 
     assert asyncio.run(run()) == [502] * (up.MAX_CONCURRENT_UPLOADS + 2)
+
+
+class _SpoolSpy:
+    """Records every spool the route creates so tests can assert it was closed."""
+
+    def __init__(self, monkeypatch):
+        self.spools = []
+        real = up.tempfile.SpooledTemporaryFile
+
+        def make(*a, **kw):
+            sp = real(*a, **kw)
+            self.spools.append(sp)
+            return sp
+
+        monkeypatch.setattr(up.tempfile, "SpooledTemporaryFile", make)
+
+    def all_closed(self):
+        return bool(self.spools) and all(sp.closed for sp in self.spools)
+
+
+def test_spool_closed_on_timeout_path(rig, monkeypatch):
+    spy = _SpoolSpy(monkeypatch)
+    monkeypatch.setattr(up, "BODY_TIMEOUT_S", 0.2)
+
+    async def hang():
+        yield PNG[:10]
+        await asyncio.sleep(5)
+
+    async def run():
+        async with _async_client(rig) as c:
+            return await c.put(
+                "/api/files/proj/a.png",
+                content=hang(),
+                headers={"Authorization": f"Bearer {mint()}", "Content-Length": str(len(PNG))},
+            )
+
+    assert asyncio.run(run()).status_code == 408
+    assert spy.all_closed()
+
+
+class _Locked:
+    def locked(self):
+        return True
+
+
+def test_full_slots_503_before_body_is_read(rig, monkeypatch):
+    spy = _SpoolSpy(monkeypatch)
+    called = []
+
+    async def forbidden(*a, **kw):
+        called.append(1)
+        raise AssertionError("body must not be read")
+
+    monkeypatch.setattr(up, "_spool_body", forbidden)
+    monkeypatch.setattr(up, "_slot_semaphore", lambda: _Locked())
+    r = ok_put(rig)
+    assert r.status_code == 503 and r.headers["Retry-After"] == "5" and r.json() == {"error": "busy"}
+    assert called == [] and spy.spools == [] and rig.backend.puts == []
+    assert audit_rows(rig)[-1][3:] == (0, "denied: busy")
+
+
+def test_slots_filled_during_streaming_503_and_spool_closed(rig, monkeypatch):
+    spy = _SpoolSpy(monkeypatch)
+    answers = iter([False, True])  # free at the early check, full at the late one
+
+    class Flip:
+        def locked(self):
+            return next(answers)
+
+    monkeypatch.setattr(up, "_slot_semaphore", lambda: Flip())
+    r = ok_put(rig)
+    assert r.status_code == 503 and rig.backend.puts == []
+    assert spy.all_closed()
