@@ -8,7 +8,9 @@ just by path checks. The account's password is generated here, written to a
 it is never returned, logged or put in an exception.
 
 Enabled by an optional `nextcloud_provision` block in memaix.yaml
-(docs/SECRETS.md, config/memaix.example.yaml). Without it nothing happens.
+(docs/SECRETS.md, config/memaix.example.yaml). Without it nothing happens,
+unless the top-level `require_files: true` flag is set: then a project can
+only be created with a file area, and a missing block is an error.
 
 Two ways to create the user: `method: ocs` (default; Nextcloud's provisioning
 API, which Nextcloud 32 refuses for app-password logins) or `method: occ_ssh`
@@ -63,6 +65,21 @@ def _method(section: dict) -> str:
     if method not in ("ocs", "occ_ssh"):
         raise ProvisionError(f"nextcloud_provision.method must be ocs or occ_ssh, not {method!r}")
     return method
+
+
+def files_required(memaix_cfg: dict | None = None) -> bool:
+    """Value of the top-level `require_files` flag in memaix.yaml (default False).
+
+    Strict: only a real bool is accepted. Anything else ('false', 1, null, ...)
+    raises, so a typo can never silently turn the guarantee on or off."""
+    if memaix_cfg is None:
+        memaix_cfg = config.load()["memaix"]
+    if "require_files" not in memaix_cfg:
+        return False
+    value = memaix_cfg["require_files"]
+    if not isinstance(value, bool):
+        raise ProvisionError("require_files in memaix.yaml must be true or false (a YAML boolean)")
+    return value
 
 
 def _settings(cfg: dict | None) -> dict | None:
@@ -163,12 +180,19 @@ def provision_project_files(
     """Create the project's Nextcloud account and return its `files:` resource.
 
     `cfg` is the `nextcloud_provision` block (read from memaix.yaml when None).
-    Returns None only when provisioning is not configured. Raises
+    Returns None only when provisioning is not configured and `require_files`
+    is not on (when it is, that is a ProvisionError). Raises
     ProvisionError on any failure — including an account or secret file that
     already exists, which is never overwritten — leaving no new secret file
     behind."""
+    required = files_required()
     settings = _settings(cfg)
     if settings is None:
+        if required:
+            raise ProvisionError(
+                "require_files är på men nextcloud_provision saknas i memaix.yaml; "
+                "lägg till nextcloud_provision eller sätt require_files: false"
+            )
         return None
     if not isinstance(name, str) or not _NAME.match(name):
         raise ProvisionError(f"invalid project name: {name!r}")

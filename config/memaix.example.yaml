@@ -106,3 +106,11 @@ onboarding:
 #   admin_user: "memaix-provisioner"
 #   admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"
 #   quota: "2GB"           # optional, default 2GB
+
+# Require a file area for every new project (optional, default false). When
+# true, project_create FAILS (and creates nothing) unless nextcloud_provision
+# above is set and the Nextcloud account can be made. Must be a YAML boolean:
+# `"false"`, 1 or an empty value is rejected, never read as true/false.
+# Projects created by the installer (setup/bootstrap) have no file area either
+# way; the installer prints a notice about it.
+# require_files: true

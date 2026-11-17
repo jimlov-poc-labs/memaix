@@ -301,3 +301,8 @@ def test_unattended_rejects_unknown_profile(monkeypatch):
     monkeypatch.setenv("MEMAIX_PROFILE", "bogus")
     with pytest.raises(SystemExit):
         bootstrap.run_unattended()
+
+
+def test_summary_warns_that_start_projects_have_no_file_area(tmp_path):
+    summary = engine.write_config(_answers(), tmp_path)
+    assert "filarea" in summary["notice"] and "require_files" in summary["notice"]

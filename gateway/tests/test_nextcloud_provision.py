@@ -287,3 +287,38 @@ def test_ssh_timeout_keeps_secret_file_because_the_account_may_exist(cfg_dir):
         provision_project_files("acme", cfg=SSH_CFG, run=run)
     assert _secret_file(cfg_dir).exists()
     assert _secret_file(cfg_dir).read_text() not in str(ei.value)
+
+
+# ------------------------------------------------------------ require_files
+
+
+def _mx(monkeypatch, memaix):
+    monkeypatch.setattr(config, "load", lambda: {"memaix": memaix})
+
+
+def test_require_files_on_without_block_is_an_error(monkeypatch, cfg_dir):
+    _mx(monkeypatch, {"require_files": True})
+    http = _Http()
+    with pytest.raises(ProvisionError, match="require_files.*nextcloud_provision saknas"):
+        provision_project_files("acme", http=http)
+    assert http.calls == [] and not cfg_dir.exists()
+
+
+def test_require_files_on_with_block_provisions(monkeypatch, cfg_dir):
+    _mx(monkeypatch, {"require_files": True, "nextcloud_provision": CFG})
+    assert provision_project_files("acme", http=_Http())["user"] == "memaix-acme"
+
+
+@pytest.mark.parametrize("memaix", [{}, {"require_files": False}])
+def test_require_files_off_or_undefined_keeps_silent_skip(monkeypatch, memaix):
+    _mx(monkeypatch, memaix)
+    assert provision_project_files("acme", http=_Http()) is None
+
+
+@pytest.mark.parametrize("bad", ["false", "true", "False", 1, 0, None, [], {}, ""])
+def test_require_files_must_be_a_real_bool(monkeypatch, cfg_dir, bad):
+    _mx(monkeypatch, {"require_files": bad, "nextcloud_provision": CFG})
+    http = _Http()
+    with pytest.raises(ProvisionError, match="require_files.*true or false"):
+        provision_project_files("acme", http=http)
+    assert http.calls == [] and not cfg_dir.exists()

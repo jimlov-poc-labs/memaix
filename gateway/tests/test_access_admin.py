@@ -147,6 +147,60 @@ def test_failed_provisioning_rolls_back_acl_and_vault(env):
     assert not (env.vaults / "itsq").exists()
 
 
+def _with_memaix_cfg(monkeypatch, tmp_path, memaix):
+    from memaix_gateway import config
+
+    monkeypatch.setattr(config, "load", lambda: {"memaix": memaix})
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "cfg")
+
+
+def _assert_no_project_left(env, tmp_path):
+    acl = env.acl()
+    assert "itsq" not in acl.projects and "itsq" not in acl.grants("root")
+    assert not (env.vaults / "itsq").exists()
+    assert not (tmp_path / "cfg").exists()
+
+
+def test_require_files_without_block_refuses_and_leaves_nothing(env, monkeypatch, tmp_path):
+    _with_memaix_cfg(monkeypatch, tmp_path, {"require_files": True})
+    with pytest.raises(AccessError, match="require_files är på men nextcloud_provision saknas"):
+        env.admin.create_project(env.acl(), "root", "itsq")
+    _assert_no_project_left(env, tmp_path)
+
+
+@pytest.mark.parametrize("bad", ["false", 1, None])
+def test_invalid_require_files_refuses_and_leaves_nothing(env, monkeypatch, tmp_path, bad):
+    _with_memaix_cfg(monkeypatch, tmp_path, {"require_files": bad})
+    with pytest.raises(AccessError, match="require_files"):
+        env.admin.create_project(env.acl(), "root", "itsq")
+    _assert_no_project_left(env, tmp_path)
+
+
+def test_require_files_with_working_provisioning_creates_project_with_files(env, monkeypatch, tmp_path):
+    from memaix_gateway import nextcloud_provision as np_
+
+    cfg = {"url": "https://nc.example/", "admin_user": "root", "admin_password_ref": "env:NC_ADMIN_PW"}
+    monkeypatch.setenv("NC_ADMIN_PW", "x")
+    _with_memaix_cfg(monkeypatch, tmp_path, {"require_files": True, "nextcloud_provision": cfg})
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ocs": {"meta": {"statuscode": 200}}}
+
+    monkeypatch.setattr(np_, "_http_post", lambda url, **kw: Resp())
+    out = env.admin.create_project(env.acl(), "root", "itsq")
+    assert out["files"] is True
+    assert env.acl().projects["itsq"]["files"]["user"] == "memaix-itsq"
+
+
+def test_require_files_off_without_block_still_creates_without_files(env, monkeypatch, tmp_path):
+    _with_memaix_cfg(monkeypatch, tmp_path, {"require_files": False})
+    assert env.admin.create_project(env.acl(), "root", "itsq")["files"] is False
+    assert "files" not in env.acl().projects["itsq"]
+
+
 def test_unexpected_provisioner_crash_also_rolls_back(env):
     def crash(name):
         raise OSError("disk full")

@@ -129,6 +129,19 @@ def public_url(a: dict) -> str:
     return f"https://{a['domain']}"
 
 
+FILES_NOTICE = (
+    "OBS: start-projekten skapades utan filarea (inget Nextcloud-konto). "
+    "Nya projekt via project_create kräver nextcloud_provision i config/memaix.yaml om "
+    "require_files: true är satt; se docs/SECRETS.md."
+)
+
+
+def files_notice(projects: list) -> str | None:
+    """Notis när start-projekten skapas utan filarea. write_config skriver aldrig
+    nextcloud_provision, så för nya installationer gäller notisen alltid."""
+    return FILES_NOTICE if projects else None
+
+
 def write_config(a: dict, root: Path) -> dict:
     """Skriv config/brand.yaml, config/memaix.yaml, config/acl.yaml och .env.
 
@@ -250,6 +263,7 @@ def write_config(a: dict, root: Path) -> dict:
         "project_name": project,
         "llm_provider": a.get("llm_provider", "byo"),
         "written": ["config/brand.yaml", "config/memaix.yaml", "config/acl.yaml", ".env"],
+        "notice": files_notice(list(projects)),
     }
 
 
