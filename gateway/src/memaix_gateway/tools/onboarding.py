@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import gitvault
+from .. import gitvault, vault_fs
 
 DEFAULT_QUESTIONS = [
     "Vad heter du och vad är din roll?",
@@ -32,8 +32,8 @@ _INCOMPLETE_TOKEN = "profil_status: ofullständig"  # nosec B105 -- profile-stat
 def _read_flags(vault: Path) -> dict:
     """Per-user onboarding flags. Schema 1 held one global user; it is read as that user's entry."""
     try:
-        raw = json.loads((vault / _FLAG_PATH).read_text())
-    except (OSError, json.JSONDecodeError):
+        raw = json.loads(vault_fs.read_text(vault, vault / _FLAG_PATH))
+    except (OSError, ValueError):
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -46,8 +46,8 @@ def _read_flags(vault: Path) -> dict:
 
 def _interview_template(vault: Path, cfg: dict | None = None) -> str:
     custom = vault / "shared" / "onboarding-interview.md"
-    if custom.exists():
-        return custom.read_text()
+    if vault_fs.exists(vault, custom):
+        return vault_fs.read_text(vault, custom)
     questions = (cfg or {}).get("memaix", {}).get("onboarding", {}).get("questions")
     if questions:
         intro = (cfg or {}).get("memaix", {}).get("onboarding", {}).get(
@@ -90,11 +90,11 @@ def check_onboarding(user_id: str, vault: Path, cfg: dict | None = None) -> dict
     if _read_flags(vault).get(user_id, {}).get("onboarded") is True:
         # Let explicit markdown re-trigger override the flag.
         profile_path = vault / "shared" / f"om-{user_id}.md"
-        if not (profile_path.exists() and _INCOMPLETE_TOKEN in profile_path.read_text()):
+        if not (vault_fs.exists(vault, profile_path) and _INCOMPLETE_TOKEN in vault_fs.read_text(vault, profile_path)):
             return {"needs_onboarding": False, "profile_status": "complete"}
 
     profile_path = vault / "shared" / f"om-{user_id}.md"
-    if not profile_path.exists():
+    if not vault_fs.exists(vault, profile_path):
         return {
             "needs_onboarding": True,
             "profile_status": "missing",
@@ -107,7 +107,7 @@ def check_onboarding(user_id: str, vault: Path, cfg: dict | None = None) -> dict
             ),
         }
 
-    content = profile_path.read_text()
+    content = vault_fs.read_text(vault, profile_path)
     if _INCOMPLETE_TOKEN in content:
         return {
             "needs_onboarding": True,
@@ -199,7 +199,7 @@ def complete_onboarding(user_id: str, vault: Path, profile_content: str) -> dict
         profile_content = profile_content.replace(_INCOMPLETE_TOKEN, "profil_status: klar")
 
     profile_path = shared / f"om-{user_id}.md"
-    profile_path.write_text(profile_content)
+    vault_fs.write_text(vault, profile_path, profile_content)
 
     # Write the authoritative flag last (crash-safe ordering).
     system_dir = vault / "_system"
@@ -210,8 +210,8 @@ def complete_onboarding(user_id: str, vault: Path, profile_content: str) -> dict
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "interview_version": 1,
     }
-    (system_dir / "onboarding.json").write_text(
-        json.dumps({"schema": 2, "users": users}, indent=2)
+    vault_fs.write_text(
+        vault, system_dir / "onboarding.json", json.dumps({"schema": 2, "users": users}, indent=2)
     )
 
     _git_commit(vault, f"onboarding: profile for {user_id}")

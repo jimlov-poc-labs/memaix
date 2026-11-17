@@ -34,6 +34,27 @@ class AccessError(Exception):
     """Invalid request (bad name, unknown target, rule violation)."""
 
 
+def _require_actor_owns_all(acl: Acl, actor: str, grants: dict, user: str) -> None:
+    """Raise unless *actor* owns every project in *grants* (admins are checked by caller)."""
+    actor_grants = acl.grants(actor)
+    if any(actor_grants.get(p) != "owner" for p in grants):
+        # Accepting the token would set the password on an account
+        # that reaches projects the actor does not own.
+        raise AccessError(f"{user} also has access to projects you do not own")
+
+
+def _check_issuer_still_owns(data: dict, issuer: str | None, target: dict) -> None:
+    """Fail closed (invalid invitation) unless the issuer exists, is enabled
+    and is admin or owns every project the target reaches."""
+    actor = data.get("users", {}).get(issuer) if issuer else None
+    if actor is None or actor.get("disabled"):
+        raise AccessError(_INVALID_INVITATION)
+    if actor.get("admin") is not True:
+        agr = actor.get("grants") or {}
+        if any(agr.get(p) != "owner" for p in target.get("grants") or {}):
+            raise AccessError(_INVALID_INVITATION)
+
+
 def _live_admin(acl: Acl, actor: str) -> bool:
     return actor in acl.users and not acl.is_disabled(actor) and acl.is_admin(actor)
 
@@ -60,6 +81,33 @@ def _other_owners(users: dict, user: str, project: str) -> list[str]:
         if uid != user and u.get("admin") is not True
         and (u.get("grants") or {}).get(project) == "owner"
     ]
+
+
+def _require_inviteable_user(acl: Acl, user: str) -> None:
+    """Fail closed unless *user* is a well-formed, non-reserved, non-admin id."""
+    if not isinstance(user, str) or not _NAME.match(user) or user in _RESERVED_USERS:
+        raise AccessError("user id must be 2-32 chars of a-z, 0-9, '-' or '_' and not reserved")
+    if acl.is_admin(user):
+        raise AccessError(_ADMIN_LOCKED)
+
+
+def _apply_invite(data: dict, acl: Acl, actor: str, project: str, user: str, role: str, email: str | None) -> str:
+    """Write the invited grant into *data*; return "granted" or "invited"."""
+    users = data.setdefault("users", {})
+    existing = users.get(user)
+    if existing is not None and existing.get("admin") is True:
+        raise AccessError(_ADMIN_LOCKED)
+    if existing is not None and existing.get("password_hash"):
+        existing.setdefault("grants", {})[project] = role
+        return "granted"
+    if existing is not None and not acl.is_admin(actor):
+        _require_actor_owns_all(acl, actor, existing.get("grants") or {}, user)
+    entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
+    entry.setdefault("grants", {})[project] = role
+    if email:
+        entry["email"] = email
+    users[user] = entry
+    return "invited"
 
 
 class AccessAdmin:
@@ -191,27 +239,9 @@ class AccessAdmin:
         self._require_project_owner(acl, actor, project)
         if role not in ROLES:
             raise AccessError(f"unknown role: {role}")
-        if not isinstance(user, str) or not _NAME.match(user) or user in _RESERVED_USERS:
-            raise AccessError("user id must be 2-32 chars of a-z, 0-9, '-' or '_' and not reserved")
-        if acl.is_admin(user):
-            raise AccessError(_ADMIN_LOCKED)
+        _require_inviteable_user(acl, user)
 
-        def apply(data: dict) -> str:
-            users = data.setdefault("users", {})
-            existing = users.get(user)
-            if existing is not None and existing.get("admin") is True:
-                raise AccessError(_ADMIN_LOCKED)
-            if existing is not None and existing.get("password_hash"):
-                existing.setdefault("grants", {})[project] = role
-                return "granted"
-            entry: dict = existing if existing is not None else {"oauth_subjects": [user]}
-            entry.setdefault("grants", {})[project] = role
-            if email:
-                entry["email"] = email
-            users[user] = entry
-            return "invited"
-
-        status = self._writer.update(apply)
+        status = self._writer.update(lambda data: _apply_invite(data, acl, actor, project, user, role, email))
         if status == "granted":
             return {"status": status, "project": project, "user": user, "role": role}
         token = self._invites.issue(user, actor, ttl_s)
@@ -235,8 +265,8 @@ class AccessAdmin:
         grants = acl.grants(user)
         if project not in grants:
             raise AccessError(f"{user} is not a member of {project}")
-        if not acl.is_admin(actor) and any(acl.grants(actor).get(p) != "owner" for p in grants):
-            raise AccessError(f"{user} also has access to projects you do not own")
+        if not acl.is_admin(actor):
+            _require_actor_owns_all(acl, actor, grants, user)
         token = self._invites.issue(user, actor, ttl_s, reset=True)
         return {"status": "reset", "project": project, "user": user, "token": token}
 
@@ -248,11 +278,17 @@ class AccessAdmin:
         if not isinstance(password, str) or len(password) < MIN_PASSWORD_LEN:
             raise AccessError(f"password must be at least {MIN_PASSWORD_LEN} characters")
         hashed = hash_password(password)
+        issuer = self._invites.issuer(token)
 
         def apply(data: dict) -> None:
             u = data.get("users", {}).get(user)
             if u is None or u.get("disabled") or u.get("admin") is True:
                 raise AccessError(_INVALID_INVITATION)
+            # Re-check ownership at redemption: grants may have changed since
+            # the token was issued. Fail closed on unknown/disabled issuer.
+            # A user redeeming a reset they issued for themselves is fine.
+            if not (is_reset and issuer == user):
+                _check_issuer_still_owns(data, issuer, u)
             if u.get("password_hash") and not is_reset:
                 raise AccessError(_INVALID_INVITATION)
             u["password_hash"] = hashed

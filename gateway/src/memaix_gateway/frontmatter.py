@@ -46,12 +46,16 @@ def join(meta: dict, body: str) -> str:
     return f"---\n{front}\n---\n{body}\n"
 
 
-def write_atomic(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+def write_atomic(path: Path, text: str, *, encoding: str = "utf-8", vault: Path | None = None) -> None:
     """Write *text* to *path* atomically (temp file in same dir + os.replace).
 
     Prevents a torn/half-written file if the process dies mid-write; readers
     always see either the old or the new content, never a truncated mix.
     """
+    if vault is not None:
+        from . import vault_fs
+
+        path = vault_fs.check(vault, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:

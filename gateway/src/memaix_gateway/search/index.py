@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from .. import frontmatter as fm
+from .. import vault_fs
 
 # Directories/files that must never be indexed (internal state, secrets, VCS).
 _SKIP_DIR_PARTS = {"_system", ".git", "pm"}
@@ -70,15 +73,17 @@ def index_delete(store, project: str, source_type: str, ref: str) -> None:
 def _is_skippable(vault: Path, path: Path) -> bool:
     if path.name in _SKIP_FILE_NAMES or path.name.startswith("."):
         return True
+    if vault_fs.is_blocked(vault, path, user_facing=True):
+        return True
     parts = path.relative_to(vault).parts
-    return any(p in _SKIP_DIR_PARTS for p in parts)
+    return any(p in _SKIP_DIR_PARTS or p.lower().startswith(".memaix") for p in parts)
 
 
-def _read_text(path: Path) -> str | None:
-    """File text, or None if it cannot be read as text."""
+def _read_text(path: Path, vault: Path) -> str | None:
+    """File text, or None if it cannot be read as text or is off limits."""
     try:
-        return path.read_text()
-    except (UnicodeDecodeError, OSError):
+        return vault_fs.read_text(vault, path, user_facing=True)
+    except (UnicodeDecodeError, OSError, ValueError):
         return None
 
 
@@ -87,10 +92,10 @@ def _index_memory_dir(store, embedder, project: str, vault: Path) -> tuple[int, 
     chunks = sources = 0
     if not memory_dir.is_dir():
         return chunks, sources
-    for p in sorted(memory_dir.rglob("*")):
+    for p in vault_fs.iter_files(vault, memory_dir, recursive=True, user_facing=True):
         if not p.is_file() or _is_skippable(vault, p):
             continue
-        text = _read_text(p)
+        text = _read_text(p, vault)
         if text is None:
             continue
         rel = str(p.relative_to(memory_dir))
@@ -99,34 +104,56 @@ def _index_memory_dir(store, embedder, project: str, vault: Path) -> tuple[int, 
     return chunks, sources
 
 
+def _scalar_str(value, default: str) -> str:
+    """Frontmatter value as a non-empty string; lists, dicts, None -> default.
+
+    A template such as `title: [short title]` parses as a YAML list, which
+    must never reach an SQL parameter.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return default
+    text = str(value).strip()
+    return text or default
+
+
 def _index_backlog_dir(store, embedder, project: str, vault: Path) -> tuple[int, int]:
     backlog_dir = vault / _BACKLOG
     chunks = sources = 0
     if not backlog_dir.is_dir():
         return chunks, sources
-    for p in sorted(backlog_dir.glob("*.md")):
-        text = _read_text(p)
+    for p in vault_fs.iter_files(vault, backlog_dir, "*.md", user_facing=True):
+        text = _read_text(p, vault)
         if text is None:
             continue
-        meta, body = fm.split(text)
-        title = meta.get("title", p.stem)
-        ref = meta.get("id", p.stem)
+        try:
+            meta, body = fm.split(text)
+        except yaml.YAMLError:
+            meta, body = {}, text  # broken frontmatter must not abort the reindex
+        title = _scalar_str(meta.get("title"), p.stem)
+        ref = _scalar_str(meta.get("id"), p.stem)
         chunks += index_upsert(store, embedder, project, _BACKLOG, ref, title, f"{title}\n{body}")
         sources += 1
     return chunks, sources
+
+
+def _purge_reserved_file_rows(store, project: str) -> None:
+    """Drop 'file' rows an older version indexed from reserved paths."""
+    for ref in store.refs(project, "file"):
+        if vault_fs.is_reserved_rel(ref):
+            store.delete(project, "file", ref)
 
 
 def _index_other_files(store, embedder, project: str, vault: Path) -> tuple[int, int]:
     chunks = sources = 0
     if not vault.is_dir():
         return chunks, sources
-    for p in sorted(vault.rglob("*")):
+    for p in vault_fs.iter_files(vault, vault, recursive=True, user_facing=True):
         if not p.is_file() or _is_skippable(vault, p):
             continue
         parts = p.relative_to(vault).parts
         if parts and parts[0] in (_MEMORY, _BACKLOG):
             continue  # already covered by the memory/backlog passes
-        text = _read_text(p)
+        text = _read_text(p, vault)
         if text is None:
             continue
         rel = str(p.relative_to(vault))
@@ -142,6 +169,7 @@ def reindex_project(store, embedder, acl, project: str) -> dict:
     if not vault_str:
         raise ValueError(f"project {project!r} has no vault configured")
     vault = Path(vault_str)
+    _purge_reserved_file_rows(store, project)
     total_chunks = 0
     sources = 0
     for index_pass in (_index_memory_dir, _index_backlog_dir, _index_other_files):

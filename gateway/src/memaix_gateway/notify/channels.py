@@ -69,6 +69,8 @@ class EmailChannel:
         import smtplib
         from email.message import EmailMessage
 
+        from ..tls import verified_context
+
         msg = EmailMessage()
         msg["To"] = self._to
         msg["Subject"] = subject
@@ -87,7 +89,7 @@ class EmailChannel:
         if password is None:
             raise ValueError(f"no password configured for mailbox (project {self._project!r})")
         with smtplib.SMTP(host, port) as s:
-            s.starttls()
+            s.starttls(context=verified_context())
             s.login(cfg.get("user", ""), password)
             s.send_message(msg)
 

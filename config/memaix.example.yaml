@@ -21,9 +21,17 @@ auth:
 #       - "email"
 #       - "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 #       - "https://www.googleapis.com/auth/calendar.events"
-#       # Gmail is deliberately not requested: its scopes are "restricted" and
-#       # need a paid security assessment. Link a Gmail mailbox over IMAP with
-#       # an app password instead (Settings → link mailbox → Gmail).
+#       # Gmail is deliberately NOT in the base scopes: its scopes are
+#       # "restricted" and need a paid security assessment (or a Testing-mode
+#       # app with named test users). Link a Gmail mailbox over IMAP with
+#       # an app password instead (Settings → link mailbox → Gmail), or opt in
+#       # per link with account_link(capabilities=["mail"]) below.
+#     # Extra scopes requested ONLY when a link asks for that capability, so
+#     # calendar-only links never see a Gmail consent. Read-only on purpose:
+#     # never add gmail.compose/gmail.send/gmail.modify here.
+#     capability_scopes:
+#       mail:
+#         - "https://www.googleapis.com/auth/gmail.readonly"
 #   microsoft:
 #     client_id: "YOUR_AZURE_APP_CLIENT_ID"
 #     client_secret_ref: "env:MICROSOFT_CLIENT_SECRET"

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import frontmatter as fm
+from .. import vault_fs
 from ..paths import validate_id
 
 VALID_STATUSES = frozenset(
@@ -51,9 +52,9 @@ def list_backlog(vault: Path) -> list[dict]:
     if not bl.is_dir():
         return []
     cards = []
-    for p in sorted(bl.glob("*.md")):
+    for p in vault_fs.iter_files(vault, bl, "*.md"):
         try:
-            meta, _ = _split_fm(p.read_text(encoding="utf-8"))
+            meta, _ = _split_fm(vault_fs.read_text(vault, p))
             if meta.get("id"):
                 cards.append(_card_view(meta))
         except Exception:
@@ -73,10 +74,10 @@ def get_item(vault: Path, item_id: str) -> dict | None:
     except ValueError:
         return None
     path = vault / "backlog" / f"{item_id}.md"
-    if not path.exists():
+    if not vault_fs.exists(vault, path):
         return None
     try:
-        meta, body = _split_fm(path.read_text(encoding="utf-8"))
+        meta, body = _split_fm(vault_fs.read_text(vault, path))
         result = {
             k: v.isoformat() if isinstance(v, datetime) else v
             for k, v in meta.items()
@@ -98,9 +99,9 @@ def write_status(vault: Path, item_id: str, new_status: str, expected_version: i
         raise ValueError(f"invalid status: {new_status!r}")
     validate_id(item_id, kind="item id")
     path = vault / "backlog" / f"{item_id}.md"
-    if not path.exists():
+    if not vault_fs.exists(vault, path):
         raise FileNotFoundError(f"item not found: {item_id}")
-    text = path.read_text(encoding="utf-8")
+    text = vault_fs.read_text(vault, path)
     meta, body = _split_fm(text)
     current_version = int(meta.get("version", 1))
     if expected_version is not None and current_version != expected_version:
@@ -109,7 +110,7 @@ def write_status(vault: Path, item_id: str, new_status: str, expected_version: i
     meta["status"] = new_status
     meta["version"] = current_version + 1
     meta["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    fm.write_atomic(path, fm.join(meta, body))
+    fm.write_atomic(path, fm.join(meta, body), vault=vault)
     card = _card_view(meta)
     card["_old_status"] = old_status
     return card
@@ -122,9 +123,9 @@ def list_sprints(vault: Path) -> tuple[list[dict], str | None]:
         return [], None
     sprints = []
     active_id = None
-    for p in sorted(sprint_dir.glob("*.md"), reverse=True):
+    for p in reversed(vault_fs.iter_files(vault, sprint_dir, "*.md")):
         try:
-            meta, _ = _split_fm(p.read_text(encoding="utf-8"))
+            meta, _ = _split_fm(vault_fs.read_text(vault, p))
             sprint_id = meta.get("id", p.stem)
             status = meta.get("status", "planned")
             items = meta.get("items") or []

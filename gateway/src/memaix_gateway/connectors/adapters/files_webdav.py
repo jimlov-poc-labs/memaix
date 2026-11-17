@@ -16,7 +16,7 @@ be for the local vault.
 
 from __future__ import annotations
 
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import defusedxml.ElementTree as ET
 
@@ -34,9 +34,34 @@ class FileTooLarge(ValueError):
     """Download exceeds MAX_DOWNLOAD_BYTES."""
 
 
-def _safe_rel(path: str) -> str:
+MAX_PATH_CHARS = 1024
+
+
+def _safe_rel(path: str, *, allow_root: bool = False) -> str:
+    """Validate a WebDAV path and return it percent-encoded for the URL.
+
+    Only a listing may address the collection root (allow_root); read/write
+    of "" or "/" is refused. Backslash, control characters, NUL, empty,
+    "." and ".." segments and over-long paths are refused. Every other
+    character -- including literal %, ? and # -- is legitimate in a file name
+    and is encoded (quote), so a client-sent "%2e%2e" becomes the literal
+    name "%252e%252e" and can never act as traversal.
+    """
+    if not isinstance(path, str):
+        raise ValueError("path must be a string")
+    if len(path) > MAX_PATH_CHARS:
+        raise ValueError("path too long")
     p = (path or "/").strip("/")
-    return validate_relative_path(p) if p else ""
+    if not p:
+        if allow_root:
+            return ""
+        raise ValueError("path cannot be empty")
+    validate_relative_path(p)
+    if "\\" in p or any(ord(c) < 32 or ord(c) == 127 for c in p):
+        raise ValueError(f"path contains forbidden characters: {path!r}")
+    if any(seg in ("", ".", "..") for seg in p.split("/")):
+        raise ValueError(f"invalid path segment: {path!r}")
+    return quote(p, safe="/")
 
 
 class WebDavFilesAdapter:
@@ -57,7 +82,7 @@ class WebDavFilesAdapter:
         return requests.request(method, url, auth=(self._username, self._password), timeout=15, **kwargs)
 
     def list_files(self, path: str = "/") -> list[dict]:
-        rel = _safe_rel(path)
+        rel = _safe_rel(path, allow_root=True)
         body = (
             '<?xml version="1.0"?><d:propfind xmlns:d="DAV:">'
             "<d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>"
@@ -138,7 +163,11 @@ class WebDavFilesAdapter:
         return f"ok: {path}"
 
     def _walk(self, path: str):
-        for entry in self.list_files(path):
+        try:
+            entries = self.list_files(path)
+        except Exception:
+            return  # one unreadable/invalid directory never kills the search
+        for entry in entries:
             child = f"{path.rstrip('/')}/{entry['name']}" if path not in ("", "/") else f"/{entry['name']}"
             if entry["type"] == "dir":
                 yield from self._walk(child)
@@ -146,6 +175,7 @@ class WebDavFilesAdapter:
                 yield {"path": child, "size": entry["size"]}
 
     def search_files(self, query: str, path: str = "/") -> list[dict]:
+        _safe_rel(path, allow_root=True)  # bad start path fails loudly
         lq = query.lower()
         results = []
         for entry in self._walk(path):

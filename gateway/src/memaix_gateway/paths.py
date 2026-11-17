@@ -16,6 +16,8 @@ import re
 import tempfile
 from pathlib import Path
 
+from . import vault_fs
+
 
 def data_dir() -> Path:
     """Return the base directory for memaix runtime data files.
@@ -53,7 +55,7 @@ def validate_id(value: str, *, kind: str = "id") -> str:
     return value
 
 
-def validate_relative_path(path: str, *, kind: str = "path") -> str:
+def validate_relative_path(path: str, *, kind: str = "path", forbid_git: bool = False) -> str:
     """Validate a multi-segment relative path (e.g. a note like "a/b.md").
 
     Must be relative, non-empty, and contain no ".." components or NUL bytes.
@@ -64,6 +66,10 @@ def validate_relative_path(path: str, *, kind: str = "path") -> str:
         raise ValueError(f"{kind} must be relative: {path!r}")
     if ".." in Path(path).parts:
         raise ValueError(f"{kind} cannot contain '..': {path!r}")
+    # forbid_git: for paths inside a git-backed vault, never name git or
+    # gateway state. The list and its normalisation live in vault_fs only.
+    if forbid_git and vault_fs.is_reserved_rel(path, root_state=False):
+        raise ValueError(f"{kind} is reserved: {path!r}")
     return path
 
 

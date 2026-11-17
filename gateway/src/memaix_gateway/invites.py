@@ -62,6 +62,17 @@ class InviteStore:
             return None
         return row[0], bool(row[2])
 
+    def issuer(self, token: str) -> str | None:
+        """Return who issued a live token (None if unknown or expired)."""
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT created_by, expires_at FROM invites WHERE token_hash = ?",
+                (_digest(token),),
+            ).fetchone()
+        if row is None or row[1] < time.time():
+            return None
+        return row[0]
+
     def peek(self, token: str) -> str | None:
         """Return the user id for a live token without consuming it."""
         found = self.lookup(token)

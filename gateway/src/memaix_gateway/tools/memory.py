@@ -82,7 +82,7 @@ def set_note_status(content: str, status: str) -> str:
 
 
 def _validate_note_path(note: str) -> None:
-    validate_relative_path(note, kind="note path")
+    validate_relative_path(note, kind="note path", forbid_git=True)
 
 
 def _get_store(acl: Acl, project: str) -> MemoryStore:

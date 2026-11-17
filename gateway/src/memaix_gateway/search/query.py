@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from .. import vault_fs
+from ..acl import AccessDenied
+
 _ROLES = ("reader", "collaborator", "owner")
 _NEED_FOR_SOURCE: dict[str, str] = {
     "memory": "reader", "file": "collaborator", "backlog": "reader", "nc_file": "collaborator",
@@ -31,6 +34,8 @@ def _rank(role: str | None) -> int:
 
 def _scoped_projects(acl, user: str, projects: list[str] | None, source_type: str) -> list[str]:
     """Projects the user may search this source_type in (role-gated)."""
+    if acl.is_disabled(user):
+        return []  # kill-switch, same as Acl.enforce
     need = _NEED_FOR_SOURCE.get(source_type, "reader")
     grants = acl.grants(user)
     candidates = set(projects) if projects else set(grants.keys())
@@ -119,12 +124,24 @@ def _search_cfg(cfg: dict | None) -> dict:
     return ((cfg or {}).get("memaix", {}) or {}).get("search", {})
 
 
+def _is_reserved_hit(item: dict) -> bool:
+    """Fail-closed query-time filter: rows indexed before the guard existed
+    (or by a path that missed it) must not surface. `file` refs are
+    vault-relative; `memory` refs are relative to memory/ (git names only)."""
+    st, ref = item.get("source_type"), item.get("ref")
+    if st not in ("file", "memory"):
+        return False
+    if not isinstance(ref, str):
+        return True
+    return vault_fs.is_reserved_rel(ref, root_state=(st == "file"))
+
+
 def _lexical_hits(store, scoped_by_source: dict[str, list[str]], query: str, limit: int) -> list[dict]:
     hits: list[dict] = []
     for st in _SOURCE_TYPES:
         ps = scoped_by_source[st]
         if ps:
-            hits.extend(store.fts_search(ps, [st], query, limit * 3))
+            hits.extend(h for h in store.fts_search(ps, [st], query, limit * 3) if not _is_reserved_hit(h))
     return hits
 
 
@@ -138,7 +155,7 @@ def _semantic_hits(
         if not ps:
             continue
         candidates = store.candidates(ps, [st], max_candidates)
-        hits.extend(_cosine_topk(query_vec, candidates, limit * 3))
+        hits.extend(_cosine_topk(query_vec, [c for c in candidates if not _is_reserved_hit(c)], limit * 3))
     return hits
 
 
@@ -192,6 +209,10 @@ def search_all(
     as email_list). Left None by default (opt-in — no live network calls
     unless the caller wires one up).
     """
+    # Kill-switch: search has no single project to enforce on, so deny a
+    # disabled user up front (mirrors Acl.enforce) before touching the index.
+    if acl.is_disabled(user):
+        raise AccessDenied(f"{user} is disabled")
     search_cfg = _search_cfg(cfg)
     max_candidates = search_cfg.get("max_candidates", 500)
 

@@ -196,6 +196,47 @@ def test_reindex_backlog_frontmatter_and_fallbacks(tmp_path, store):
     assert "Titel ett\nbody ett" in hits[0]["text"]
 
 
+@pytest.mark.parametrize(
+    "front",
+    [
+        "title: [short title]\nid: [x, y]",
+        "title: {a: 1}\nid: {b: 2}",
+        "title:\nid:",
+        "title: ''\nid: ''",
+        "title: true\nid: false",
+    ],
+)
+def test_reindex_backlog_template_with_non_string_frontmatter(tmp_path, store, front):
+    """backlog/TEMPLATE.md has `title: [short title]` (a YAML list): must not
+    reach SQL, and the rest of the reindex must still run."""
+    v = tmp_path / "v"
+    (v / "backlog").mkdir(parents=True)
+    (v / "backlog" / "TEMPLATE.md").write_text(f"---\n{front}\n---\nmall\n")
+    (v / "backlog" / "card1.md").write_text("---\nid: BL-1\ntitle: Titel ett\n---\nbody ett\n")
+    (v / "other.txt").write_text("efter")
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result == {"chunks": 3, "sources": 3}
+    rows = _rows(store)
+    assert ("backlog", "BL-1", "Titel ett", 1) in rows
+    assert ("backlog", "TEMPLATE", "TEMPLATE", 1) in rows
+    assert ("file", "other.txt", "other.txt", 1) in rows
+
+
+@pytest.mark.parametrize("front", ["title: [unclosed", "title: 'x\nid: : :", "a: b: c"])
+def test_reindex_backlog_broken_frontmatter_does_not_abort(tmp_path, store, front):
+    v = tmp_path / "v"
+    (v / "backlog").mkdir(parents=True)
+    (v / "backlog" / "broken.md").write_text(f"---\n{front}\n---\nkroppen\n")
+    (v / "backlog" / "card1.md").write_text("---\nid: BL-1\ntitle: Titel ett\n---\nbody ett\n")
+    (v / "other.txt").write_text("efter")
+    result = reindex_project(store, None, _acl_for(v), "proj")
+    assert result["sources"] == 3
+    rows = _rows(store)
+    assert ("backlog", "BL-1", "Titel ett", 1) in rows
+    assert ("backlog", "broken", "broken", 1) in rows
+    assert ("file", "other.txt", "other.txt", 1) in rows
+
+
 def test_reindex_files_skip_rules_and_unreadable(tmp_path, store):
     v = tmp_path / "v"
     for d in ("memory", "backlog", "_system", "pm", ".git", "docs/pm", "docs/deep"):
@@ -246,3 +287,59 @@ def test_reindex_is_idempotent(tmp_path, store):
     second = reindex_project(store, None, _acl_for(v), "proj")
     assert first == second == {"chunks": 1, "sources": 1}
     assert _rows(store) == [("memory", "a.md", "a.md", 1)]
+
+
+# ---------------------------------------------------------------------------
+# Per-user/system state must never reach the search index (B1).
+# ---------------------------------------------------------------------------
+
+from memaix_gateway.search.query import search_all  # noqa: E402
+from memaix_gateway.vault_fs import RESERVED_ROOT as _RESERVED_ROOT  # noqa: E402
+
+
+@pytest.mark.parametrize("root", sorted(_RESERVED_ROOT))
+def test_reindex_skips_every_reserved_root(store, embedder, acl, vault, root):
+    d = vault / root
+    d.mkdir(exist_ok=True)
+    (d / "bob.json").write_text('{"url": "https://cal.example/TOPSECRETTOKEN.ics"}')
+    reindex_project(store, embedder, acl, "proj")
+    assert store.fts_search(["proj"], ["file"], "TOPSECRETTOKEN", 10) == []
+    assert all(not r.startswith(root) for r in store.refs("proj", "file"))
+
+
+def test_search_all_does_not_return_per_user_state(tmp_path):
+    v = tmp_path / "v"
+    (v / "calendar_sources").mkdir(parents=True)
+    (v / "calendar_sources" / "bob.json").write_text("https://cal.example/TOPSECRETTOKEN.ics")
+    (v / "ok.txt").write_text("harmless")
+    acl = Acl(
+        users={"bob": {"grants": {"p": "owner"}}, "mallory": {"grants": {"p": "collaborator"}}},
+        projects={"p": {"vault": str(v)}},
+    )
+    st = EmbeddingStore.for_path(tmp_path / "i.db")
+    em = FakeEmbedder(dim=32)
+    reindex_project(st, em, acl, "p")
+    res = search_all(acl, "mallory", None, st, em, "TOPSECRETTOKEN")
+    assert "TOPSECRETTOKEN" not in str(res["results"])
+
+
+def test_reindex_purges_rows_indexed_by_older_version(tmp_path):
+    v = tmp_path / "v"
+    v.mkdir()
+    (v / "ok.txt").write_text("harmless")
+    acl = Acl(users={"a": {"grants": {"p": "owner"}}}, projects={"p": {"vault": str(v)}})
+    st = EmbeddingStore.for_path(tmp_path / "i.db")
+    index_upsert(st, None, "p", "file", "calendar_sources/bob.json", "t", "LEAKEDTOKEN")
+    index_upsert(st, None, "p", "file", "Booking_Settings/bob.json", "t", "LEAKEDTOKEN")
+    reindex_project(st, None, acl, "p")
+    assert st.fts_search(["p"], ["file"], "LEAKEDTOKEN", 10) == []
+    assert st.refs("p", "file") == ["ok.txt"]
+
+
+def test_incremental_files_write_index_skips_reserved():
+    from memaix_gateway import server
+
+    h = server._index_files_write
+    assert h(None, "u", "p", ("calendar_sources/bob.json", "x"), {}, "ok") is None
+    assert h(None, "u", "p", ("./Working_Hours/bob.json", "x"), {}, "ok") is None
+    assert h(None, "u", "p", ("notes.md", "x"), {}, "ok") is not None

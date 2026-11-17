@@ -19,7 +19,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import gitvault
+from .. import gitvault, vault_fs
 
 # FTS5 metacharacters that indicate an already-structured query: quotes,
 # parentheses, prefix-match wildcard, column filter colon, caret (initial
@@ -150,6 +150,8 @@ class MemoryStore:
         we know nothing about.
         """
         gi = self.vault / ".gitignore"
+        if gi.is_symlink():
+            return  # never append through a link
         present = gi.read_text().splitlines() if gi.exists() else []
         missing = [pattern for pattern in self._IGNORED if pattern not in present]
         if not missing:
@@ -243,9 +245,7 @@ class MemoryStore:
         """Write note to disk + SQLite + git.  Returns git commit hash."""
         now = datetime.now(timezone.utc).isoformat()
         with self.write_lock:
-            target = self.memory_dir / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
+            vault_fs.write_text(self.vault, self.memory_dir / path, content)
             self._conn.execute(
                 "INSERT INTO notes (path, content, updated_at) VALUES (?, ?, ?)"
                 " ON CONFLICT(path) DO UPDATE SET"

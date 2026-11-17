@@ -11,6 +11,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from ...acl import AccessDenied
 from .. import routes as w
 
 
@@ -36,8 +37,11 @@ def api_search(request: Request) -> JSONResponse:
     from ...search.query import search_all as _search_all
     from ...server import _get_search_embedder, _get_search_store
 
-    result = _search_all(
-        w._get_acl(), user, config.load(), _get_search_store(), _get_search_embedder(),
-        query, [project] if project else None, limit,
-    )
+    try:
+        result = _search_all(
+            w._get_acl(), user, config.load(), _get_search_store(), _get_search_embedder(),
+            query, [project] if project else None, limit,
+        )
+    except AccessDenied:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(result)
