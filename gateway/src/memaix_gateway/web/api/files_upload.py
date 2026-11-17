@@ -28,9 +28,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import weakref
 import tempfile
 import time
+import weakref
 from urllib.parse import unquote
 
 import requests
