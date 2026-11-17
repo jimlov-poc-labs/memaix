@@ -67,6 +67,20 @@
         }
     }
 
+    # Skriptuppladdning av filer (PUT /api/files/{projekt}/{sökväg}). Gatewayen
+    # tillåter 10 MB; taket här är lite högre så att ett för stort anrop stoppas
+    # redan i proxyn (413) innan kroppen når gatewayen, men en fil som är exakt
+    # på gränsen inte klipps av. Gatewayen kontrollerar själv och mäter
+    # byteantalet under strömning, så detta är ett extra skal, inte enda skyddet.
+    handle /api/files/* {
+        request_body {
+            max_size 11MB
+        }
+        reverse_proxy gateway:8080 {
+            import retry_upstream
+        }
+    }
+
     # Allt annat → memaix gateway (MCP + health + account_link-callback)
     handle {
         reverse_proxy gateway:8080 {

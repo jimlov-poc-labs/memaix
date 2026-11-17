@@ -421,6 +421,7 @@ from .api import admin_write as _api_admin_write  # noqa: E402
 from .api import booking as _api_booking  # noqa: E402
 from .api import brief as _api_brief  # noqa: E402
 from .api import files as _api_files  # noqa: E402
+from .api import files_upload as _api_files_upload  # noqa: E402
 from .api import memory as _api_memory  # noqa: E402
 from .api import mfa as _api_mfa  # noqa: E402
 from .api import outbox as _api_outbox  # noqa: E402
@@ -488,6 +489,8 @@ web_routes = [
     # Project files in Nextcloud (/app/files), read-only
     Route("/app/api/files", _api_files.api_files_list, methods=["GET"]),
     Route("/app/api/files/download", _api_files.api_files_download, methods=["GET"]),
+    # Script upload (bearer JWT of a service client, not the session cookie)
+    Route("/api/files/{project}/{path:path}", _api_files_upload.api_files_upload, methods=["PUT"]),
     Route("/app/board/frame", app_board_frame, methods=["GET"]),
     Route("/app/static/{path:path}", app_static, methods=["GET"]),
     Route("/app/invite/{token:str}", _invite.invite_page, methods=["GET", "POST"]),

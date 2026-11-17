@@ -34,6 +34,15 @@ class FileTooLarge(ValueError):
     """Download exceeds MAX_DOWNLOAD_BYTES."""
 
 
+class FileExists(Exception):
+    """put_stream refused to overwrite an existing file."""
+
+
+# Longer than the 15 s default: a 10 MB upload over a slow link legitimately
+# takes a while. (connect, read) as requests expects.
+PUT_STREAM_TIMEOUT = (10, 120)
+
+
 MAX_PATH_CHARS = 1024
 
 
@@ -79,7 +88,8 @@ class WebDavFilesAdapter:
             return self._http.request(method, url, **kwargs)
         import requests
 
-        return requests.request(method, url, auth=(self._username, self._password), timeout=15, **kwargs)
+        kwargs.setdefault("timeout", 15)
+        return requests.request(method, url, auth=(self._username, self._password), **kwargs)
 
     def list_files(self, path: str = "/") -> list[dict]:
         rel = _safe_rel(path, allow_root=True)
@@ -159,6 +169,34 @@ class WebDavFilesAdapter:
         FilesBackend text-only surface nc_files_write exposes."""
         rel = _safe_rel(path)
         resp = self._request("PUT", rel, data=data)
+        resp.raise_for_status()
+        return f"ok: {path}"
+
+    def put_stream(self, path: str, fileobj, size: int) -> str:
+        """Create a new file from a seekable binary file object, never
+        overwriting: missing parent folders are created with MKCOL and the PUT
+        carries ``If-None-Match: *``, so an existing file makes the server answer
+        412 and this raises FileExists. The body is streamed from *fileobj* with
+        an explicit Content-Length (not chunked), never loaded into memory.
+        write_binary stays as it was (docgen overwrites on purpose)."""
+        rel = _safe_rel(path)
+        if not isinstance(size, int) or size < 0:
+            raise ValueError("size must be a non-negative integer")
+        parts = rel.split("/")
+        for i in range(1, len(parts)):
+            resp = self._request("MKCOL", "/".join(parts[:i]), timeout=PUT_STREAM_TIMEOUT)
+            if resp.status_code != 405:  # 405 = the collection already exists
+                resp.raise_for_status()
+        fileobj.seek(0)
+        resp = self._request(
+            "PUT",
+            rel,
+            data=fileobj,
+            headers={"If-None-Match": "*", "Content-Length": str(size)},
+            timeout=PUT_STREAM_TIMEOUT,
+        )
+        if resp.status_code == 412:
+            raise FileExists(rel)
         resp.raise_for_status()
         return f"ok: {path}"
 
