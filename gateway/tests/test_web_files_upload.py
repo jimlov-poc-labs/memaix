@@ -9,7 +9,9 @@ are in under FastMCP."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 import time
 from types import SimpleNamespace
 
@@ -77,6 +79,7 @@ def rig(monkeypatch, tmp_path):
             "users": {
                 "uploader": {"grants": {"proj": "collaborator", "other": "reader"}},
                 "viewer": {"grants": {"proj": "reader"}},
+                "root": {"admin": True, "grants": {}},
                 "alice": {"oauth_subjects": ["alice"], "grants": {"proj": "owner"}},
             },
             "projects": {"proj": {"vault": "/v/p"}, "other": {"vault": "/v/o"}, "third": {"vault": "/v/t"}},
@@ -85,6 +88,7 @@ def rig(monkeypatch, tmp_path):
                 "svc-no-tool": {"acts_as": "uploader", "tools": ["email_search"], "projects": ["proj"]},
                 "svc-empty": {"acts_as": "uploader", "tools": [], "projects": []},
                 "svc-reader": {"acts_as": "viewer", "tools": [up.TOOL_NAME], "projects": ["proj"]},
+                "svc-admin": {"acts_as": "root", "tools": [up.TOOL_NAME], "projects": ["proj"]},
                 "svc-third": {"acts_as": "uploader", "tools": [up.TOOL_NAME], "projects": ["third"]},
             },
         }
@@ -475,3 +479,119 @@ def test_put_stream_other_error_raises_and_bad_path_rejected():
         ad.put_stream("a.png", _spool(), 3)
     with pytest.raises(ValueError):
         ad.put_stream("../a.png", _spool(), 3)
+
+
+# ------------------------------------------------------------------ review round 1
+
+
+def test_admin_acts_as_denied_even_with_tools_and_projects(rig):
+    r = put(rig, token=mint(sub="svc-admin"))
+    assert r.status_code == 403 and r.json() == {"error": "forbidden"}
+    assert rig.backend.puts == [] and rig.used == []
+    assert "admin" in audit_rows(rig)[-1][4] and audit_rows(rig)[-1][3] == 0
+
+
+def test_alg_none_token_401(rig):
+    token = jwt.encode({"sub": CLIENT, "iss": ISS, "aud": AUD, "exp": int(time.time()) + 600}, None, algorithm="none")
+    assert put(rig, token=token).status_code == 401
+
+
+def test_hs256_token_401(rig):
+    token = jwt.encode(
+        {"sub": CLIENT, "iss": ISS, "aud": AUD, "exp": int(time.time()) + 600}, "x" * 40, algorithm="HS256"
+    )
+    assert put(rig, token=token).status_code == 401
+
+
+def test_get_and_post_405(rig):
+    h = {"Authorization": f"Bearer {mint()}"}
+    assert rig.client.get("/api/files/proj/a.png", headers=h).status_code == 405
+    assert rig.client.post("/api/files/proj/a.png", content=PNG, headers=h).status_code == 405
+
+
+def test_throttled_and_unauthorised_flood_does_not_fill_audit(rig):
+    for _ in range(30):
+        put(rig, token=mint(sub="alice"))  # valid token, not a service client
+    denied = [r for r in audit_rows(rig) if r[3] == 0]
+    assert len(denied) == up.RATE_LIMIT  # the rest were throttled and not audited
+    assert put(rig, token=mint(sub="alice")).status_code == 429
+
+
+def _async_client(rig):
+    import httpx
+
+    app = Starlette(routes=web_routes_mod.web_routes)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+
+
+def test_slow_body_times_out_408_and_is_audited(rig, monkeypatch):
+    monkeypatch.setattr(up, "BODY_TIMEOUT_S", 0.2)
+
+    async def hang():
+        yield PNG[:10]
+        await asyncio.sleep(5)
+        yield PNG[10:]
+
+    async def run():
+        async with _async_client(rig) as c:
+            return await c.put(
+                "/api/files/proj/a.png",
+                content=hang(),
+                headers={"Authorization": f"Bearer {mint()}", "Content-Length": str(len(PNG))},
+            )
+
+    r = asyncio.run(run())
+    assert r.status_code == 408 and r.json() == {"error": "timeout"}
+    assert rig.backend.puts == []
+    assert audit_rows(rig)[-1][3:] == (0, "denied: timeout")
+
+
+def test_concurrency_cap_fifth_gets_503_and_slots_are_released(rig, monkeypatch):
+    monkeypatch.setattr(up, "SLOT_WAIT_S", 0.05)
+    gate = threading.Event()
+    entered = threading.Semaphore(0)
+    original = rig.backend.put_stream
+
+    def blocking(path, fileobj, size):
+        entered.release()
+        gate.wait(10)
+        return original(path, fileobj, size)
+
+    rig.backend.put_stream = blocking
+
+    async def one(c, i):
+        return await c.put(
+            f"/api/files/proj/f{i}.png", content=PNG, headers={"Authorization": f"Bearer {mint()}"}
+        )
+
+    async def run():
+        async with _async_client(rig) as c:
+            tasks = [asyncio.create_task(one(c, i)) for i in range(up.MAX_CONCURRENT_UPLOADS)]
+            for _ in range(up.MAX_CONCURRENT_UPLOADS):
+                assert await asyncio.to_thread(entered.acquire, True, 5)
+            fifth = await one(c, 99)
+            gate.set()
+            first = await asyncio.gather(*tasks)
+            after = await one(c, 100)  # every slot was released
+            return fifth, first, after
+
+    fifth, first, after = asyncio.run(run())
+    assert fifth.status_code == 503 and fifth.headers["Retry-After"] == "5"
+    assert [r.status_code for r in first] == [201] * up.MAX_CONCURRENT_UPLOADS
+    assert after.status_code == 201
+
+
+def test_slot_released_when_backend_raises(rig, monkeypatch):
+    rig.backend.error = requests.ConnectionError("down")
+
+    async def run():
+        async with _async_client(rig) as c:
+            codes = []
+            for i in range(up.MAX_CONCURRENT_UPLOADS + 2):
+                r = await c.put(
+                    f"/api/files/proj/f{i}.png", content=PNG, headers={"Authorization": f"Bearer {mint()}"}
+                )
+                codes.append(r.status_code)
+            return codes
+
+    assert asyncio.run(run()) == [502] * (up.MAX_CONCURRENT_UPLOADS + 2)

@@ -25,8 +25,10 @@ carry a short code only: no paths, no upstream detail, no secrets."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import weakref
 import tempfile
 import time
 from urllib.parse import unquote
@@ -48,20 +50,38 @@ RATE_LIMIT = 10  # uploads per window per client
 RATE_WINDOW_S = 60
 ALLOWED_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "pdf"})
 MAX_PATH_CHARS = 1024
+BODY_TIMEOUT_S = 120  # total time allowed for streaming the body in (slow-body guard)
+MAX_CONCURRENT_UPLOADS = 4  # simultaneous uploads to Nextcloud (each holds a pool thread)
+SLOT_WAIT_S = 0.5  # how long a request waits for a free slot before 503
 _HEAD_BYTES = 16
 _SPOOL_MEMORY = 1024 * 1024
 
 
-def _err(code: str, status: int) -> JSONResponse:
-    return JSONResponse({"error": code}, status_code=status, headers={"Cache-Control": "no-store"})
+def _err(code: str, status: int, headers: dict | None = None) -> JSONResponse:
+    return JSONResponse({"error": code}, status_code=status, headers={"Cache-Control": "no-store", **(headers or {})})
+
+
+# One semaphore per running event loop, created on first use (an asyncio
+# primitive must not be shared between loops, and import time has no loop).
+_slots: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _slot_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _slots.get(loop)
+    if sem is None:
+        sem = _slots[loop] = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+    return sem
 
 
 class _Deny(Exception):
-    def __init__(self, code: str, status: int, audit: str = ""):
+    def __init__(self, code: str, status: int, audit: str = "", *, log_audit: bool = True, headers: dict | None = None):
         super().__init__(code)
         self.code = code
         self.status = status
         self.audit = audit or code
+        self.log_audit = log_audit
+        self.headers = headers
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +213,10 @@ def _authorise(acl: Acl, access, project: str) -> ServiceClient:
         raise _Deny("forbidden", 403, f"service client {sc.client_id} lacks {TOOL_NAME}")
     if project not in sc.projects:
         raise _Deny("forbidden", 403, f"service client {sc.client_id} not allowed in this project")
+    # Admin is an implicit owner on every project, so an admin acts_as would
+    # make the project allowlist the only barrier. Refuse it outright.
+    if acl.is_admin(sc.acts_as):
+        raise _Deny("forbidden", 403, f"service client {sc.client_id} acts as an admin")
     try:
         acl.enforce(sc.acts_as, project, "collaborator")
     except AccessDenied as exc:
@@ -231,24 +255,28 @@ async def _spool_body(request: Request, declared: int, ext: str):
     head = b""
     total = 0
     try:
-        async for chunk in request.stream():
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > declared or total > MAX_UPLOAD_BYTES:
-                raise _Deny("too_large", 413, "body longer than declared")
-            if len(head) < _HEAD_BYTES:
-                head += chunk[: _HEAD_BYTES - len(head)]
-                if len(head) >= _HEAD_BYTES and not magic_matches(ext, head):
-                    raise _Deny("bad_content", 415, "content does not match extension")
-            digest.update(chunk)
-            spool.write(chunk)
+        async with asyncio.timeout(BODY_TIMEOUT_S):
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > declared or total > MAX_UPLOAD_BYTES:
+                    raise _Deny("too_large", 413, "body longer than declared")
+                if len(head) < _HEAD_BYTES:
+                    head += chunk[: _HEAD_BYTES - len(head)]
+                    if len(head) >= _HEAD_BYTES and not magic_matches(ext, head):
+                        raise _Deny("bad_content", 415, "content does not match extension")
+                digest.update(chunk)
+                spool.write(chunk)
         if total == 0:
             raise _Deny("empty_file", 400)
         if total != declared:
             raise _Deny("bad_length", 400, "body shorter than declared")
         if not magic_matches(ext, head):
             raise _Deny("bad_content", 415, "content does not match extension")
+    except TimeoutError as exc:
+        spool.close()
+        raise _Deny("timeout", 408, "denied: timeout") from exc
     except BaseException:
         spool.close()
         raise
@@ -268,10 +296,13 @@ async def api_files_upload(request: Request) -> JSONResponse:
     try:
         access = await _authenticate(request)
         user = f"sub:{access.subject}"
+        # Per verified subject and BEFORE authorise: a valid but unauthorised
+        # token can then not flood the audit log. Throttled attempts are not
+        # audited for the same reason (server log only).
+        if not _server()._rate_limiter.check(f"upload:{access.subject}", RATE_LIMIT, RATE_WINDOW_S):
+            raise _Deny("rate_limited", 429, log_audit=False)
         sc = _authorise(_server()._get_acl(), access, project)
         user = sc.acts_as
-        if not _server()._rate_limiter.check(f"upload:{sc.client_id}", RATE_LIMIT, RATE_WINDOW_S):
-            raise _Deny("rate_limited", 429)
         declared = _declared_length(request)
         try:
             rel = normalise_path(raw_path)
@@ -280,11 +311,11 @@ async def api_files_upload(request: Request) -> JSONResponse:
             raise _Deny("bad_path", 400, "rejected path or extension") from exc
         return await _store(request, sc, project, rel, ext, declared)
     except _Deny as deny:
-        if user != "-":  # unauthenticated noise stays out of the audit log
+        if user != "-" and deny.log_audit:  # unauthenticated/throttled noise stays out of the audit log
             _audit(user, project, False, deny.audit)
         else:
             logger.info("files upload refused: %s", deny.code)
-        return _err(deny.code, deny.status)
+        return _err(deny.code, deny.status, deny.headers)
     except Exception:  # noqa: BLE001 - fail closed with a bare code, detail only in the server log
         logger.exception("files upload failed unexpectedly")
         if user != "-":
@@ -298,6 +329,12 @@ async def _store(request: Request, sc: ServiceClient, project: str, rel: str, ex
     if backend is None:
         raise _Deny("no_files", 404, "project has no files area")
     spool, size, sha256 = await _spool_body(request, declared, ext)
+    sem = _slot_semaphore()
+    try:
+        await asyncio.wait_for(sem.acquire(), SLOT_WAIT_S)
+    except TimeoutError as exc:
+        spool.close()
+        raise _Deny("busy", 503, "denied: busy", headers={"Retry-After": "5"}) from exc
     try:
         try:
             await run_in_threadpool(backend.put_stream, rel, spool, size)
@@ -309,6 +346,7 @@ async def _store(request: Request, sc: ServiceClient, project: str, rel: str, ex
             logger.warning("files upload upstream error: %s", type(exc).__name__)
             raise _Deny("upstream_error", 502, "upstream error") from exc
     finally:
+        sem.release()
         spool.close()
     _audit(sc.acts_as, project, True, f"uploaded {rel} ({size} bytes, sha256 {sha256[:12]})")
     return JSONResponse(
