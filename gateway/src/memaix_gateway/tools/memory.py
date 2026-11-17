@@ -203,10 +203,13 @@ def memory_set_status(
     if status not in VALID_STATUS:
         raise ValueError(f"status must be one of {VALID_STATUS}, got {status!r}")
     store = _get_store(acl, project)
-    content = store.read(note)
-    if content is None:
-        raise FileNotFoundError(f"note not found: {note!r}")
-    commit = store.write(note, set_note_status(content, status), user_id)
+
+    def _set(content: str | None) -> str:
+        if content is None:
+            raise FileNotFoundError(f"note not found: {note!r}")
+        return set_note_status(content, status)
+
+    commit = store.update(note, _set, user_id)
     return {"path": note, "commit": commit, "status": status}
 
 

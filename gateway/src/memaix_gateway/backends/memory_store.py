@@ -12,14 +12,36 @@ TODO(perf): batch async git commits via a queue.Queue + background thread
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import subprocess
 import threading
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import gitvault, vault_fs
+
+log = logging.getLogger(__name__)
+
+
+class IndexSyncError(RuntimeError):
+    """A revert was committed in git but the SQLite index could not be fully
+    updated.  The revert is NOT undone; ``failed`` lists the notes whose index
+    row is stale.  Recover with MemoryStore.reindex(path) -- do not revert again."""
+
+    def __init__(self, commit: str, failed: dict[str, str]) -> None:
+        self.commit = commit
+        self.failed = failed
+        detail = "; ".join(f"{p}: {e}" for p, e in failed.items())
+        super().__init__(
+            f"revert was made (committed as {commit}, committad) but indexing failed "
+            f"for {len(failed)} note(s): {detail}. Re-run reindex() for these notes; "
+            "do not revert again."
+        )
+
 
 # FTS5 metacharacters that indicate an already-structured query: quotes,
 # parentheses, prefix-match wildcard, column filter colon, caret (initial
@@ -53,6 +75,12 @@ class MemoryStore:
         self.db_path = self.vault / ".memaix.db"
         self.memory_dir = self.vault / "memory"
         self.write_lock = threading.RLock()
+        # The one sqlite3 connection is shared across threads
+        # (check_same_thread=False), and a connection is not safe for
+        # concurrent use: overlapping calls raise InterfaceError. Every
+        # statement therefore runs under this short lock. It is separate from
+        # write_lock so readers never wait for a git commit.
+        self._db_lock = threading.RLock()
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._conn = self._open_db()
         self._ensure_git()
@@ -176,27 +204,33 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def read(self, path: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT content FROM notes WHERE path = ?", (path,)
-        ).fetchone()
+        with self._db_lock:
+            row = self._conn.execute(
+                "SELECT content FROM notes WHERE path = ?", (path,)
+            ).fetchone()
         return row["content"] if row else None
 
     def list_all(self) -> list[str]:
-        rows = self._conn.execute("SELECT path FROM notes ORDER BY path").fetchall()
+        with self._db_lock:
+            rows = self._conn.execute("SELECT path FROM notes ORDER BY path").fetchall()
         return [r["path"] for r in rows]
 
     def get_updated_at(self, path: str) -> str | None:
-        row = self._conn.execute("SELECT updated_at FROM notes WHERE path = ?", (path,)).fetchone()
+        with self._db_lock:
+            row = self._conn.execute(
+                "SELECT updated_at FROM notes WHERE path = ?", (path,)
+            ).fetchone()
         return row["updated_at"] if row else None
 
     def search(self, query: str) -> list[dict]:
         """FTS5 full-text search.  Returns [{path, snippet}]."""
         try:
-            rows = self._conn.execute(
-                "SELECT path, snippet(notes_fts, 1, '', '', '...', 15) AS snip "
-                "FROM notes_fts WHERE notes_fts MATCH ?",
-                (_fts_or_query(query),),
-            ).fetchall()
+            with self._db_lock:
+                rows = self._conn.execute(
+                    "SELECT path, snippet(notes_fts, 1, '', '', '...', 15) AS snip "
+                    "FROM notes_fts WHERE notes_fts MATCH ?",
+                    (_fts_or_query(query),),
+                ).fetchall()
         except sqlite3.OperationalError:
             return []
         return [{"path": r["path"], "snippet": r["snip"]} for r in rows]
@@ -241,41 +275,130 @@ class MemoryStore:
     # Public write API
     # ------------------------------------------------------------------
 
+    def _index(self, path: str, content: str | None) -> None:
+        """Make SQLite (notes + notes_fts) match *content*; None removes the row.
+
+        A short bounded retry (3 tries) covers "database is locked" from another
+        connection to the same file (e.g. the audit log)."""
+        for attempt in range(3):
+            try:
+                self._index_once(path, content)
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+
+    def _index_once(self, path: str, content: str | None) -> None:
+        with self._db_lock:
+            try:
+                self._conn.execute("DELETE FROM notes_fts WHERE path = ?", (path,))
+                if content is None:
+                    self._conn.execute("DELETE FROM notes WHERE path = ?", (path,))
+                else:
+                    now = datetime.now(timezone.utc).isoformat()
+                    self._conn.execute(
+                        "INSERT INTO notes (path, content, updated_at) VALUES (?, ?, ?)"
+                        " ON CONFLICT(path) DO UPDATE SET"
+                        " content=excluded.content, updated_at=excluded.updated_at",
+                        (path, content, now),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO notes_fts(path, content) VALUES (?, ?)", (path, content)
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def write(self, path: str, content: str, author: str) -> str:
         """Write note to disk + SQLite + git.  Returns git commit hash."""
-        now = datetime.now(timezone.utc).isoformat()
         with self.write_lock:
             vault_fs.write_text(self.vault, self.memory_dir / path, content)
-            self._conn.execute(
-                "INSERT INTO notes (path, content, updated_at) VALUES (?, ?, ?)"
-                " ON CONFLICT(path) DO UPDATE SET"
-                " content=excluded.content, updated_at=excluded.updated_at",
-                (path, content, now),
-            )
-            # Keep standalone FTS in sync
-            self._conn.execute("DELETE FROM notes_fts WHERE path = ?", (path,))
-            self._conn.execute(
-                "INSERT INTO notes_fts(path, content) VALUES (?, ?)", (path, content)
-            )
-            self._conn.commit()
+            self._index(path, content)
             rel = str(Path("memory") / path)
             return self._git_commit([rel], f"memaix: write {path} by {author}")
 
+    def update(self, path: str, fn: Callable[[str | None], str], author: str) -> str:
+        """Atomic read-modify-write: *fn* gets the current content (None if the
+        note is absent) and returns the new content.  The whole cycle holds
+        write_lock, so concurrent updates cannot lose each other's changes.
+        An exception from *fn* aborts without writing."""
+        with self.write_lock:
+            return self.write(path, fn(self.read(path)), author)
+
     def append(self, path: str, text: str, author: str) -> str:
         """Append text to note (creating if absent).  Returns git commit hash."""
-        existing = self.read(path) or ""
-        sep = "\n" if existing and not existing.endswith("\n") else ""
-        return self.write(path, existing + sep + text, author)
+
+        def _add(existing: str | None) -> str:
+            existing = existing or ""
+            sep = "\n" if existing and not existing.endswith("\n") else ""
+            return existing + sep + text
+
+        return self.update(path, _add, author)
 
     def revert(self, commit: str) -> str:
-        """Create a new commit that undoes *commit*.  Returns new commit hash."""
+        """Create a new commit that undoes *commit*.  Returns new commit hash.
+
+        The SQLite index is re-synced from disk for every note the revert
+        touched (a note the revert deleted is removed from the index), so
+        read/search reflect the reverted state.  On a git failure (e.g. a
+        conflict) the revert is aborted and nothing is changed.
+        """
         # Only accept a plain git object hash. This blocks argument injection
         # (a value like "-x" being parsed as a git flag) and stray refspecs.
         if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
             raise ValueError(f"invalid commit hash: {commit!r}")
         with self.write_lock:
-            self._run(["revert", "--no-edit", commit])
+            before = self._current_hash()
+            try:
+                self._run(["revert", "--no-edit", commit])
+            except gitvault.GitError:
+                # Leave no half-finished revert (REVERT_HEAD, conflict markers).
+                self._run(["revert", "--abort"], check=False)
+                raise
             reverted = self._current_hash()
-            if not reverted:
+            if not reverted or reverted == before:
                 raise gitvault.GitError(f"git revert left no commit in {self.vault}")
+            self._resync(reverted)
             return reverted
+
+    def reindex(self, path: str) -> None:
+        """Re-read one note from disk into the index (removes the row if the
+        file is gone).  Recovery after IndexSyncError, without a new revert."""
+        with self.write_lock:
+            target = self.memory_dir / path
+            if target.is_file() and not target.is_symlink():
+                self._index(path, self._read_disk(target, path))
+            else:
+                self._index(path, None)
+
+    @staticmethod
+    def _read_disk(target: Path, note: str) -> str:
+        # errors="replace": a note that is not valid UTF-8 must not block the
+        # rest of the resync.  Indexed lossy (and logged) rather than skipped,
+        # so a stale pre-revert row never survives next to the reverted file.
+        data = target.read_bytes()
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            log.warning("memory note %s is not valid UTF-8; indexing with replacement", note)
+            return data.decode("utf-8", errors="replace")
+
+    def _resync(self, commit: str) -> None:
+        """Bring notes/notes_fts in line with disk for files changed by *commit*."""
+        out = self._run(
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "-z", commit]
+        ).stdout
+        failed: dict[str, str] = {}
+        for rel in filter(None, out.split("\0")):
+            parts = Path(rel).parts
+            if len(parts) < 2 or parts[0] != "memory":
+                continue
+            note = str(Path(*parts[1:]))
+            try:
+                self.reindex(note)
+            except Exception as e:  # noqa: BLE001 - collect, keep indexing the rest
+                failed[note] = f"{type(e).__name__}: {e}"
+        if failed:
+            raise IndexSyncError(commit, failed)
