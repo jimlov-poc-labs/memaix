@@ -291,6 +291,8 @@ def apply_answers(answers: dict, *, open_browser: bool = True) -> None:
     for written in summary["written"]:
         print(f"  ✓ {written}")
     print("     (.env: hemligheter genererade, chmod 600)")
+    if summary.get("notice"):
+        print(f"  ! {summary['notice']}")
 
     # ── Seed vaults ────────────────────────────────────────────────────────────
     for pname in engine.seed_vaults(ROOT, [project_name]):

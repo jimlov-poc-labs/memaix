@@ -8,7 +8,9 @@ just by path checks. The account's password is generated here, written to a
 it is never returned, logged or put in an exception.
 
 Enabled by an optional `nextcloud_provision` block in memaix.yaml
-(docs/SECRETS.md, config/memaix.example.yaml). Without it nothing happens.
+(docs/SECRETS.md, config/memaix.example.yaml). Without it nothing happens,
+unless the top-level `require_files: true` flag is set: then a project can
+only be created with a file area, and a missing block is an error.
 
 Two ways to create the user: `method: ocs` (default; Nextcloud's provisioning
 API, which Nextcloud 32 refuses for app-password logins) or `method: occ_ssh`
@@ -18,6 +20,7 @@ ops/memaix-nc-provision.sh). The password goes over ssh stdin, never argv.
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import secrets
@@ -38,6 +41,12 @@ _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _ALPHABET = string.ascii_letters + string.digits
 _PASSWORD_LEN = 32
 _TIMEOUT_S = 15
+
+
+_MISSING_BLOCK = (
+    "require_files är på men nextcloud_provision saknas i memaix.yaml; "
+    "lägg till nextcloud_provision eller sätt require_files: false"
+)
 
 
 class ProvisionError(Exception):
@@ -63,6 +72,46 @@ def _method(section: dict) -> str:
     if method not in ("ocs", "occ_ssh"):
         raise ProvisionError(f"nextcloud_provision.method must be ocs or occ_ssh, not {method!r}")
     return method
+
+
+def files_required(memaix_cfg: dict | None = None) -> bool:
+    """Value of the top-level `require_files` flag in memaix.yaml (default False).
+
+    Strict: only a real bool is accepted. Anything else ('false', 1, null, ...)
+    raises, so a typo can never silently turn the guarantee on or off."""
+    if memaix_cfg is None:
+        memaix_cfg = config.load()["memaix"]
+    if not isinstance(memaix_cfg, dict):
+        raise ProvisionError("memaix.yaml must be a mapping at the top level")
+    if "require_files" not in memaix_cfg:
+        for key in memaix_cfg:
+            if not isinstance(key, str):
+                continue
+            norm = key.strip().lower().replace("-", "_").replace(" ", "_")
+            if norm == "require_files" or difflib.get_close_matches(norm, ["require_files"], n=1, cutoff=0.85):
+                raise ProvisionError(
+                    f"memaix.yaml has the key {key!r}, which looks like a misspelling of require_files; "
+                    "fix the key name"
+                )
+        return False
+    value = memaix_cfg["require_files"]
+    if not isinstance(value, bool):
+        raise ProvisionError("require_files in memaix.yaml must be true or false (a YAML boolean)")
+    return value
+
+
+def ensure_files_possible() -> None:
+    """Preflight for project creation: nothing is created before this passes.
+
+    No-op unless `require_files` is on; then `nextcloud_provision` must be a
+    complete block, else ProvisionError. Invalid flag values also raise."""
+    memaix_cfg = config.load()["memaix"]
+    if not files_required(memaix_cfg):
+        return
+    section = memaix_cfg.get("nextcloud_provision")
+    if not section or not isinstance(section, dict):
+        raise ProvisionError(_MISSING_BLOCK)
+    _settings(section)
 
 
 def _settings(cfg: dict | None) -> dict | None:
@@ -163,12 +212,16 @@ def provision_project_files(
     """Create the project's Nextcloud account and return its `files:` resource.
 
     `cfg` is the `nextcloud_provision` block (read from memaix.yaml when None).
-    Returns None only when provisioning is not configured. Raises
+    Returns None only when provisioning is not configured and `require_files`
+    is not on (when it is, that is a ProvisionError). Raises
     ProvisionError on any failure — including an account or secret file that
     already exists, which is never overwritten — leaving no new secret file
     behind."""
+    required = files_required()
     settings = _settings(cfg)
     if settings is None:
+        if required:
+            raise ProvisionError(_MISSING_BLOCK)
         return None
     if not isinstance(name, str) or not _NAME.match(name):
         raise ProvisionError(f"invalid project name: {name!r}")

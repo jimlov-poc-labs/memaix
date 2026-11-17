@@ -151,8 +151,9 @@ def _receipt(summary: dict) -> bytes:
     else:
         next_step = (f"<p>Startskriptet reser nu stacken och kör hälsokontrollen. "
                      f"Din connector-URL: <code>{html.escape(summary['public_url'])}</code></p>")
+    notice = f"<p><strong>{html.escape(summary['notice'])}</strong></p>" if summary.get("notice") else ""
     body = (f"<p>✓ Config och hemligheter genererade:</p><ul>{files}</ul>"
-            f"{next_step}"
+            f"{notice}{next_step}"
             f"<p><small>Setup-webben är nu avstängd — den här fliken kan stängas. "
             f"Kör om installationen: starta setup-skriptet igen.</small></p>")
     return _page("Memaix — klart", body)

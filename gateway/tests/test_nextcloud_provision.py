@@ -287,3 +287,75 @@ def test_ssh_timeout_keeps_secret_file_because_the_account_may_exist(cfg_dir):
         provision_project_files("acme", cfg=SSH_CFG, run=run)
     assert _secret_file(cfg_dir).exists()
     assert _secret_file(cfg_dir).read_text() not in str(ei.value)
+
+
+# ------------------------------------------------------------ require_files
+
+
+def _mx(monkeypatch, memaix):
+    monkeypatch.setattr(config, "load", lambda: {"memaix": memaix})
+
+
+def test_require_files_on_without_block_is_an_error(monkeypatch, cfg_dir):
+    _mx(monkeypatch, {"require_files": True})
+    http = _Http()
+    with pytest.raises(ProvisionError, match="require_files.*nextcloud_provision saknas"):
+        provision_project_files("acme", http=http)
+    assert http.calls == [] and not cfg_dir.exists()
+
+
+def test_require_files_on_with_block_provisions(monkeypatch, cfg_dir):
+    _mx(monkeypatch, {"require_files": True, "nextcloud_provision": CFG})
+    assert provision_project_files("acme", http=_Http())["user"] == "memaix-acme"
+
+
+@pytest.mark.parametrize("memaix", [{}, {"require_files": False}])
+def test_require_files_off_or_undefined_keeps_silent_skip(monkeypatch, memaix):
+    _mx(monkeypatch, memaix)
+    assert provision_project_files("acme", http=_Http()) is None
+
+
+@pytest.mark.parametrize("bad", ["false", "true", "False", 1, 0, None, [], {}, ""])
+def test_require_files_must_be_a_real_bool(monkeypatch, cfg_dir, bad):
+    _mx(monkeypatch, {"require_files": bad, "nextcloud_provision": CFG})
+    http = _Http()
+    with pytest.raises(ProvisionError, match="require_files.*true or false"):
+        provision_project_files("acme", http=http)
+    assert http.calls == [] and not cfg_dir.exists()
+
+
+@pytest.mark.parametrize("key", ["require_file", "Require_Files", "require-files", "require_files ", "requires_files"])
+def test_misspelled_require_files_key_fails_closed(monkeypatch, key):
+    _mx(monkeypatch, {key: True, "nextcloud_provision": CFG})
+    with pytest.raises(ProvisionError, match="misspelling of require_files"):
+        provision_project_files("acme", http=_Http())
+    with pytest.raises(ProvisionError, match="misspelling"):
+        np_.ensure_files_possible()
+
+
+@pytest.mark.parametrize("key", ["brand", "nextcloud_provision", "auth", "onboarding", "model", "files"])
+def test_unrelated_keys_do_not_trigger_misspelling_check(key):
+    assert np_.files_required({key: {}}) is False
+
+
+@pytest.mark.parametrize("bad", [None, [], "x", 3])
+def test_non_mapping_memaix_config_fails_closed(bad):
+    with pytest.raises(ProvisionError, match="mapping"):
+        np_.files_required(bad if bad is not None else _NONE)
+
+
+_NONE = object()
+
+
+@pytest.mark.parametrize("block", [None, {}, "x", []])
+def test_preflight_refuses_missing_or_malformed_block(monkeypatch, block):
+    _mx(monkeypatch, {"require_files": True, "nextcloud_provision": block})
+    with pytest.raises(ProvisionError, match="nextcloud_provision saknas"):
+        np_.ensure_files_possible()
+
+
+def test_preflight_is_noop_when_off_and_passes_with_block(monkeypatch):
+    _mx(monkeypatch, {})
+    np_.ensure_files_possible()
+    _mx(monkeypatch, {"require_files": True, "nextcloud_provision": CFG})
+    np_.ensure_files_possible()
