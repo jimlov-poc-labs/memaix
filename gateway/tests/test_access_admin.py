@@ -629,3 +629,42 @@ def test_invite_token_is_bound_to_user_issuer_and_ttl(env):
     assert env.invites.lookup(out["token"]) == ("newbie", False)
     assert env.invites.issuer(out["token"]) == "alice"
     assert set(out) == {"status", "project", "user", "role", "token"}
+
+
+def test_require_files_missing_block_touches_nothing(env, monkeypatch, tmp_path):
+    _with_memaix_cfg(monkeypatch, tmp_path, {"require_files": True})
+    calls = []
+
+    class SpyWriter(AclWriter):
+        def update(self, fn):
+            calls.append("update")
+            return super().update(fn)
+
+    def provisioner(name):
+        calls.append("provision")
+
+    admin = AccessAdmin(SpyWriter(env.path), env.invites, env.vaults, provisioner=provisioner)
+    with pytest.raises(AccessError, match="nextcloud_provision saknas"):
+        admin.create_project(env.acl(), "root", "itsq")
+    assert calls == []
+    assert not (env.vaults / "itsq").exists() and not (tmp_path / "cfg").exists()
+
+
+def test_rollback_failure_does_not_mask_the_original_error(env):
+    from memaix_gateway.nextcloud_provision import ProvisionError
+
+    class BrokenRollback(AclWriter):
+        n = 0
+
+        def update(self, fn):
+            BrokenRollback.n += 1
+            if BrokenRollback.n == 2:
+                raise OSError("disk gone")
+            return super().update(fn)
+
+    def failing(name):
+        raise ProvisionError("Nextcloud refused (OCS status 997)")
+
+    admin = AccessAdmin(BrokenRollback(env.path), env.invites, env.vaults, provisioner=failing)
+    with pytest.raises(AccessError, match="file area.*997"):
+        admin.create_project(env.acl(), "root", "itsq")

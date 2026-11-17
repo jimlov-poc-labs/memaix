@@ -113,4 +113,6 @@ onboarding:
 # `"false"`, 1 or an empty value is rejected, never read as true/false.
 # Projects created by the installer (setup/bootstrap) have no file area either
 # way; the installer prints a notice about it.
+# Write literally true/false: YAML reads no/off/n as false and yes/on as true,
+# and a duplicated key silently keeps the last one.
 # require_files: true

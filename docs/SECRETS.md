@@ -37,6 +37,9 @@ saknas") och projektet skapas inte; ACL och valv rullas tillbaka, och inget Next
 hemlighetsfil skapas. Värdet måste vara ett riktigt YAML-booleskt värde: `"false"`, `1`, tomt eller
 annat avvisas med tydligt fel, aldrig tyst tolkat. Installationen (setup/bootstrap) skapar
 start-projekten utan filarea oavsett flaggan och skriver ut en notis om det.
+Kontrollen sker innan något skapas. En felstavad nyckel (`require_file`, `require-files`) nekas också.
+Skriv alltid `true`/`false`: YAML 1.1 tolkar `no`/`off`/`n` som false och `yes`/`on` som true, så
+`require_files: no` stänger av spärren. Dubbla nycklar i filen tar tyst den sista.
 
 `method: occ_ssh` skapar kontot med `occ user:add` över ssh i stället för OCS. Nextcloud 32 kräver
 bekräftat lösenord för OCS-`addUser`, och ett app-lösenord räknas inte som det (403). SSH-nyckeln

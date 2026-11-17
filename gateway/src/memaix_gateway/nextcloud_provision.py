@@ -20,6 +20,7 @@ ops/memaix-nc-provision.sh). The password goes over ssh stdin, never argv.
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import secrets
@@ -40,6 +41,12 @@ _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _ALPHABET = string.ascii_letters + string.digits
 _PASSWORD_LEN = 32
 _TIMEOUT_S = 15
+
+
+_MISSING_BLOCK = (
+    "require_files är på men nextcloud_provision saknas i memaix.yaml; "
+    "lägg till nextcloud_provision eller sätt require_files: false"
+)
 
 
 class ProvisionError(Exception):
@@ -74,12 +81,37 @@ def files_required(memaix_cfg: dict | None = None) -> bool:
     raises, so a typo can never silently turn the guarantee on or off."""
     if memaix_cfg is None:
         memaix_cfg = config.load()["memaix"]
+    if not isinstance(memaix_cfg, dict):
+        raise ProvisionError("memaix.yaml must be a mapping at the top level")
     if "require_files" not in memaix_cfg:
+        for key in memaix_cfg:
+            if not isinstance(key, str):
+                continue
+            norm = key.strip().lower().replace("-", "_").replace(" ", "_")
+            if norm == "require_files" or difflib.get_close_matches(norm, ["require_files"], n=1, cutoff=0.85):
+                raise ProvisionError(
+                    f"memaix.yaml has the key {key!r}, which looks like a misspelling of require_files; "
+                    "fix the key name"
+                )
         return False
     value = memaix_cfg["require_files"]
     if not isinstance(value, bool):
         raise ProvisionError("require_files in memaix.yaml must be true or false (a YAML boolean)")
     return value
+
+
+def ensure_files_possible() -> None:
+    """Preflight for project creation: nothing is created before this passes.
+
+    No-op unless `require_files` is on; then `nextcloud_provision` must be a
+    complete block, else ProvisionError. Invalid flag values also raise."""
+    memaix_cfg = config.load()["memaix"]
+    if not files_required(memaix_cfg):
+        return
+    section = memaix_cfg.get("nextcloud_provision")
+    if not section or not isinstance(section, dict):
+        raise ProvisionError(_MISSING_BLOCK)
+    _settings(section)
 
 
 def _settings(cfg: dict | None) -> dict | None:
@@ -189,10 +221,7 @@ def provision_project_files(
     settings = _settings(cfg)
     if settings is None:
         if required:
-            raise ProvisionError(
-                "require_files är på men nextcloud_provision saknas i memaix.yaml; "
-                "lägg till nextcloud_provision eller sätt require_files: false"
-            )
+            raise ProvisionError(_MISSING_BLOCK)
         return None
     if not isinstance(name, str) or not _NAME.match(name):
         raise ProvisionError(f"invalid project name: {name!r}")

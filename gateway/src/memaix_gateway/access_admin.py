@@ -12,6 +12,7 @@ Callers must call server.reload_acl() after a successful write.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -20,9 +21,10 @@ from . import gitvault
 from .acl import ROLES, AccessDenied, Acl
 from .cli import hash_password
 from .invites import DEFAULT_TTL_S, InviteStore
-from .nextcloud_provision import ProvisionError, provision_project_files
+from .nextcloud_provision import ProvisionError, ensure_files_possible, provision_project_files
 from .web.acl_writer import AclWriter
 
+log = logging.getLogger(__name__)
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _ADMIN_LOCKED = "a system admin's access cannot be changed here"
 _INVALID_INVITATION = "invalid or expired invitation"
@@ -113,11 +115,13 @@ def _apply_invite(data: dict, acl: Acl, actor: str, project: str, user: str, rol
 class AccessAdmin:
     def __init__(
         self, writer: AclWriter, invites: InviteStore, vaults_dir: Path, provisioner=provision_project_files,
+        preflight=ensure_files_possible,
     ) -> None:
         self._writer = writer
         self._invites = invites
         self._vaults = Path(vaults_dir)
         self._provision = provisioner
+        self._preflight = preflight
 
     # ----------------------------------------------------------- permissions
 
@@ -140,6 +144,14 @@ class AccessAdmin:
         vault = self._vaults / name
         if vault.exists():
             raise AccessError(f"vault directory already exists for {name}")
+        # Fail before anything is created when the file area is required but
+        # cannot be made; the rollback below stays as a second line of defence.
+        try:
+            self._preflight()
+        except ProvisionError as exc:
+            raise AccessError(f"could not create {name}: {exc}") from None
+        except Exception:
+            raise AccessError(f"could not create {name}: unexpected error checking file-area config") from None
 
         def check_and_add(data: dict) -> None:
             projects = data.setdefault("projects", {})
@@ -157,7 +169,10 @@ class AccessAdmin:
             self._build_vault(vault)
             has_files = self._add_files(name)
         except BaseException:
-            self._rollback_project(actor, name, vault)
+            try:
+                self._rollback_project(actor, name, vault)
+            except Exception:
+                log.error("rollback of project %s failed; check acl.yaml and the vault", name)
             raise
         return {"project": name, "vault": str(vault), "owner": actor, "files": has_files}
 
