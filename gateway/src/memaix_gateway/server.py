@@ -2585,7 +2585,8 @@ def _close_mail_backend(backend) -> None:
     if callable(logout):
         try:
             logout()
-        except Exception as exc:  # noqa: BLE001 - best effort, see _with_mail_backend
+        # Best effort, see _with_mail_backend.
+        except Exception as exc:  # noqa: BLE001
             logger.debug("mail logout failed (%s)", type(exc).__name__)
 
 

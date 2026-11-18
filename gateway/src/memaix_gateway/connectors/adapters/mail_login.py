@@ -139,8 +139,62 @@ def _discard(mailbox: Any) -> None:
         client = getattr(mailbox, "client", None)
         if client is not None:
             client.shutdown()
-    except Exception:  # noqa: BLE001 - nothing useful to do with a dead socket
+    # Nothing useful to do with a dead socket.
+    except Exception:  # noqa: BLE001
         pass
+
+
+class _Run:
+    """What one connect_and_login call has used up so far."""
+
+    def __init__(self, account: str, now: Callable[[], float]) -> None:
+        self.account = account
+        self.now = now
+        self.started = now()
+        self.login_calls = 0
+        self.phase = "connect"
+
+
+def _attempt(connect: Callable[[], Any], user: str, password: str, run: _Run) -> Any:
+    """One connection and LOGIN. A half-open connection is closed on failure."""
+    mailbox = None
+    run.phase = "connect"
+    try:
+        mailbox = connect()
+        run.phase = "login"
+        run.login_calls += 1
+        mailbox.login(user, password)
+    except Exception:
+        if mailbox is not None:
+            _discard(mailbox)
+        raise
+    return mailbox
+
+
+def _delay_before_retry(exc: Exception, run: _Run, attempt: int) -> float:
+    """Seconds to wait before the next attempt, or raise: MailAuthFailed for a
+    refusal (never retried), `exc` itself when it is unknown, and
+    MailTemporarilyUnavailable once the tries or the time are used up."""
+    verdict = _classify(exc)
+    if verdict == "auth":
+        _log.warning("mail login refused for %s (%s)", run.account, type(exc).__name__)
+        raise MailAuthFailed(run.account) from None
+    if verdict != "transient":
+        raise exc
+    _log.warning(
+        "mail %s failed in transit for %s (%s), attempt %d of %d",
+        run.phase, run.account, type(exc).__name__, attempt, MAX_ATTEMPTS,
+    )
+    delay = RETRY_BACKOFF_SECONDS[attempt - 1] if attempt <= len(RETRY_BACKOFF_SECONDS) else 0.0
+    if _budget_spent(run, attempt, delay):
+        raise MailTemporarilyUnavailable(run.account) from None
+    return delay
+
+
+def _budget_spent(run: _Run, attempt: int, delay: float) -> bool:
+    out_of_tries = attempt == MAX_ATTEMPTS or (run.phase == "login" and run.login_calls >= MAX_LOGIN_CALLS)
+    out_of_time = run.now() - run.started + delay >= TOTAL_TIMEOUT_SECONDS
+    return out_of_tries or out_of_time
 
 
 def connect_and_login(
@@ -160,36 +214,13 @@ def connect_and_login(
     MailAuthFailed straight away on a refusal, and anything else unchanged.
     """
     wait = sleep or _sleep
-    now = clock or time.monotonic
-    started = now()
-    login_calls = 0
+    run = _Run(account, clock or time.monotonic)
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        mailbox = None
-        phase = "connect"
         try:
-            mailbox = connect()
-            phase = "login"
-            login_calls += 1
-            mailbox.login(user, password)
-        except Exception as exc:  # noqa: BLE001 - classified below, unknown ones re-raised
-            if mailbox is not None:
-                _discard(mailbox)
-            verdict = _classify(exc)
-            if verdict == "auth":
-                _log.warning("mail login refused for %s (%s)", account, type(exc).__name__)
-                raise MailAuthFailed(account) from None
-            if verdict != "transient":
-                raise
-            _log.warning(
-                "mail %s failed in transit for %s (%s), attempt %d of %d",
-                phase, account, type(exc).__name__, attempt, MAX_ATTEMPTS,
-            )
-            delay = RETRY_BACKOFF_SECONDS[attempt - 1] if attempt <= len(RETRY_BACKOFF_SECONDS) else 0.0
-            out_of_tries = attempt == MAX_ATTEMPTS or (phase == "login" and login_calls >= MAX_LOGIN_CALLS)
-            out_of_time = now() - started + delay >= TOTAL_TIMEOUT_SECONDS
-            if out_of_tries or out_of_time:
-                raise MailTemporarilyUnavailable(account) from None
-            wait(delay)
+            mailbox = _attempt(connect, user, password, run)
+        except Exception as exc:  # noqa: BLE001
+            # Classified in _delay_before_retry: unknown errors are re-raised there.
+            wait(_delay_before_retry(exc, run, attempt))
             continue
         _widen_timeout(mailbox)
         return mailbox
@@ -199,5 +230,6 @@ def connect_and_login(
 def _widen_timeout(mailbox: Any) -> None:
     try:
         mailbox.client.sock.settimeout(OPERATION_TIMEOUT_SECONDS)
-    except Exception:  # noqa: BLE001 - a stand-in or closed socket: keep the connect timeout
+    # A stand-in or closed socket: keep the connect timeout.
+    except Exception:  # noqa: BLE001
         pass
