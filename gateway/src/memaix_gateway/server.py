@@ -2516,7 +2516,13 @@ def _mail_backend(project: str, user: str):
     token_store = _get_token_store()
     registry = default_registry()
 
-    sources = registry.get_all(acl, token_store, project, "mail", user)
+    login_failures: list = []
+    sources = registry.get_all(acl, token_store, project, "mail", user, login_failures=login_failures)
+    if not sources and login_failures:
+        # Every source was reached and none could be logged into: raise that
+        # (mail_auth_failed / mail_temporarily_unavailable) rather than
+        # re-deriving it through get(), which would log in all over again.
+        raise login_failures[0][1]
     if not sources:
         # get_all() never raises for "nothing configured/linked" (registry.py's
         # documented contract) — but email_list/read/search callers expect the
@@ -2527,7 +2533,7 @@ def _mail_backend(project: str, user: str):
     from .connectors.adapters.mail_multi import MultiMailBackend, source_address
 
     relink_pending = registry.relink_pending(token_store, project, "mail", user)
-    if len(sources) == 1 and not relink_pending:
+    if len(sources) == 1 and not relink_pending and not login_failures:
         label, adapter = sources[0]
         address = source_address(label)
         if address:
@@ -2539,24 +2545,54 @@ def _mail_backend(project: str, user: str):
                 pass  # an adapter that refuses attributes just keeps the fallback
         return adapter
 
-    return MultiMailBackend(sources, relink_pending)
+    return MultiMailBackend(sources, relink_pending, login_failures)
 
 
-def _with_mail_backend(fn):
+MAIL_TOOL_ROLE = "collaborator"
+
+
+def _with_mail_backend(fn, *, close: bool = False):
     """Wrap a tools.email function so `_imap` is resolved lazily, inside
     _audited's try/except — resolving it eagerly at the call site would move
-    an unconfigured-mailbox ValueError outside the audit-log boundary."""
+    an unconfigured-mailbox ValueError outside the audit-log boundary.
+
+    close=True logs the backend out once `fn` has returned or raised. Only
+    for tools whose result is fully built from the messages before returning
+    (email_list, email_read, email_search): the backend is made for this one
+    call and nothing keeps a reference to it. Attachments, PDF export and
+    drafts keep the old behaviour. A logout error never hides the result or
+    the original error."""
 
     def wrapped(acl, user_id, project, *args, **kwargs):
-        return fn(acl, user_id, project, *args, _imap=_mail_backend(project, user_id), **kwargs)
+        # The gate comes BEFORE any registry lookup, connection or LOGIN: a
+        # caller without the role must not be able to make the gateway log in
+        # to a mailbox (with retries, up to three times per call). Every mail
+        # tool behind this wrapper requires `collaborator` in tools/email.py,
+        # which stays as the second line of defence with the same error type.
+        acl.enforce(user_id, project, MAIL_TOOL_ROLE)
+        backend = _mail_backend(project, user_id)
+        try:
+            return fn(acl, user_id, project, *args, _imap=backend, **kwargs)
+        finally:
+            if close:
+                _close_mail_backend(backend)
 
     return wrapped
+
+
+def _close_mail_backend(backend) -> None:
+    logout = getattr(backend, "logout", None)
+    if callable(logout):
+        try:
+            logout()
+        except Exception as exc:  # noqa: BLE001 - best effort, see _with_mail_backend
+            logger.debug("mail logout failed (%s)", type(exc).__name__)
 
 
 @mcp.tool()
 def email_list(project: str, folder: str = "INBOX", limit: int = 20) -> list:
     """List recent messages in a mailbox folder."""
-    return _tool_call("email_list", project, _with_mail_backend(t_email.email_list), folder, limit)
+    return _tool_call("email_list", project, _with_mail_backend(t_email.email_list, close=True), folder, limit)
 
 
 @mcp.tool()
@@ -2567,7 +2603,7 @@ def email_read(project: str, id: str, mark_seen: bool = False) -> dict:
     read; that is best-effort (a read-only linked account cannot) and never
     makes the read itself fail."""
     return _tool_call(
-        "email_read", project, _with_mail_backend(t_email.email_read), id, mark_seen=mark_seen,
+        "email_read", project, _with_mail_backend(t_email.email_read, close=True), id, mark_seen=mark_seen,
     )
 
 
@@ -2602,7 +2638,7 @@ def email_search(
     """
     return _tool_call(
         "email_search", project,
-        _with_mail_backend(t_email.email_search),
+        _with_mail_backend(t_email.email_search, close=True),
         query, limit,
         since=since, until=until, from_addr=from_addr, folder=folder,
     )

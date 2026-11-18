@@ -44,8 +44,16 @@ def build_mailbox(token: dict):
         raise ValueError("imap token missing required field(s): host, user, password")
 
     from .mail_imap_all import wrap
+    from .mail_login import CONNECT_TIMEOUT_SECONDS, connect_and_login
 
     port = token.get("port")
-    mb = MailBox(host, port=int(port)) if port else MailBox(host)
-    mb.login(user, password)
-    return wrap(mb)
+
+    def connect():
+        if port:
+            return MailBox(host, port=int(port), timeout=CONNECT_TIMEOUT_SECONDS)
+        return MailBox(host, timeout=CONNECT_TIMEOUT_SECONDS)
+
+    # The display name is what the user sees in source_errors; never the
+    # login name unless it is an address (the registry labels it the same way).
+    account = user if "@" in user else "imap"
+    return wrap(connect_and_login(connect, user, password, account=account))

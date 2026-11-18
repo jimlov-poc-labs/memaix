@@ -326,8 +326,9 @@ def test_shared_and_per_user_imap_mailboxes_are_built_wrapped(monkeypatch):
     built = []
 
     class _MailBox(_FakeImapServer):
-        def __init__(self, host, port=993):
+        def __init__(self, host, port=993, timeout=None):
             super().__init__({"INBOX": []})
+            self.timeout = timeout
             built.append(self)
 
         def login(self, user, password):
@@ -345,4 +346,5 @@ def test_shared_and_per_user_imap_mailboxes_are_built_wrapped(monkeypatch):
     assert isinstance(shared, AllFoldersMailBox) and isinstance(personal, AllFoldersMailBox)
     shared.logout()
     assert built[0].logged_out  # everything else passes through
+    assert [b.timeout for b in built] == [30, 30]  # connect timeout set on both paths
     assert wrap(shared) is shared

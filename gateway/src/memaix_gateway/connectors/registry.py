@@ -193,8 +193,28 @@ class ConnectorRegistry:
         resource (a user-added public link, not acl.yaml)."""
         return self._specs.get((capability, type_))
 
+    @staticmethod
+    def _build(spec, label, args, failures):
+        """spec.factory(*args), or None when `failures` is given and the
+        factory raised a mail LOGIN failure (appended there as (label, exc)).
+
+        Opt-in and deliberately narrow: only MailLoginError (a mailbox that
+        refused or could not be reached at LOGIN) is collected. Every other
+        error, an ACL or configuration one included, propagates as before.
+        With failures=None (calendar, booking, mail_accounts) nothing changes.
+        """
+        from .adapters.mail_login import MailLoginError
+
+        try:
+            return spec.factory(*args)
+        except MailLoginError as exc:
+            if failures is None:
+                raise
+            failures.append((label, exc))
+            return None
+
     def _adapters_for_per_user_spec(
-        self, spec, token_store, user, capability, project, acl, resource_cfg
+        self, spec, token_store, user, capability, project, acl, resource_cfg, failures=None
     ) -> list[tuple[str, object]]:
         """One (label, adapter) per scoped account for a per_user spec."""
         provider = spec.provider or spec.type
@@ -204,11 +224,13 @@ class ConnectorRegistry:
             if token is None:
                 continue
             label = f"{spec.type}:{account['account']}"
-            results.append((label, spec.factory(acl, project, user, resource_cfg, token)))
+            adapter = self._build(spec, label, (acl, project, user, resource_cfg, token), failures)
+            if adapter is not None:
+                results.append((label, adapter))
         return results
 
     def _adapter_for_extra_source(
-        self, extra_cfg, base_type, i, token_store, user, capability, project, acl
+        self, extra_cfg, base_type, i, token_store, user, capability, project, acl, failures=None
     ) -> "tuple[str, object] | None":
         """Resolve one entry from resource_cfg['sources'], or None to skip."""
         extra_type = extra_cfg.get("type", base_type)
@@ -225,9 +247,12 @@ class ConnectorRegistry:
             if token is None:
                 return None
         label = extra_cfg.get("label") or f"{extra_type}:{i}"
-        return label, spec.factory(acl, project, user, extra_cfg, token)
+        adapter = self._build(spec, label, (acl, project, user, extra_cfg, token), failures)
+        return None if adapter is None else (label, adapter)
 
-    def get_all(self, acl, token_store, project: str, capability: str, user: str) -> list[tuple[str, object]]:
+    def get_all(
+        self, acl, token_store, project: str, capability: str, user: str, *, login_failures: list | None = None
+    ) -> list[tuple[str, object]]:
         """Resolve EVERY source configured for this capability, not just one
         (get()'s single-adapter shape). Added for memaix-src card 4daa20e2
         (calendar aggregation) — a person/project can have more than one
@@ -254,6 +279,11 @@ class ConnectorRegistry:
         "nothing configured/linked yet", which callers (calendar_cache.py)
         treat as zero sources to sync, not an error.
 
+        `login_failures` (opt-in, mail only): a list that receives
+        (label, MailLoginError) for each source whose mailbox could not be
+        logged into, which is then left out of the result instead of failing
+        the whole call. Without it a LOGIN failure propagates as before.
+
         Returns [(label, adapter), ...]. label is for cache/debugging only,
         never surfaced as a stable identifier."""
         resource_cfg = acl.resource(project, RESOURCE_KEYS.get(capability, capability))
@@ -262,7 +292,7 @@ class ConnectorRegistry:
 
         if resource_cfg:
             results += self._base_and_extra_adapters(
-                resource_cfg, handled_types, token_store, project, capability, user, acl
+                resource_cfg, handled_types, token_store, project, capability, user, acl, login_failures
             )
 
         # Per-user sweep: pick up any linked per-user accounts not already
@@ -275,13 +305,13 @@ class ConnectorRegistry:
                 continue
             handled_types.add(type_)
             results += self._adapters_for_per_user_spec(
-                spec, token_store, user, capability, project, acl, resource_cfg or {}
+                spec, token_store, user, capability, project, acl, resource_cfg or {}, login_failures
             )
 
         return results
 
     def _base_and_extra_adapters(
-        self, resource_cfg, handled_types, token_store, project, capability, user, acl
+        self, resource_cfg, handled_types, token_store, project, capability, user, acl, failures=None
     ) -> list[tuple[str, object]]:
         """Adapters from the configured resource: the base spec first, then
         each entry of resource_cfg['sources']. Adds the base type to
@@ -294,13 +324,18 @@ class ConnectorRegistry:
         if base_spec is not None:
             if base_spec.auth == "per_user":
                 results += self._adapters_for_per_user_spec(
-                    base_spec, token_store, user, capability, project, acl, resource_cfg
+                    base_spec, token_store, user, capability, project, acl, resource_cfg, failures
                 )
             else:
-                results.append((f"{base_spec.type}:{project}", base_spec.factory(acl, project, user, resource_cfg, None)))
+                label = f"{base_spec.type}:{project}"
+                adapter = self._build(base_spec, label, (acl, project, user, resource_cfg, None), failures)
+                if adapter is not None:
+                    results.append((label, adapter))
 
         for i, extra_cfg in enumerate(resource_cfg.get("sources") or []):
-            pair = self._adapter_for_extra_source(extra_cfg, base_type, i, token_store, user, capability, project, acl)
+            pair = self._adapter_for_extra_source(
+                extra_cfg, base_type, i, token_store, user, capability, project, acl, failures
+            )
             if pair is not None:
                 results.append(pair)
         return results

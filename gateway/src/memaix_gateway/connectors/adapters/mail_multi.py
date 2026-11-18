@@ -129,7 +129,10 @@ class MultiMailBackend:
     _SEP = "|"
 
     def __init__(
-        self, sources: list[tuple[str, object]], relink_pending: list[tuple[str, str]] | None = None
+        self,
+        sources: list[tuple[str, object]],
+        relink_pending: list[tuple[str, str]] | None = None,
+        login_failures: list[tuple[str, Exception]] | None = None,
     ) -> None:
         if not sources:
             raise ValueError("MultiMailBackend requires at least one source")
@@ -145,6 +148,13 @@ class MultiMailBackend:
         # not sources, so nothing can fail on them; fetch reports them anyway,
         # or a search would pass as complete while one mailbox is missing.
         self._relink_pending = list(relink_pending or [])
+        # Sources whose mailbox could not be logged into (registry.get_all's
+        # login_failures): not sources either, but reported like a failed
+        # fetch, with the clear mail_auth_failed / mail_temporarily_unavailable
+        # text. An id that belongs to one of them, or a draft that would
+        # default to it, fails with that error rather than "not found" or a
+        # silent hop to another mailbox.
+        self._login_failures = list(login_failures or [])
         # Per-source failures: folder.set's are held until the next fetch,
         # which reports them (with its own) in source_errors.
         self._set_errors: dict[str, Exception] = {}
@@ -181,7 +191,23 @@ class MultiMailBackend:
     def _fetch_uid_from(adapter: _MailSource, uid: str, mark_seen: bool) -> list:
         return list(adapter.fetch(f"{_UID_PREFIX}{uid}", mark_seen=mark_seen))
 
+    def _failure_for(self, label: str) -> Exception | None:
+        return next((exc for failed, exc in self._login_failures if failed == label), None)
+
     def _fetch_uid(self, wanted: str, mark_seen: bool) -> list:
+        if self._SEP in wanted:
+            failure = self._failure_for(wanted.partition(self._SEP)[0])
+            if failure is not None:
+                raise failure
+        found = self._fetch_uid_in_sources(wanted, mark_seen)
+        if not found and self._SEP not in wanted and self._login_failures:
+            # An id without a label, not found among the sources that
+            # answered, while a mailbox is unreachable: "not found" would be
+            # a guess, so say what is wrong.
+            raise self._login_failures[0][1]
+        return found
+
+    def _fetch_uid_in_sources(self, wanted: str, mark_seen: bool) -> list:
         if self._SEP not in wanted:
             # No label prefix — can't tell which source owns it. Ask every
             # source; first match wins (mirrors "search everywhere" rather
@@ -207,10 +233,12 @@ class MultiMailBackend:
         return list(adapter.fetch(criteria, mark_seen=mark_seen, limit=limit))
 
     def _relink_errors(self) -> list[dict]:
-        return [
+        relink = [
             {"source": label, "error": f"needs_relink: {account} måste kopplas om"}
             for label, account in self._relink_pending
         ]
+        login = [{"source": label, "error": str(exc)} for label, exc in self._login_failures]
+        return login + relink
 
     @staticmethod
     def _partial_errors(label: str, adapter: _MailSource) -> list[dict]:
@@ -268,13 +296,23 @@ class MultiMailBackend:
         """
         from ...tools.email import DRAFTS, resolve_drafts_folder
 
+        if self._login_failures:
+            # A mailbox is unreachable and may be the one that is first in
+            # registry order: saving to whichever answers would put the draft
+            # somewhere the caller did not choose.
+            raise self._login_failures[0][1]
         label, adapter = self._sources[0]
         if folder == DRAFTS:
             folder = resolve_drafts_folder(adapter)
         return adapter.append(message, folder=folder, dt=dt, flag_set=flag_set)
 
     def logout(self) -> None:
+        # Best effort per source: one dead connection must not leave the
+        # others open.
         for _, adapter in self._sources:
             logout = getattr(adapter, "logout", None)
             if logout is not None:
-                logout()
+                try:
+                    logout()
+                except Exception:  # noqa: BLE001 - closing a dead connection is not an error
+                    pass
