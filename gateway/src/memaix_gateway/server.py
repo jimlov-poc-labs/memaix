@@ -2548,6 +2548,9 @@ def _mail_backend(project: str, user: str):
     return MultiMailBackend(sources, relink_pending, login_failures)
 
 
+MAIL_TOOL_ROLE = "collaborator"
+
+
 def _with_mail_backend(fn, *, close: bool = False):
     """Wrap a tools.email function so `_imap` is resolved lazily, inside
     _audited's try/except — resolving it eagerly at the call site would move
@@ -2561,6 +2564,12 @@ def _with_mail_backend(fn, *, close: bool = False):
     the original error."""
 
     def wrapped(acl, user_id, project, *args, **kwargs):
+        # The gate comes BEFORE any registry lookup, connection or LOGIN: a
+        # caller without the role must not be able to make the gateway log in
+        # to a mailbox (with retries, up to three times per call). Every mail
+        # tool behind this wrapper requires `collaborator` in tools/email.py,
+        # which stays as the second line of defence with the same error type.
+        acl.enforce(user_id, project, MAIL_TOOL_ROLE)
         backend = _mail_backend(project, user_id)
         try:
             return fn(acl, user_id, project, *args, _imap=backend, **kwargs)

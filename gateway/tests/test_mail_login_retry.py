@@ -365,3 +365,89 @@ def test_attachments_and_drafts_are_not_logged_out(wired, monkeypatch):
     _wire(monkeypatch, box, {})
     server.email_create_draft("proj", "to@x.com", "S", "b")
     assert box.logouts == 0
+
+
+# --- the role is checked BEFORE any connection or LOGIN ------------------------------------
+
+_MAIL_TOOL_CALLS = {
+    "email_list": lambda: server.email_list("proj"),
+    "email_read": lambda: server.email_read("proj", "1"),
+    "email_search": lambda: server.email_search("proj", "x"),
+    "email_attachments": lambda: server.email_attachments("proj", "1"),
+    "email_attachment_get": lambda: server.email_attachment_get("proj", "1", "a"),
+    "email_export_pdf": lambda: server.email_export_pdf("proj", "1"),
+    "email_create_draft": lambda: server.email_create_draft("proj", "to@x.com", "S", "b"),
+}
+
+
+def _counting_wire(monkeypatch, ts):
+    """Real registry; every attempt to build (= connect + LOGIN) is counted."""
+    from memaix_gateway.backends.token_store import TokenStore  # noqa: F401
+
+    calls = {"n": 0}
+
+    def build(*a, **kw):
+        calls["n"] += 1
+        return _FakeMailbox([_Msg("1", "S")])
+
+    monkeypatch.setattr(t_email, "_make_mailbox", build)
+    monkeypatch.setattr(t_imap_user, "build_mailbox", build)
+    monkeypatch.setattr(registry_mod, "_registry", None)
+    _link(ts)
+    return calls
+
+
+@pytest.mark.parametrize("name", sorted(_MAIL_TOOL_CALLS))
+@pytest.mark.parametrize("who", ["reader", "mallory"])
+def test_insufficient_role_is_denied_without_any_login(wired, monkeypatch, name, who):
+    from memaix_gateway.acl import AccessDenied
+
+    acl, ts = wired
+    calls = _counting_wire(monkeypatch, ts)
+    if who == "reader":
+        acl.users["bob"]["grants"]["proj"] = "reader"
+        monkeypatch.setenv("MEMAIX_USER", "bob")
+    else:
+        monkeypatch.setenv("MEMAIX_USER", "mallory")
+    with pytest.raises(AccessDenied):
+        _MAIL_TOOL_CALLS[name]()
+    assert calls["n"] == 0
+
+
+def test_every_tool_behind_the_mail_wrapper_is_covered_above():
+    """A new mail tool using _with_mail_backend must be added to the table."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(server))
+    users = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Name) and node.id == "_with_mail_backend" and fn.name != "_with_mail_backend":
+                    users.add(fn.name)
+    assert users == set(_MAIL_TOOL_CALLS)
+
+
+def test_the_wrapper_itself_checks_the_role_before_resolving_the_backend(monkeypatch):
+    from memaix_gateway.acl import AccessDenied
+
+    resolved = []
+    monkeypatch.setattr(server, "_mail_backend", lambda p, u: resolved.append(p))
+
+    class _Deny:
+        def enforce(self, *a):
+            raise AccessDenied("no")
+
+    with pytest.raises(AccessDenied):
+        server._with_mail_backend(lambda *a, **k: "ran")(_Deny(), "u", "proj")
+    assert resolved == []
+
+
+def test_authorised_collaborator_still_works(wired, monkeypatch):
+    acl, ts = wired
+    calls = _counting_wire(monkeypatch, ts)
+    acl.users["bob"]["grants"]["proj"] = "collaborator"
+    monkeypatch.setenv("MEMAIX_USER", "bob")
+    assert server.email_list("proj")
+    assert calls["n"] >= 1
