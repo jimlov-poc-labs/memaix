@@ -49,6 +49,18 @@ _MISSING_BLOCK = (
 )
 
 
+# Same grammar the forced-command script enforces (ops/memaix-nc-provision.sh): max 20GB.
+_SSH_QUOTA_RE = re.compile(r"(?:(?:[1-9]|1[0-9]|20)GB|[1-9][0-9]{0,3}MB)")
+
+
+def _ssh_quota(raw: object) -> str:
+    """Whitespace-free quota for the occ_ssh argv; anything off-grammar fails closed."""
+    quota = "".join(str(raw or DEFAULT_QUOTA).split())
+    if not _SSH_QUOTA_RE.fullmatch(quota):
+        raise ProvisionError("nextcloud_provision quota must look like 2GB or 500MB (max 20GB)")
+    return quota
+
+
 class ProvisionError(Exception):
     """Provisioning failed. The message never contains the account password."""
 
@@ -188,7 +200,7 @@ def _create_user_ssh(settings: dict, run, user: str, password: str, name: str) -
         "-o", f"UserKnownHostsFile={settings['ssh_known_hosts']}",
         "-p", str(settings.get("ssh_port") or 22),
         f"{settings['ssh_user']}@{settings['ssh_host']}",
-        "user-add", user, str(settings.get("quota") or DEFAULT_QUOTA), f"Memaix {name}",
+        "user-add", user, _ssh_quota(settings.get("quota")), f"Memaix {name}",
     ]
     try:
         proc = run(argv, input=password + "\n", timeout=_TIMEOUT_S * 2)
