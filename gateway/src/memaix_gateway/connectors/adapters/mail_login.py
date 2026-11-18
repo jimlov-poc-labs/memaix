@@ -14,8 +14,9 @@ The rule, fail closed:
     hiccup, imaplib's `abort`) are retried at most twice (three attempts
     in all) with a short backoff. The LAST error is the one reported.
   * Anything that says "the credentials were refused" (imap_tools'
-    MailboxLoginError, any non-abort imaplib `error`, or an `abort` whose
-    text is an authentication refusal) is final after ONE attempt. A retry
+    MailboxLoginError, any non-abort imaplib `error`, or an `abort` that is
+    not a plain transport failure, e.g. `* BYE Authentication failed`) is
+    final after ONE attempt. A retry
     must never become a password guess against the provider.
   * Anything else (a bug, a bad config value) is not retried and is raised
     unchanged: an unknown error is never relabelled as "temporary".
@@ -59,7 +60,23 @@ _TRANSIENT_ERRNOS = {
     errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE, errno.ETIMEDOUT,
     errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN,
 }
-_AUTH_MARKERS = ("authenticationfailed", "invalid credentials", "login failed", "authorizationfailed")
+# imaplib raises `abort` both for a dead socket and for a server that answers
+# `* BYE <its own text>` (a refusal such as "Authentication failed" or "Too
+# many login attempts" arrives that way). Only the first kind is a transport
+# failure, so abort is a WHITELIST: it is retried only when its text names a
+# transport problem and does not come from a BYE.
+_TRANSPORT_MARKERS = (
+    "socket error", "eof", "connection reset", "connection aborted", "broken pipe", "timed out", "timeout",
+)
+_AUTH_WORDS = (
+    "authentication", "authorization", "credential", "login", "password", "too many",
+    "disabled", "suspended", "denied", "locked", "blocked", "not allowed",
+)
+# Whole call per source, all attempts and pauses included.
+TOTAL_TIMEOUT_SECONDS = 45
+# A transport failure DURING the LOGIN command cannot be told from a provider
+# that drops the connection on a wrong password, so it gets one retry only.
+MAX_LOGIN_CALLS = 2
 
 
 class MailLoginError(Exception):
@@ -88,19 +105,25 @@ def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _is_auth_refusal(exc: BaseException) -> bool:
-    if _MailboxLoginError is not None and isinstance(exc, _MailboxLoginError):
-        return True
-    text = str(exc).lower()
-    return any(marker in text for marker in _AUTH_MARKERS)
+def _classify_abort(text: str) -> str:
+    low = text.lower()
+    if "bye" not in low and any(m in low for m in _TRANSPORT_MARKERS):
+        return "transient"
+    # The server's own words (or something we do not recognise): final.
+    return "auth" if any(w in low for w in _AUTH_WORDS) else "unknown"
+
+
+def _classify(exc: BaseException) -> str:
+    """"transient" (retry), "auth" (refused, final) or "unknown" (re-raise)."""
+    if isinstance(exc, imaplib.IMAP4.abort):  # subclass of IMAP4.error: test it FIRST
+        return _classify_abort(str(exc))
+    if isinstance(exc, imaplib.IMAP4.error) or (_MailboxLoginError is not None and isinstance(exc, _MailboxLoginError)):
+        return "auth"
+    return "transient" if _is_transient(exc) else "unknown"
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """True only for failures in transit. Whitelist: unknown means final."""
-    if isinstance(exc, imaplib.IMAP4.abort):  # subclass of IMAP4.error: test it FIRST
-        return True
-    if isinstance(exc, imaplib.IMAP4.error):
-        return False
+    """Transport failures raised by sockets/TLS. Whitelist: unknown means final."""
     if isinstance(exc, ssl.SSLCertVerificationError):
         return False  # permanent, and its text names the host
     if isinstance(exc, ConnectionError | TimeoutError | ssl.SSLError):
@@ -127,36 +150,46 @@ def connect_and_login(
     *,
     account: str,
     sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> Any:
     """`connect()` (builds a new MailBox) then `.login(user, password)`.
 
     Returns the logged-in mailbox. Raises MailTemporarilyUnavailable after
-    MAX_ATTEMPTS transient failures, MailAuthFailed straight away on a
-    refusal, and anything else unchanged.
+    MAX_ATTEMPTS transient failures (at most MAX_LOGIN_CALLS of them during
+    LOGIN itself, and none once TOTAL_TIMEOUT_SECONDS has passed),
+    MailAuthFailed straight away on a refusal, and anything else unchanged.
     """
     wait = sleep or _sleep
+    now = clock or time.monotonic
+    started = now()
+    login_calls = 0
     for attempt in range(1, MAX_ATTEMPTS + 1):
         mailbox = None
+        phase = "connect"
         try:
             mailbox = connect()
+            phase = "login"
+            login_calls += 1
             mailbox.login(user, password)
         except Exception as exc:  # noqa: BLE001 - classified below, unknown ones re-raised
             if mailbox is not None:
                 _discard(mailbox)
-            if _is_auth_refusal(exc) or (
-                isinstance(exc, imaplib.IMAP4.error) and not isinstance(exc, imaplib.IMAP4.abort)
-            ):
+            verdict = _classify(exc)
+            if verdict == "auth":
                 _log.warning("mail login refused for %s (%s)", account, type(exc).__name__)
                 raise MailAuthFailed(account) from None
-            if not _is_transient(exc):
+            if verdict != "transient":
                 raise
             _log.warning(
-                "mail login failed in transit for %s (%s), attempt %d of %d",
-                account, type(exc).__name__, attempt, MAX_ATTEMPTS,
+                "mail %s failed in transit for %s (%s), attempt %d of %d",
+                phase, account, type(exc).__name__, attempt, MAX_ATTEMPTS,
             )
-            if attempt == MAX_ATTEMPTS:
+            delay = RETRY_BACKOFF_SECONDS[attempt - 1] if attempt <= len(RETRY_BACKOFF_SECONDS) else 0.0
+            out_of_tries = attempt == MAX_ATTEMPTS or (phase == "login" and login_calls >= MAX_LOGIN_CALLS)
+            out_of_time = now() - started + delay >= TOTAL_TIMEOUT_SECONDS
+            if out_of_tries or out_of_time:
                 raise MailTemporarilyUnavailable(account) from None
-            wait(RETRY_BACKOFF_SECONDS[attempt - 1])
+            wait(delay)
             continue
         _widen_timeout(mailbox)
         return mailbox

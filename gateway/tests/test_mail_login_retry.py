@@ -86,13 +86,126 @@ def test_eof_at_login_is_retried_and_then_succeeds():
     assert sleeps == [0.5]
 
 
-def test_three_eofs_give_temporarily_unavailable_after_exactly_three_attempts():
+def test_eof_during_login_gets_one_retry_only_two_login_calls_in_all():
     eof = lambda: imaplib.IMAP4.abort("command: LOGIN => socket error: EOF")  # noqa: E731
     exc, box, sleeps = _fail([eof(), eof(), eof(), eof(), eof()])
     assert isinstance(exc, MailTemporarilyUnavailable)
     assert str(exc) == "mail_temporarily_unavailable: acct"
-    assert box.logins == 3  # never a fourth
-    assert sleeps == [0.5, 1.5]
+    assert box.logins == 2  # a provider that drops the line on a wrong password is not hammered
+    assert sleeps == [0.5]
+
+
+def test_failures_before_login_is_sent_get_three_attempts_and_the_full_backoff():
+    calls = []
+
+    def connect():
+        calls.append(1)
+        raise ConnectionResetError("reset on connect")
+
+    exc, _, sleeps = _fail([], connect=connect)
+    assert isinstance(exc, MailTemporarilyUnavailable)
+    assert len(calls) == 3 and sleeps == [0.5, 1.5]
+
+
+def test_connect_failures_do_not_use_up_the_login_allowance():
+    state = {"n": 0}
+    box = _Box([imaplib.IMAP4.abort("socket error: EOF")])
+
+    def connect():
+        state["n"] += 1
+        if state["n"] == 1:
+            raise TimeoutError("timed out")
+        return box
+
+    mb, _, sleeps = _run([], connect=connect)
+    assert mb is box and box.logins == 2 and sleeps == [0.5, 1.5]
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        ("command: CAPABILITY => Authentication failed", MailAuthFailed),
+        ("command: LOGIN => Too many login attempts", MailAuthFailed),
+        ("command: LOGIN => Account disabled", MailAuthFailed),
+        ("command: LOGIN => Account suspended", MailAuthFailed),
+        ("* BYE Authentication failed", MailAuthFailed),
+        ("* BYE Too many login attempts", MailAuthFailed),
+        ("* BYE Account disabled", MailAuthFailed),
+        ("* BYE timeout, closing connection", Exception),  # unknown: re-raised
+        ("something nobody has seen before", Exception),
+    ],
+)
+def test_abort_from_the_servers_own_text_or_unknown_text_is_never_retried(text, kind):
+    error = imaplib.IMAP4.abort(text)
+    exc, box, sleeps = _fail([error])
+    assert box.logins == 1 and sleeps == []
+    if kind is MailAuthFailed:
+        assert isinstance(exc, MailAuthFailed)
+    else:
+        assert exc is error and not isinstance(exc, ml.MailLoginError)  # not mislabelled as temporary
+
+
+@pytest.mark.parametrize("text", ["command: LOGIN => socket error: EOF", "EOF occurred in violation of protocol"])
+def test_real_transport_texts_in_abort_are_retried(text):
+    _, box, _ = _run([imaplib.IMAP4.abort(text)])
+    assert box.logins == 2
+
+
+@pytest.mark.parametrize("text", ["Authentication failed", "Too many login attempts"])
+def test_real_imap_tools_against_a_local_bye_server_logs_in_once(text):
+    import socket
+    import threading
+
+    from imap_tools import MailBoxUnencrypted
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    accepted = []
+
+    def serve():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            accepted.append(1)
+            conn.sendall(b"* OK ready\r\n")
+            conn.makefile("rb").readline()
+            conn.sendall(b"* BYE " + text.encode() + b"\r\n")
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    port = srv.getsockname()[1]
+    sleeps: list[float] = []
+    try:
+        with pytest.raises(MailAuthFailed):
+            connect_and_login(
+                lambda: MailBoxUnencrypted("127.0.0.1", port, timeout=5), USER, SECRET, account="acct", sleep=sleeps.append
+            )
+    finally:
+        srv.close()
+    assert len(accepted) == 1 and sleeps == []
+
+
+def test_total_time_limit_stops_retrying():
+    now = {"t": 0.0}
+    box = _Box([ConnectionResetError("reset")] * 5)
+
+    def sleep(seconds):
+        now["t"] += seconds
+
+    calls = []
+
+    def connect():
+        calls.append(1)
+        now["t"] += ml.TOTAL_TIMEOUT_SECONDS - 0.2  # a hanging connect ate almost all the time
+        raise TimeoutError("timed out")
+
+    with pytest.raises(MailTemporarilyUnavailable):
+        connect_and_login(connect, USER, SECRET, account="acct", sleep=sleep, clock=lambda: now["t"])
+    assert len(calls) == 1  # 44.8 s + 0.5 s backoff would pass 45 s: no second attempt
+    assert box.logins == 0
 
 
 @pytest.mark.parametrize(
@@ -223,7 +336,7 @@ def test_per_user_mailbox_retries_and_names_the_account_only(monkeypatch):
         t_imap_user.build_mailbox(token)
     assert str(info.value) == "mail_temporarily_unavailable: alice@example.com"
     assert HOST not in str(info.value) and SECRET not in str(info.value)
-    assert len(built) == 3 and all(b.timeout == 30 for b in built)
+    assert len(built) == 2 and all(b.timeout == 30 for b in built)
 
 
 # --- one dead mailbox does not take the others down --------------------------------------
@@ -451,3 +564,23 @@ def test_authorised_collaborator_still_works(wired, monkeypatch):
     monkeypatch.setenv("MEMAIX_USER", "bob")
     assert server.email_list("proj")
     assert calls["n"] >= 1
+
+
+# --- two gaps found in review -------------------------------------------------------------------
+
+
+def test_unlabelled_id_with_a_dead_source_reports_the_login_error_not_not_found(wired, monkeypatch):
+    _, ts = wired
+    _link(ts)
+    _wire(monkeypatch, TEMP, {"imap.a.example.com": _FakeMailbox([_Msg("7", "From A")])})
+    with pytest.raises(MailTemporarilyUnavailable):
+        server.email_read("proj", "99")
+
+
+def test_multi_logout_is_best_effort_per_source():
+    from memaix_gateway.connectors.adapters.mail_multi import MultiMailBackend
+
+    first = _Closing([], logout_error=OSError("dead"))
+    second = _Closing([])
+    MultiMailBackend([("a:x", first), ("b:y", second)]).logout()
+    assert first.logouts == 1 and second.logouts == 1
