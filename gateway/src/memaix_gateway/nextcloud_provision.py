@@ -50,7 +50,8 @@ _MISSING_BLOCK = (
 
 
 # Same grammar the forced-command script enforces (ops/memaix-nc-provision.sh): max 20GB.
-_SSH_QUOTA_RE = re.compile(r"(?:(?:[1-9]|1[0-9]|20)GB|[1-9][0-9]{0,3}MB)")
+# re.ASCII: \d must not match other Unicode digits (fullwidth, Arabic-Indic).
+_SSH_QUOTA_RE = re.compile(r"(?:(?:[1-9]|1\d|20)GB|[1-9]\d{0,3}MB)", re.ASCII)
 
 
 def _ssh_quota(raw: object) -> str:
