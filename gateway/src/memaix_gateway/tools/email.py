@@ -120,13 +120,18 @@ def _make_mailbox(acl: Acl, project: str):
     from imap_tools import MailBox
 
     from ..connectors.adapters.mail_imap_all import wrap
+    from ..connectors.adapters.mail_login import CONNECT_TIMEOUT_SECONDS, connect_and_login
 
     cfg = _mailbox_cfg(acl, project)
     password = config.secret(cfg.get("password_ref"))
     if password is None:
         raise ValueError(f"no password configured for mailbox (project {project!r})")
-    mb = MailBox(cfg["host"])
-    mb.login(cfg["user"], password)
+    mb = connect_and_login(
+        lambda: MailBox(cfg["host"], timeout=CONNECT_TIMEOUT_SECONDS),
+        cfg["user"],
+        password,
+        account=project,
+    )
     # A real IMAP server has no "ALL" folder; the wrapper makes
     # folder="ALL" mean every folder, as it does on Gmail and Graph.
     return wrap(mb)
