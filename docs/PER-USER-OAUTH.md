@@ -27,12 +27,20 @@ kunden, inte hos oss.
 - `setup_engine.py` (`defaults()`/`validate()`/`write_config()`) samlar in
   `google_oauth_client_id`/`google_oauth_client_secret` och
   `microsoft_oauth_client_id`/`microsoft_oauth_client_secret`/`microsoft_oauth_tenant_id`.
-  Tomt = ingen provider konfigureras; `account_link` för den providern ger `unknown_provider`
-  tills en admin fyller i detta och kör setup om.
+  Tomt = ingen provider konfigureras.
+  **Kantfall idag:** `link_start` (server_http.py) kollar bara att providernamnet finns i
+  `_PROVIDER_AUTH_URLS` (google/microsoft är alltid där) — med tom `oauth_providers`-config
+  redirectar den ändå till Google/Microsoft med `client_id=""` i stället för att vägra. Se
+  "Hittat men ogjort" i commit-rapporten; inte fixat i detta uppdrag.
 - Resultatet skrivs till `config/memaix.yaml` under `oauth_providers.<provider>` (`client_id`
-  i klartext, `client_secret_ref: "env:GOOGLE_CLIENT_SECRET"` / `env:MICROSOFT_CLIENT_SECRET"`)
-  och själva hemligheten till `.env` (0600) — samma `*_ref`-mönster som `LLM_API_KEY`
-  (se SECRETS.md). Klartextsecreten hamnar aldrig i YAML eller i setup-kvittot.
+  i klartext, `client_secret_ref` satt till `env:GOOGLE_CLIENT_SECRET` respektive
+  `env:MICROSOFT_CLIENT_SECRET`) och själva hemligheten till `.env` (0600) — samma `*_ref`-mönster
+  som `LLM_API_KEY` (se SECRETS.md). Klartextsecreten hamnar aldrig i YAML eller i setup-kvittot.
+  **Lägg INTE till detta genom att köra setup om på en befintlig instans:** `write_config()`
+  skriver om hela `.env`, inklusive en NY `TOKEN_MASTER_KEY` och `HYDRA_SYSTEM_SECRET` — det
+  gör redan länkade kontons krypterade tokens olästa och kan knäcka Hydra. Innan steg 3 (wizarden)
+  finns, lägg till `oauth_providers`-blocket för hand i `config/memaix.yaml` (se
+  `config/memaix.example.yaml`) och de två `*_CLIENT_SECRET`-raderna i `.env` manuellt.
 - Steg 3 i wizarden (ej byggt i detta uppdrag) kopplar frågorna i `bootstrap.py`/`setup_web.py`
   till denna motor.
 

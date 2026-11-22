@@ -319,12 +319,19 @@ def test_validate_oauth_empty_is_valid():
         {"google_oauth_client_secret": "s"},  # id saknas
         {"google_oauth_client_id": "not-a-google-id", "google_oauth_client_secret": "s"},
         {"google_oauth_client_id": _GOOGLE_ID, "google_oauth_client_secret": 'has"quote'},
+        {"google_oauth_client_id": _GOOGLE_ID, "google_oauth_client_secret": "ok\nEVIL=1"},
+        {"google_oauth_client_id": _GOOGLE_ID, "google_oauth_client_secret": "has$dollar"},
+        {"google_oauth_client_id": '"; evil: true', "google_oauth_client_secret": "good-secret"},
         {"microsoft_oauth_client_id": _MS_GUID_1},  # secret + tenant saknas
         {"microsoft_oauth_client_id": _MS_GUID_1, "microsoft_oauth_client_secret": "s"},  # tenant saknas
         {"microsoft_oauth_client_id": "not-a-guid",
          "microsoft_oauth_client_secret": "s", "microsoft_oauth_tenant_id": _MS_GUID_2},
         {"microsoft_oauth_client_id": _MS_GUID_1,
          "microsoft_oauth_client_secret": "has space", "microsoft_oauth_tenant_id": _MS_GUID_2},
+        {"microsoft_oauth_client_id": _MS_GUID_1,
+         "microsoft_oauth_client_secret": "ok\nEVIL=1", "microsoft_oauth_tenant_id": _MS_GUID_2},
+        {"microsoft_oauth_client_id": _MS_GUID_1,
+         "microsoft_oauth_client_secret": "has$dollar", "microsoft_oauth_tenant_id": _MS_GUID_2},
     ],
 )
 def test_validate_oauth_rejects_partial_or_malformed(overrides):
