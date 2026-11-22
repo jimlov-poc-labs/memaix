@@ -244,6 +244,129 @@ def test_apply_writes_config_and_shuts_down(wizard):
     assert not thread.is_alive()
 
 
+# ───────────────────── kundens egen OAuth-app (PER-USER-OAUTH.md) ──────────
+
+
+_GOOGLE_ID = "123-abc.apps.googleusercontent.com"
+_MS_GUID_1 = "11111111-2222-3333-4444-555555555555"
+_MS_GUID_2 = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+
+
+def test_write_config_no_oauth_answers_writes_no_block(tmp_path):
+    engine.write_config(_answers(), tmp_path)
+    cfg = yaml.safe_load((tmp_path / "config" / "memaix.yaml").read_text())
+    assert "oauth_providers" not in cfg
+
+
+def test_write_config_google_oauth_writes_client_id_and_secret_ref(tmp_path):
+    a = _answers(google_oauth_client_id=_GOOGLE_ID, google_oauth_client_secret="s3cr3t-val")
+    summary = engine.write_config(a, tmp_path)
+
+    cfg_text = (tmp_path / "config" / "memaix.yaml").read_text()
+    assert "s3cr3t-val" not in cfg_text, "client secret i klartext får aldrig hamna i memaix.yaml"
+    cfg = yaml.safe_load(cfg_text)
+    google = cfg["oauth_providers"]["google"]
+    assert google["client_id"] == _GOOGLE_ID
+    assert google["client_secret_ref"] == "env:GOOGLE_CLIENT_SECRET"
+    assert "openid" in google["scopes"] and "email" in google["scopes"]
+    assert google["capability_scopes"]["mail"]
+
+    env = (tmp_path / ".env").read_text()
+    assert "GOOGLE_CLIENT_SECRET=s3cr3t-val" in env
+    assert (tmp_path / ".env").stat().st_mode & 0o777 == 0o600
+
+    assert summary["google_oauth_configured"] is True
+    assert "s3cr3t-val" not in json.dumps(summary), "sammanfattningen är hemlighetsfri"
+
+
+def test_write_config_microsoft_oauth_requires_all_three_fields(tmp_path):
+    # Bara client_id + secret, utan tenant_id: ingen block skrivs (validate
+    # fångar detta — write_config testas ändå fristående här).
+    a = _answers(microsoft_oauth_client_id=_MS_GUID_1, microsoft_oauth_client_secret="x")
+    engine.write_config(a, tmp_path)
+    cfg = yaml.safe_load((tmp_path / "config" / "memaix.yaml").read_text())
+    assert "oauth_providers" not in cfg
+
+
+def test_write_config_microsoft_oauth_full_writes_tenant_id(tmp_path):
+    a = _answers(
+        microsoft_oauth_client_id=_MS_GUID_1,
+        microsoft_oauth_client_secret="ms-secret-val",
+        microsoft_oauth_tenant_id=_MS_GUID_2,
+    )
+    summary = engine.write_config(a, tmp_path)
+    cfg_text = (tmp_path / "config" / "memaix.yaml").read_text()
+    assert "ms-secret-val" not in cfg_text
+    cfg = yaml.safe_load(cfg_text)
+    ms = cfg["oauth_providers"]["microsoft"]
+    assert ms["client_id"] == _MS_GUID_1
+    assert ms["tenant_id"] == _MS_GUID_2
+    assert ms["client_secret_ref"] == "env:MICROSOFT_CLIENT_SECRET"
+
+    env = (tmp_path / ".env").read_text()
+    assert "MICROSOFT_CLIENT_SECRET=ms-secret-val" in env
+    assert summary["microsoft_oauth_configured"] is True
+
+
+def test_validate_oauth_empty_is_valid():
+    assert engine.validate(_answers()) == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"google_oauth_client_id": _GOOGLE_ID},  # secret saknas
+        {"google_oauth_client_secret": "s"},  # id saknas
+        {"google_oauth_client_id": "not-a-google-id", "google_oauth_client_secret": "s"},
+        {"google_oauth_client_id": _GOOGLE_ID, "google_oauth_client_secret": 'has"quote'},
+        {"microsoft_oauth_client_id": _MS_GUID_1},  # secret + tenant saknas
+        {"microsoft_oauth_client_id": _MS_GUID_1, "microsoft_oauth_client_secret": "s"},  # tenant saknas
+        {"microsoft_oauth_client_id": "not-a-guid",
+         "microsoft_oauth_client_secret": "s", "microsoft_oauth_tenant_id": _MS_GUID_2},
+        {"microsoft_oauth_client_id": _MS_GUID_1,
+         "microsoft_oauth_client_secret": "has space", "microsoft_oauth_tenant_id": _MS_GUID_2},
+    ],
+)
+def test_validate_oauth_rejects_partial_or_malformed(overrides):
+    assert engine.validate(_answers(**overrides))
+
+
+def test_validate_oauth_accepts_full_valid_pairs():
+    assert engine.validate(_answers(
+        google_oauth_client_id=_GOOGLE_ID, google_oauth_client_secret="good-secret_123",
+    )) == []
+    assert engine.validate(_answers(
+        microsoft_oauth_client_id=_MS_GUID_1,
+        microsoft_oauth_client_secret="good-secret_123",
+        microsoft_oauth_tenant_id=_MS_GUID_2,
+    )) == []
+
+
+def test_oauth_providers_config_round_trips_through_config_secret(tmp_path, monkeypatch):
+    """Bevisar att det skrivna schemat faktiskt är det gatewayen läser:
+    config.load() → oauth_providers.google.client_secret_ref → config.secret()
+    löser upp till samma värde setup fick in, via miljövariabeln i .env."""
+    a = _answers(google_oauth_client_id=_GOOGLE_ID, google_oauth_client_secret="round-trip-secret")
+    engine.write_config(a, tmp_path)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    import memaix_gateway.config as gw_config
+
+    monkeypatch.setattr(gw_config, "CONFIG_DIR", tmp_path / "config")
+    cfg = gw_config.load()
+    ref = cfg["memaix"]["oauth_providers"]["google"]["client_secret_ref"]
+    assert ref == "env:GOOGLE_CLIENT_SECRET"
+
+    # .env sätts aldrig automatiskt i os.environ av write_config — simulera
+    # att compose/systemd gjorde det (env_file: .env i docker-compose.yml).
+    env_text = (tmp_path / ".env").read_text()
+    value = next(
+        line.split("=", 1)[1] for line in env_text.splitlines() if line.startswith("GOOGLE_CLIENT_SECRET=")
+    )
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", value)
+    assert gw_config.secret(ref) == "round-trip-secret"
+
+
 def test_write_config_llm_api_provider(tmp_path):
     a = _answers(llm_provider="anthropic", llm_model="claude-sonnet-4-5",
                  llm_api_key="sk-ant-test")
