@@ -17,6 +17,71 @@ Memaix lagrar och förnyar deras token, och hur gatewayen väljer rätt persons 
 Det andra lagret är nytt och kan **inte** ske inuti AI-chatten (ingen webbläsar-redirect där). Det
 kräver ett separat, engångs **länkningsflöde** via en sida Memaix själv serverar.
 
+## Instansnivå: admin konfigurerar VILKEN OAuth-app (en gång)
+
+Innan någon enskild person kan köra länkningsflödet nedan måste instansens admin först
+berätta för Memaix VILKEN OAuth-app som ska användas. Varje kund driver sin **egen** app —
+aldrig en Memaix-delad app — så att samtycket, granskningen och återkallningen ligger hos
+kunden, inte hos oss.
+
+- `setup_engine.py` (`defaults()`/`validate()`/`write_config()`) samlar in
+  `google_oauth_client_id`/`google_oauth_client_secret` och
+  `microsoft_oauth_client_id`/`microsoft_oauth_client_secret`/`microsoft_oauth_tenant_id`.
+  Tomt = ingen provider konfigureras.
+  **Kantfall idag:** `link_start` (server_http.py) kollar bara att providernamnet finns i
+  `_PROVIDER_AUTH_URLS` (google/microsoft är alltid där) — med tom `oauth_providers`-config
+  redirectar den ändå till Google/Microsoft med `client_id=""` i stället för att vägra. Se
+  "Hittat men ogjort" i commit-rapporten; inte fixat i detta uppdrag.
+- Resultatet skrivs till `config/memaix.yaml` under `oauth_providers.<provider>` (`client_id`
+  i klartext, `client_secret_ref` satt till `env:GOOGLE_CLIENT_SECRET` respektive
+  `env:MICROSOFT_CLIENT_SECRET`) och själva hemligheten till `.env` (0600) — samma `*_ref`-mönster
+  som `LLM_API_KEY` (se SECRETS.md). Klartextsecreten hamnar aldrig i YAML eller i setup-kvittot.
+  **Lägg INTE till detta genom att köra setup om på en befintlig instans:** `write_config()`
+  skriver om hela `.env`, inklusive en NY `TOKEN_MASTER_KEY` och `HYDRA_SYSTEM_SECRET` — det
+  gör redan länkade kontons krypterade tokens olästa och kan knäcka Hydra. Innan steg 3 (wizarden)
+  finns, lägg till `oauth_providers`-blocket för hand i `config/memaix.yaml` (se
+  `config/memaix.example.yaml`) och de två `*_CLIENT_SECRET`-raderna i `.env` manuellt.
+- Steg 3 i wizarden (ej byggt i detta uppdrag) kopplar frågorna i `bootstrap.py`/`setup_web.py`
+  till denna motor.
+
+### Vad en admin behöver hämta (på hög nivå — gränssnitten ändras, principen inte)
+
+**Google (Google Cloud Console):**
+1. Skapa (eller återanvänd) ett GCP-projekt för kundens egen Memaix-instans.
+2. Aktivera OAuth-samtyckesskärmen. **Internal** (bara Workspace-tenantens egna användare)
+   slipper Googles publika app-granskning helt — använd det om kunden kör Workspace.
+   **External** kräver granskning för känsliga/restricted scopes (se nedan).
+3. Skapa ett **OAuth client ID** av typen "Web application".
+4. Lägg till redirect-URI: `https://<instansens-domän>/link/google/callback`
+   (för en lokal trial: `http://localhost:8080/link/google/callback`).
+5. Kopiera **Client ID** (slutar på `.apps.googleusercontent.com`) och **Client secret**
+   in i setup.
+6. **CASA-granskning:** kalenderscopes (`calendar.events`, `calendar.calendarlist.readonly`)
+   räknas som *sensitive* och kräver bara Googles vanliga appgranskning. Gmail-scopes
+   (`gmail.readonly` m.fl.) räknas som *restricted* och kräver dessutom en betald
+   **CASA-säkerhetsgranskning** innan Google tillåter dem i produktion för en extern
+   consent-skärm (Workspace-interna appar slipper detta). Det är kundens egen app och
+   kundens eget ansvar att genomföra — Memaix begär därför Gmail bara som en explicit
+   opt-in-capability (`account_link(capabilities=["mail"])`), aldrig i baslänkningen; se
+   "Scopes" ovan för varför Gmail normalt länkas över IMAP i stället.
+
+**Microsoft / Azure AD (Entra-portalen):**
+1. Registrera en **app registration** i kundens EGNA Entra-tenant (BACKENDS.md: single-tenant
+   Entra-app, inte multi-tenant/marketplace — en admin i kundens tenant godkänner den direkt,
+   ingen publik verifiering krävs).
+2. Lägg till en **redirect URI** (plattform: Web):
+   `https://<instansens-domän>/link/microsoft/callback`.
+3. Under **Certificates & secrets**, skapa en **client secret** och kopiera värdet direkt
+   (det går inte att visa igen) — notera utgångsdatumet, rotation är admins ansvar.
+4. Kopiera **Application (client) ID** och **Directory (tenant) ID** från appens Overview-sida.
+5. Ge appen de delegerade Graph-behörigheterna som motsvarar scopes-listan (Mail.Read,
+   Calendars.ReadWrite, offline_access) och godkänn admin consent i tenanten.
+6. **Känt hål (inte löst i detta uppdrag):** gatewayens authorize-/token-URL är idag hårdkodad
+   mot `login.microsoftonline.com/common/...` (`server_http.py`, `_refresh_microsoft_token` i
+   `server.py`). Microsoft avvisar ofta `/common` för en strikt single-tenant app-registrering.
+   `tenant_id` samlas in och skrivs till config redan nu för att inte tvinga en andra
+   migrering senare, men gatewayen läser den inte än — se "Kantfall".
+
 ## Länkningsflödet (engångs per person & provider)
 
 ```
@@ -105,6 +170,11 @@ den inloggade användarens token saknas eller är ogiltig.
 - **Flera konton per person:** `account_list` visar alla; projektets config kan peka på vilket
   konto som gäller, annars fråga.
 - **Admin återkallar i Workspace/tenant:** behandla som `needs_relink`.
+- **Microsoft single-tenant-appen + `/common`-ändpunkten:** instanskonfigurationen samlar in
+  `microsoft_oauth_tenant_id`, men `link_start`/`_exchange_code`/`_refresh_microsoft_token`
+  pekar idag hårdkodat mot `login.microsoftonline.com/common/...`. Ej åtgärdat här —
+  lägg in `provider_cfg.get("tenant_id", "common")` på de tre ställena som egen uppgift
+  innan en kund med en strikt single-tenant-app testar `/link/microsoft`.
 
 ## Faser
 1. **Länkningssida + token-store** (krypterad) för en provider (börja med Microsoft Graph).

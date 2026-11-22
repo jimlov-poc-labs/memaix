@@ -52,6 +52,44 @@ _NC_ALPHABET = string.ascii_letters + string.digits
 _USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _PROJECT_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 
+# PER-USER-OAUTH.md / BACKENDS.md: varje kund driver sin EGEN OAuth-app (eget
+# Google Cloud-projekt / Azure AD-app) — aldrig en Memaix-delad app. Dessa
+# fält samlar in den appens client_id/client_secret (och för Microsoft:
+# tenant_id, se docstring på _validate_microsoft_oauth) en gång per instans,
+# vid setup. Formatkraven är medvetet strikta: värdena hamnar dels i en
+# f-string-byggd YAML-fil, dels radbaserat i .env — ett citattecken,
+# radbrytning, `$` eller `#` i indata kan annars injicera YAML-nycklar eller
+# nya .env-rader (se SECRETS.md).
+_GOOGLE_OAUTH_CLIENT_ID_RE = re.compile(
+    r"^[A-Za-z0-9-]+\.apps\.googleusercontent\.com$"
+)
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+# Tillåtna tecken i en client secret: inga citattecken, blanksteg, radbrytning,
+# $ eller # — de kan bryta YAML- eller .env-syntaxen de klistras in i.
+_OAUTH_SECRET_RE = re.compile(r"^[A-Za-z0-9+/=._~:@%-]+$")
+
+# oauth_providers-skelettet är låst till detta exakta schema (config.secret(),
+# server.py rad ~438-440/~3692-3693/~3723-3724, config/memaix.example.yaml) —
+# bygg inte om det här utan att synka alla tre ställen.
+_GOOGLE_OAUTH_SCOPES = (
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+)
+_GOOGLE_OAUTH_MAIL_CAPABILITY_SCOPES = (
+    "https://www.googleapis.com/auth/gmail.readonly",
+)
+_MICROSOFT_OAUTH_SCOPES = (
+    "openid",
+    "email",
+    "Calendars.ReadWrite",
+    "Mail.Read",
+    "offline_access",
+)
+
 
 def pbkdf2_hash(password: str) -> str:
     salt = os.urandom(32)
@@ -108,6 +146,15 @@ def defaults() -> dict:
         "llm_endpoint": "",
         "llm_api_key": "",
         "files_backend": FILES_BACKEND_NONE,
+        # Kundens EGEN OAuth-app (PER-USER-OAUTH.md) — instansnivå, en gång.
+        # Tomt = oauth_providers skrivs inte alls för den providern; den
+        # enskilda användarens /link/<provider>-flöde är separat och kräver
+        # detta satt av en admin först.
+        "google_oauth_client_id": "",
+        "google_oauth_client_secret": "",
+        "microsoft_oauth_client_id": "",
+        "microsoft_oauth_client_secret": "",
+        "microsoft_oauth_tenant_id": "",
     }
 
 
@@ -145,7 +192,68 @@ def validate(a: dict) -> list[str]:
     files_backend = a.get("files_backend", FILES_BACKEND_NONE)
     if files_backend not in FILES_BACKENDS:
         errors.append(f"Okänt filer-backend-val: {files_backend!r}.")
+
+    _validate_google_oauth(a, errors)
+    _validate_microsoft_oauth(a, errors)
     return errors
+
+
+def _validate_google_oauth(a: dict, errors: list[str]) -> None:
+    """Kundens egen Google Cloud OAuth-app. Tomt är giltigt (ingen koppling
+    konfigureras); fail closed annars — hellre ett klart fel vid setup än en
+    trasig/ofullständig oauth_providers.google som gatewayen tyst struntar i."""
+    client_id = a.get("google_oauth_client_id", "").strip()
+    client_secret = a.get("google_oauth_client_secret", "").strip()
+    if not client_id and not client_secret:
+        return
+    if not client_id or not client_secret:
+        errors.append(
+            "Google OAuth kräver både client ID och client secret tillsammans "
+            "(eller lämna båda tomma)."
+        )
+        return
+    if not _GOOGLE_OAUTH_CLIENT_ID_RE.match(client_id):
+        errors.append(
+            "Google OAuth client ID ser inte ut som en giltig "
+            "…apps.googleusercontent.com-identifierare från Google Cloud Console."
+        )
+    if not _OAUTH_SECRET_RE.match(client_secret):
+        errors.append(
+            "Google OAuth client secret innehåller otillåtna tecken "
+            "(inga citattecken, blanksteg, $, # eller radbrytningar)."
+        )
+
+
+def _validate_microsoft_oauth(a: dict, errors: list[str]) -> None:
+    """Kundens egen Azure AD-app (single-tenant Entra-app i kundens egen
+    tenant, BACKENDS.md). Till skillnad från Google kräver Microsoft-flödet
+    även tenant ID — gatewayens token-URL är idag hårdkodad mot /common/
+    (server_http.py, server.py _refresh_microsoft_token), så tenant_id
+    skrivs till config för framtida bruk men används INTE av gatewayen än;
+    se docs/PER-USER-OAUTH.md-notisen som denna ändring lägger till."""
+    client_id = a.get("microsoft_oauth_client_id", "").strip()
+    client_secret = a.get("microsoft_oauth_client_secret", "").strip()
+    tenant_id = a.get("microsoft_oauth_tenant_id", "").strip()
+    present = [v for v in (client_id, client_secret, tenant_id) if v]
+    if not present:
+        return
+    if len(present) != 3:
+        errors.append(
+            "Microsoft/Azure AD OAuth kräver client ID, client secret OCH "
+            "tenant ID tillsammans (eller lämna alla tre tomma)."
+        )
+        return
+    if not _GUID_RE.match(client_id):
+        errors.append("Microsoft OAuth client ID måste vara Azure-appens GUID.")
+    if not _GUID_RE.match(tenant_id):
+        errors.append(
+            "Microsoft OAuth tenant ID måste vara kundens egen Azure-tenants GUID."
+        )
+    if not _OAUTH_SECRET_RE.match(client_secret):
+        errors.append(
+            "Microsoft OAuth client secret innehåller otillåtna tecken "
+            "(inga citattecken, blanksteg, $, # eller radbrytningar)."
+        )
 
 
 def public_url(a: dict) -> str:
@@ -170,6 +278,47 @@ def files_notice(projects: list) -> str | None:
     (seed_vaults/write_config provisionerar inget Nextcloud-konto för dem),
     så notisen gäller oförändrat varje installation som skapar projekt."""
     return FILES_NOTICE if projects else None
+
+
+def _yaml_scope_lines(indent: str, scopes: tuple[str, ...]) -> str:
+    return "".join(f'{indent}- "{s}"\n' for s in scopes)
+
+
+def _oauth_providers_block(a: dict) -> str:
+    """oauth_providers-blocket för memaix.yaml — PER-USER-OAUTH.md: instansens
+    admin konfigurerar VILKEN OAuth-app hela instansen använder (kundens egen,
+    aldrig en Memaix-delad app), en gång, innan någon enskild användare kan
+    länka sitt konto via /link/<provider>. Tomt om inget providersvar gavs."""
+    google_id = a.get("google_oauth_client_id", "").strip()
+    google_secret = a.get("google_oauth_client_secret", "").strip()
+    ms_id = a.get("microsoft_oauth_client_id", "").strip()
+    ms_secret = a.get("microsoft_oauth_client_secret", "").strip()
+    ms_tenant = a.get("microsoft_oauth_tenant_id", "").strip()
+
+    if not (google_id and google_secret) and not (ms_id and ms_secret and ms_tenant):
+        return ""
+
+    lines = ["\noauth_providers:\n"]
+    if google_id and google_secret:
+        lines.append('  google:\n')
+        lines.append(f'    client_id: "{google_id}"\n')
+        lines.append('    client_secret_ref: "env:GOOGLE_CLIENT_SECRET"\n')
+        lines.append('    scopes:\n')
+        lines.append(_yaml_scope_lines('      ', _GOOGLE_OAUTH_SCOPES))
+        lines.append('    capability_scopes:\n')
+        lines.append('      mail:\n')
+        lines.append(_yaml_scope_lines('        ', _GOOGLE_OAUTH_MAIL_CAPABILITY_SCOPES))
+    if ms_id and ms_secret and ms_tenant:
+        lines.append('  microsoft:\n')
+        lines.append(f'    client_id: "{ms_id}"\n')
+        lines.append('    client_secret_ref: "env:MICROSOFT_CLIENT_SECRET"\n')
+        # tenant_id skrivs för framtida bruk — gatewayen använder idag
+        # hårdkodad /common/ (se _validate_microsoft_oauth-docstring ovan
+        # och PER-USER-OAUTH.md). Inte en hemlighet; får stå i klartext.
+        lines.append(f'    tenant_id: "{ms_tenant}"\n')
+        lines.append('    scopes:\n')
+        lines.append(_yaml_scope_lines('      ', _MICROSOFT_OAUTH_SCOPES))
+    return "".join(lines)
 
 
 def write_config(a: dict, root: Path) -> dict:
@@ -221,6 +370,8 @@ def write_config(a: dict, root: Path) -> dict:
             f'  admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"\n'
         )
 
+    oauth_providers_block = _oauth_providers_block(a)
+
     (config / "memaix.yaml").write_text(
         f'server:\n'
         f'  bind: "0.0.0.0:8080"\n'
@@ -234,6 +385,7 @@ def write_config(a: dict, root: Path) -> dict:
         f'  enabled: true\n'
         f'{model_block}'
         f'{nextcloud_block}'
+        f'{oauth_providers_block}'
     )
 
     projects = {project: f"/srv/vaults/{project}"}
@@ -287,6 +439,21 @@ def write_config(a: dict, root: Path) -> dict:
         env_lines.append(f"MEMAIX_GID={os.getgid()}")
     if a.get("llm_api_key"):
         env_lines.append(f"LLM_API_KEY={a['llm_api_key']}")
+    google_oauth_configured = bool(
+        a.get("google_oauth_client_id", "").strip()
+        and a.get("google_oauth_client_secret", "").strip()
+    )
+    if google_oauth_configured:
+        env_lines.append(f"GOOGLE_CLIENT_SECRET={a['google_oauth_client_secret'].strip()}")
+    microsoft_oauth_configured = bool(
+        a.get("microsoft_oauth_client_id", "").strip()
+        and a.get("microsoft_oauth_client_secret", "").strip()
+        and a.get("microsoft_oauth_tenant_id", "").strip()
+    )
+    if microsoft_oauth_configured:
+        env_lines.append(
+            f"MICROSOFT_CLIENT_SECRET={a['microsoft_oauth_client_secret'].strip()}"
+        )
     write_secret_file(root / ".env", "\n".join(env_lines) + "\n")
 
     # Tunnel-token i en fil (compose monterar den med --token-file), så den inte
@@ -309,6 +476,8 @@ def write_config(a: dict, root: Path) -> dict:
         "project_name": project,
         "llm_provider": a.get("llm_provider", "byo"),
         "files_backend": a.get("files_backend", FILES_BACKEND_NONE),
+        "google_oauth_configured": google_oauth_configured,
+        "microsoft_oauth_configured": microsoft_oauth_configured,
         "written": ["config/brand.yaml", "config/memaix.yaml", "config/acl.yaml", ".env"],
         "notice": files_notice(list(projects)),
     }
