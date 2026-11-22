@@ -27,8 +27,6 @@ from memaix_gateway.notify import channels as ch
 from memaix_gateway.tools import mail_client as mc
 from memaix_gateway.tools import mail_unlock as mu
 
-_TOPIC = "Kq7xV2mPz9LwR4tYb8NcH3sJ"
-
 
 @pytest.fixture()
 def acl():
@@ -367,16 +365,16 @@ class _NotifyStore:
         return self._rows
 
 
-def test_exposed_identities_collects_ntfy_and_webhooks_and_skips_broken(monkeypatch):
+def test_exposed_identities_collects_webhooks_and_skips_broken(monkeypatch):
     monkeypatch.setattr(config, "secret", lambda ref: "https://hook.example/ref" if ref == "env:H" else None)
     rows = [
-        [{"type": "ntfy", "topic": "abc"}, {"type": "ntfy"}, {"type": "email", "to": "a@b.se"}],
+        [{"type": "email", "to": "a@b.se"}],
         None,
         [{"type": "webhook", "url_ref": "env:H"}, {"type": "discord", "url": "https://discord.com/api/webhooks/9/t"},
          {"type": "webhook"}, None],
     ]
     got = mu.exposed_identities(_NotifyStore(rows))
-    assert got == {"ntfy:ntfy.sh/abc", "url:hook.example/ref", "discord:9"}
+    assert got == {"url:hook.example/ref", "discord:9"}
     assert mu.exposed_identities(None) == set()
 
 
@@ -385,24 +383,8 @@ def test_exposed_identities_survives_a_spec_that_raises(monkeypatch):
         raise RuntimeError("trasig ref")
 
     monkeypatch.setattr(config, "secret", boom)
-    rows = [[{"type": "webhook", "url_ref": "env:X"}, {"type": "ntfy", "topic": "ok"}]]
-    assert mu.exposed_identities(_NotifyStore(rows)) == {"ntfy:ntfy.sh/ok"}
-
-
-def test_check_channel_ntfy_order_and_texts():
-    with pytest.raises(ValueError, match="behöver 'topic'"):
-        mu.check_channel({"type": "ntfy"}, set())
-    with pytest.raises(ValueError, match="minst 24"):
-        mu.check_channel({"type": "ntfy", "topic": "kort", "server": "http://x"}, set())
-    with pytest.raises(ValueError, match="minst 24"):
-        mu.check_channel({"type": "ntfy", "topic": _TOPIC[:-1] + "!"}, set())
-    with pytest.raises(ValueError, match="server måste vara https"):
-        mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "HTTP://ntfy.example"},
-                         set(), {mu.ntfy_identity("http://ntfy.example", _TOPIC)})
-    with pytest.raises(ValueError, match="används också"):
-        mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "https://NTFY.sh/"},
-                         set(), {mu.ntfy_identity(None, _TOPIC)})
-    mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "HTTPS://ntfy.example"}, set())
+    rows = [[{"type": "webhook", "url_ref": "env:X"}, {"type": "webhook", "url": "https://hook.example/ok"}]]
+    assert mu.exposed_identities(_NotifyStore(rows)) == {"url:hook.example/ok"}
 
 
 def test_check_channel_webhook_and_discord_order_and_texts():
@@ -423,7 +405,7 @@ def test_check_channel_webhook_and_discord_order_and_texts():
     mu.check_channel({"type": "discord", "url": disc}, set())
 
 
-@pytest.mark.parametrize("ctype", [None, "email", "Discord", "NTFY"])
+@pytest.mark.parametrize("ctype", [None, "email", "Discord", "NTFY", "ntfy"])
 def test_check_channel_unknown_types(ctype):
     with pytest.raises(ValueError, match="stöds inte för upplåsningskoder"):
         mu.check_channel({"type": ctype, "to": "a@b.se", "from": "c@d.se"}, set())
@@ -559,15 +541,15 @@ def test_flag_actions_are_the_imap_system_flags():
 
 def test_mask_channel_every_branch():
     spec = {
-        "type": "ntfy", "topic": "hemligtämne", "url": "https://hook.example:8443/x/y?q=1",
-        "url_ref": "env:U", "token": "t", "password": "p", "server": "https://ntfy.sh", "port": 5,
+        "type": "webhook", "url": "https://hook.example:8443/x/y?q=1",
+        "url_ref": "env:U", "token": "t", "password": "p", "port": 5,
     }
     assert ch.mask_channel(spec) == {
-        "type": "ntfy", "topic": "he***", "url": "https://hook.example/***", "url_ref": "***",
-        "token": "***", "password": "***", "server": "https://ntfy.sh", "port": 5,
+        "type": "webhook", "url": "https://hook.example/***", "url_ref": "***",
+        "token": "***", "password": "***", "port": 5,
     }
-    assert ch.mask_channel({"url": "inget-schema", "topic": ""}) == {"url": "***", "topic": ""}
-    assert ch.mask_channel({"url": None, "topic": 12345}) == {"url": None, "topic": 12345}
+    assert ch.mask_channel({"url": "inget-schema"}) == {"url": "***"}
+    assert ch.mask_channel({"url": None}) == {"url": None}
     assert ch.mask_channel({"url": "mailto:x@y.se"}) == {"url": "mailto:///***"}
     assert ch.mask_channel(None) == {}
 
@@ -581,23 +563,20 @@ def test_build_channels_reasons_and_order():
         {"type": "email", "to": "a@b.se", "project": "alfa"},
         {"type": "webhook"},
         {"type": "webhook", "url": "https://hook.example/x"},
-        {"type": "ntfy"},
-        {"type": "ntfy", "topic": "t"},
         {"type": "sms"},
         {"type": "email", "project": "alfa"},
         {"type": "webhook", "url": "http://discord.com/api/webhooks/1/t"},
         {"type": "webhook", "url": "http://127.0.0.1/x"},
     ]
     built = ch.build_channels(specs, acl=acl, user="jimmy", _http=object(), rejected=rejected)
-    assert [type(c).__name__ for c in built] == ["EmailChannel", "WebhookChannel", "NtfyChannel"]
+    assert [type(c).__name__ for c in built] == ["EmailChannel", "WebhookChannel"]
     assert rejected == [
         {"index": 0, "type": "email", "reason": "du är inte ägare av projektet som e-posten skickas från"},
         {"index": 2, "type": "webhook", "reason": "kanalen kunde inte byggas (ValueError)"},
-        {"index": 4, "type": "ntfy", "reason": "kanalen kunde inte byggas (KeyError)"},
-        {"index": 6, "type": "okänd", "reason": "okänd kanaltyp"},
-        {"index": 7, "type": "email", "reason": "kanalen kunde inte byggas (KeyError)"},
-        {"index": 8, "type": "webhook", "reason": "Discord-webhooks måste vara https på standardport"},
-        {"index": 9, "type": "webhook", "reason": "URL:en vägras (SSRF-skydd eller tvetydig adress)"},
+        {"index": 4, "type": "okänd", "reason": "okänd kanaltyp"},
+        {"index": 5, "type": "email", "reason": "kanalen kunde inte byggas (KeyError)"},
+        {"index": 6, "type": "webhook", "reason": "Discord-webhooks måste vara https på standardport"},
+        {"index": 7, "type": "webhook", "reason": "URL:en vägras (SSRF-skydd eller tvetydig adress)"},
     ]
 
 
@@ -631,18 +610,6 @@ def test_validate_channels_refs_checked_before_type():
     server._validate_channels([{"type": "email", "to": "a@b.se"}])
 
 
-def test_validate_channels_ntfy_topic_and_https():
-    with pytest.raises(ValueError, match="ntfy topic must be"):
-        server._validate_channels([{"type": "ntfy", "topic": "har mellanslag"}])
-    with pytest.raises(ValueError, match="ntfy topic must be"):
-        server._validate_channels([{"type": "ntfy"}])
-    with pytest.raises(ch.ChannelRefused, match="ntfy måste vara https"):
-        server._validate_channels([{"type": "ntfy", "topic": "abc", "server": "http://ntfy.example"}])
-    with pytest.raises(ValueError, match="channel url avvisad"):
-        server._validate_channels([{"type": "ntfy", "topic": "abc", "server": "https://127.0.0.1"}])
-    server._validate_channels([{"type": "ntfy", "topic": "abc"}])
-
-
 def test_validate_channels_webhook_urls():
     server._validate_channels([{"type": "webhook"}])
     server._validate_channels([{"type": "webhook", "url": "http://hook.example/x"}])
@@ -650,5 +617,5 @@ def test_validate_channels_webhook_urls():
         server._validate_channels([{"type": "webhook", "url": "http://127.0.0.1/x"}])
     with pytest.raises(ch.ChannelRefused, match="Discord-webhooks"):
         server._validate_channels([{"type": "webhook", "url": "http://discord.com/api/webhooks/1/t"}])
-    with pytest.raises(ValueError, match="ntfy topic must be"):
+    with pytest.raises(ValueError, match="unknown channel type 'ntfy'"):
         server._validate_channels([{"type": "webhook", "url": "https://hook.example/x"}, {"type": "ntfy"}])

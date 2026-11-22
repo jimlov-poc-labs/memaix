@@ -84,18 +84,15 @@ får visa var den skickas. Felmeddelanden, loggar och audit nämner bara kanalty
   anropen räknas kanalen som misslyckad; misslyckas förklaringen skickas koden inte alls. Måste vara `https://discord.com/api/webhooks/<id>/<token>`
   (eller discordapp.com, ptb., canary.). **Ingen query-sträng**: `?wait=true` får Discord att returnera
   meddelandet med id, och med URL + id går meddelandet att läsa tillbaka. Svaret läses aldrig.
-- `ntfy`: ämnet (`topic` eller hellre `topic_ref`) måste vara minst 24 slumptecken (`A-Z a-z 0-9 _ -`),
-  eftersom vem som helst som kan ämnet kan läsa det. `token_ref` skickas som `Authorization: Bearer`
-  (för skyddade ämnen på egen server eller ntfy.sh-konto). `server` måste vara https.
 - `webhook`: generisk JSON-post `{subject, text}`, samma krav som discord på https och ingen query-sträng.
 - `smtp`: ett eget avsändarkonto med `host`, `port`, `user`, `password_ref`, `from` och `to`.
 
 Vägras:
 
 - Kanaltypen `email` från notiserna: den skickar från en projektlåda som modellen kan läsa.
-- En `ntfy`-/`discord`-/`webhook`-kanal med samma ämne eller webhook som **någon användares brief-kanal**.
+- En `discord`-/`webhook`-kanal med samma webhook som **någon användares brief-kanal**.
   Brief-kanalerna sätter modellen själv via `brief_configure`, så de är kända för den. Jämförelsen
-  normaliserar (ntfy.sh som standardserver, värdnamnets skiftläge, Discords värdalias via webhook-id).
+  normaliserar (värdnamnets skiftläge, Discords värdalias via webhook-id).
 - En `smtp`-kanal där `to`, `from` eller `user` hamnar i en låda som något mejlverktyg kan läsa (alla
   acl.yaml-lådor och alla länkade konton för alla användare). Adresser normaliseras först: skiftläge,
   `+tagg`, och för Gmail punkter och `googlemail.com`. Dessutom vägras **hela domänen** om en läsbar låda
@@ -109,10 +106,10 @@ Brief-kanaler (som användaren och modellen sätter via `brief_configure` eller 
 några `*_ref`-fält: då kunde modellen låta servern slå upp en hemlighet och skicka den till en adress den
 själv valt. Hemlighetsreferenser hör bara hemma i operatörens konfiguration.
 
-`brief_status` och `brief_configure` maskerar ntfy-ämnen (`ab***`), webhook-URL:er (`https://värd/***`) och
+`brief_status` och `brief_configure` maskerar webhook-URL:er (`https://värd/***`) och
 `*_ref`. Brief-leveransens fel rapporteras bara som kanal- och feltyp.
 
-**Inga tysta fel för vägrade kanaler** (2026-10-26). En sparad kanal som vägras vid utskick (http-ntfy,
+**Inga tysta fel för vägrade kanaler** (2026-10-26). En sparad kanal som vägras vid utskick (
 Discord utan https på standardport, tvetydig URL, e-postlåda i ett projekt där användaren inte längre är
 ägare, okänd typ) hoppas över men syns:
 
@@ -137,7 +134,7 @@ mail_send_unlock:
   request_window_minutes: 15
   channels:
     - {type: discord, url_ref: "env:UNLOCK_DISCORD_WEBHOOK"}
-    # - {type: ntfy, topic_ref: "env:UNLOCK_NTFY_TOPIC", token_ref: "env:UNLOCK_NTFY_TOKEN"}
+    # - {type: webhook, url_ref: "env:UNLOCK_WEBHOOK_URL"}
     # - {type: smtp, host: smtp.purelymail.com, port: 465, user: kod@annan.se,
     #    password_ref: env:UNLOCK_SMTP_PASSWORD, from: kod@annan.se, to: jimmy@annan.se}
 mail_dialog:
@@ -159,11 +156,11 @@ styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det
   flagga vore ett fält till som modellen kan sätta via `brief_configure`, och spärren skulle behöva
   vakta det också. Vill du ha notiser från n8n med spärren på, låt n8n posta direkt till kanalen.
   Kan konfigurationen inte läsas räknas spärren som påslagen;
-- `brief_configure` får inte lägga till en **ny** mottagare (e-postadress/projekt, webhook, ntfy-ämne) utan
+- `brief_configure` får inte lägga till en **ny** mottagare (e-postadress/projekt, webhook) utan
   upplåst session och ägarroll. Att behålla, ta bort, ordna om eller byta format på redan sparade mottagare
   kräver ingen kod. En Discord-webhook känns igen på sitt id (värdalias räknas som samma) men bara över
-  `https` på standardport; andra webhooks och ntfy måste stämma exakt i schema, värd, port, sökväg (ämne)
-  och query. Identiteten räknas fram med samma URL-parser som `requests` skickar med (urllib3);
+  `https` på standardport; andra webhooks måste stämma exakt i schema, värd, port, sökväg och query.
+  Identiteten räknas fram med samma URL-parser som `requests` skickar med (urllib3);
 - forward och reply kräver som förut upplåst session.
 
 Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
@@ -195,11 +192,7 @@ skicka från ett projekt där du är collaborator), `allow_send` **och** en uppl
   före varje utskick, även för redan sparade kanaler och iCal-URL:er): bakstreck, blanksteg och
   kontrolltecken, användarinfo (`user@värd`), procentkodad värd, och värd som stdlib och urllib3 tolkar
   olika. Granskning 2026-10-26: `https://attacker.test\@discord.com/...` var discord.com för kontrollen
-  men attacker.test för `requests`. En Discord-värd kräver dessutom `https` på standardport, och ett
-  ntfy-ämne får bara innehålla A-Z, a-z, 0-9, `_` och `-`.
-- **ntfy kräver https** (Jimmys beslut 2026-10-26, samma linje som Discord): ämnet är lika hemligt som en
-  Discord-token. http vägras när kanalen sparas (brief och kodkanal) och en redan sparad http-kanal hoppas
-  över vid varje utskick. Porten är fri, eftersom en egen ntfy-server kan köra https på annan port än 443.
+  men attacker.test för `requests`. En Discord-värd kräver dessutom `https` på standardport.
 - **Reply-To-varningen är information, inte en spärr.** Modellen kan själv anropa `email_reply` med
   `confirm_reply_to=True`; den som läser chatten ska se varningen innan det sker.
 - **Det finns ingen hård mottagar-allowlist.** En upplåst session kan skicka till vilken adress som helst.

@@ -6,7 +6,6 @@ from __future__ import annotations
 from memaix_gateway.acl import Acl
 from memaix_gateway.notify.channels import (
     EmailChannel,
-    NtfyChannel,
     WebhookChannel,
     build_channels,
 )
@@ -76,39 +75,6 @@ def test_webhook_raw_format_posts_structured_payload():
     assert kwargs["json"] == {"subject": "Subj", "text": "txt", "markdown": "md"}
 
 
-def test_ntfy_posts_text_to_topic_url():
-    http = _FakeHttp()
-    ch = NtfyChannel("memaix-alice", server="https://ntfy.sh", _http=http)
-    ch.send("Subj", "md", "hello there")
-    url, kwargs = http.calls[0]
-    assert url == "https://ntfy.sh/memaix-alice"
-    assert kwargs["data"] == b"hello there"
-    assert kwargs["headers"]["Title"] == "Subj"
-
-
-def test_ntfy_ascii_title_is_not_rfc2047_encoded():
-    http = _FakeHttp()
-    ch = NtfyChannel("memaix-alice", server="https://ntfy.sh", _http=http)
-    ch.send("Plain ASCII subject", "md", "hello there")
-    _, kwargs = http.calls[0]
-    assert kwargs["headers"]["Title"] == "Plain ASCII subject"
-
-
-def test_ntfy_non_ascii_title_is_rfc2047_encoded():
-    http = _FakeHttp()
-    ch = NtfyChannel("memaix-alice", server="https://ntfy.sh", _http=http)
-    subject = "Brief — Ny sammanfattning för Åsa"
-    ch.send(subject, "md", "hello there")
-    _, kwargs = http.calls[0]
-    title = kwargs["headers"]["Title"]
-    # must be pure latin-1/ASCII-safe, or requests would raise UnicodeEncodeError
-    title.encode("latin-1")
-    assert title.startswith("=?utf-8?")
-    from email.header import decode_header
-    decoded_bytes, charset = decode_header(title)[0]
-    assert decoded_bytes.decode(charset) == subject
-
-
 def test_email_channel_uses_injected_smtp():
     acl = Acl(
         users={"alice": {"grants": {"shared": "owner"}}},
@@ -139,11 +105,11 @@ def test_build_channels_skips_broken_spec_but_builds_others():
     )
     specs = [
         {"type": "webhook"},  # missing url -> should be skipped, not raise
-        {"type": "ntfy", "topic": "t"},
+        {"type": "webhook", "url": "https://example.com/hook"},
     ]
     channels = build_channels(specs, acl=acl)
     assert len(channels) == 1
-    assert isinstance(channels[0], NtfyChannel)
+    assert isinstance(channels[0], WebhookChannel)
 
 
 def test_build_channels_unknown_type_is_skipped():
@@ -168,13 +134,5 @@ def test_webhook_does_not_follow_redirects():
     http = _FakeHttp()
     ch = WebhookChannel("https://example.com/hook", "raw", _http=http)
     ch.send("Subj", "md", "txt")
-    _, kwargs = http.calls[0]
-    assert kwargs["allow_redirects"] is False
-
-
-def test_ntfy_does_not_follow_redirects():
-    http = _FakeHttp()
-    ch = NtfyChannel("memaix-alice", server="https://ntfy.sh", _http=http)
-    ch.send("Subj", "md", "hello")
     _, kwargs = http.calls[0]
     assert kwargs["allow_redirects"] is False

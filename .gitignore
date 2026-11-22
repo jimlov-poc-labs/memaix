@@ -23,7 +23,6 @@ cloudflared/*
 # Runtime data — skapas av containrarna, ägs av deployen, hör aldrig i repot.
 vaults/
 data/
-ntfy/
 
 # Backupfiler. Uppstår vid varje handpåläggning på servern och är per definition
 # kopior av det som redan är känsligt: elva låg i /srv/memaix, två av dem `.env`.

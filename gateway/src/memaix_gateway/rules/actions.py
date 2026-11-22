@@ -120,7 +120,7 @@ def _run_notify(acl, user: str, params: dict, *, tools: dict | None, locked: boo
         try:
             ch.send("Memaix — automation", text, text)
         except Exception as exc:  # noqa: BLE001
-            # Type only: requests' error text contains the webhook URL / ntfy topic.
+            # Type only: requests' error text contains the webhook URL.
             errors.append(f"{type(ch).__name__}: {type(exc).__name__}")
     return {"ok": not errors, "errors": errors, "channels_used": len(channels)}
 

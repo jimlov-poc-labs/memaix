@@ -36,7 +36,7 @@ kombineras via RRF — identisk backend-logik som MCP-verktyget `search_all`.
 En ny flik **Brief** under `/app/settings` låter användaren slå på och
 konfigurera sin dagliga sammanfattning. Formuläret visar: aktivera/inaktivera,
 tid (HH:MM), tidszon (IANA-väljare med autocomplete), tysta timmar (start/slut),
-kanaler (e-post, webhook, ntfy) och projekturval. Spara → `POST /app/api/brief`.
+kanaler (e-post, webhook) och projekturval. Spara → `POST /app/api/brief`.
 Statusruta visar när nästa brief skickas.
 
 ### Admin-skrivoperationer
@@ -235,7 +235,7 @@ Flik-innehåll:
 - Tidszon-fältet är ett `<input list="tz-list">` med ett `<datalist>` förfyllt med
   vanliga IANA-tidszoner (inte fullständig lista — topp ~50 + användarens nuvarande).
 - Kanal-builder: "Lägg till kanal"-knapp öppnar en inline-modal med typ-väljare
-  (e-post / webhook / ntfy) och relevanta fält. `url_ref`-fält accepterar
+  (e-post / webhook) och relevanta fält. `url_ref`-fält accepterar
   `env:VAR_NAME`-syntax och visar tydlig tooltip "referens, inte klartext-URL".
 - Validering klient-side: HH:MM-format (regex), tidszon (måste finnas i listan),
   e-postformat.

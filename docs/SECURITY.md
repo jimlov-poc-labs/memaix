@@ -48,7 +48,7 @@ MCP-verktygsytan, ACL-isoleringen, path/SQL/XML-hanteringen — var redan solid)
 - **Regel-egress.** `notify`-regler kräver nu `owner` (utgående åtgärd) och alla regelutlösta
   åtgärder auditloggas (`rule_action:*`). Understreck-prefixade parametrar strippas i regelvägen så
   en regel aldrig kan sätta `_confirmed=true` och kringgå utkorgen.
-- **SSRF-guard** (`safety/net.py`) på användar-angivna URL:er (iCal-hemlighet, webhook/ntfy-kanaler):
+- **SSRF-guard** (`safety/net.py`) på användar-angivna URL:er (iCal-hemlighet, webhook-kanaler):
   loopback/link-local/privata/reserverade adresser avvisas, både när URL:en sätts och precis före
   hämtning.
 - **Identitet fail-closed i HTTP-läge:** en saknad OAuth-token nekar i stället för att falla tillbaka

@@ -24,7 +24,8 @@ lägga ett meddelande i användarens chatt eller skicka en telefonnotis.
 Konsekvens för designen:
 
 - **Proaktiv leverans sker via sidokanaler** — e-post (finns redan via SMTP),
-  push (ntfy/Pushover/Web Push), chatt-webhooks (Slack/Telegram). Se
+  chatt-webhooks (Slack/Telegram/Discord). ntfy togs bort som kanal (Jimmy
+  2026-11-22). Se
   [Leveranskanaler](#4-leveranskanaler).
 - **Connectorn får en kompletterande "hämta-vid-öppning"-roll**: en MCP-prompt
   `daily_brief` och verktyget `brief_preview` levererar briefen när användaren
@@ -56,7 +57,7 @@ erbjuder samma innehåll on-demand.
                                     ▼
                     ┌──────────────────────────────────────────┐
                     │  Delivery: NotificationChannel-adaptrar    │
-                    │  email · webhook(slack/telegram) · ntfy    │
+                    │  email · webhook(slack/telegram/discord)   │
                     │  idempotens-vakt (user+date+slot)          │
                     └──────────────────────────────────────────┘
 
@@ -117,8 +118,7 @@ CREATE TABLE IF NOT EXISTS brief_sent (
 ```json
 [
   {"type": "email", "to": "jimmy@example.com"},
-  {"type": "webhook", "url_ref": "env:BRIEF_SLACK_WEBHOOK", "format": "slack"},
-  {"type": "ntfy", "topic": "memaix-jimmy", "server": "https://ntfy.sh"}
+  {"type": "webhook", "url_ref": "env:BRIEF_SLACK_WEBHOOK", "format": "slack"}
 ]
 ```
 
@@ -142,12 +142,12 @@ Adaptrar i v1:
 | type | Krav | Anteckning |
 |------|------|-----------|
 | `email` | projektets SMTP-config (finns) | Återanvänd `email_send`-vägen; skicka till `channels[].to`. |
-| `webhook` | `url_ref` + `format` (`slack`\|`raw`) | POST JSON. `slack` → `{"text": ...}`. Timeout 10 s. |
-| `ntfy` | `topic` (+ valfri `server`) | POST text till `{server}/{topic}`. |
+| `webhook` | `url_ref` + `format` (`slack`\|`discord`\|`raw`) | POST JSON. `slack` → `{"text": ...}`. Timeout 10 s. |
 
 Varje adapter tar emot både `markdown` och en förrenderad `text`-variant så
-kanaler utan markdown (ntfy) får läsbar text. Fel i en kanal får **inte** stoppa
-övriga — logga och fortsätt (per-kanal try/except).
+kanaler utan markdown-stöd får läsbar text. Fel i en kanal får **inte** stoppa
+övriga — logga och fortsätt (per-kanal try/except). (ntfy togs bort som kanal,
+Jimmy 2026-11-22.)
 
 Web Push/PWA är medvetet utanför v1 (kräver service worker + VAPID); se
 [Framtida arbete](#framtida-arbete).
@@ -327,14 +327,14 @@ före/efter `record_sent`.
 
 ### Steg 2 — `notify/channels.py`
 Definiera `NotificationChannel` (Protocol) och adaptrarna `EmailChannel`,
-`WebhookChannel`, `NtfyChannel`. Varje `send(subject, markdown, text)`.
+`WebhookChannel`. Varje `send(subject, markdown, text)`. (ntfy fanns som
+tredje adapter men togs bort som kanal, Jimmy 2026-11-22.)
 `build_channels(specs: list[dict], *, _http=None, _smtp=None, acl=None, project=None)`
 bygger adaptrar från JSON-specarna; resolva `url_ref` via `config.secret`.
 HTTP-anrop via injicerbar klient (default `requests.post`, timeout 10).
 **Test** (`tests/test_notify_channels.py`): webhook `slack`-format POST:ar
-`{"text": ...}` till rätt URL (mocka `_http`); ntfy POST:ar text till
-`{server}/{topic}`; en trasig kanal kastar men fångas av leveranslagret (testas i
-steg 5). Ingen riktig nätverkstrafik.
+`{"text": ...}` till rätt URL (mocka `_http`); en trasig kanal kastar men
+fångas av leveranslagret (testas i steg 5). Ingen riktig nätverkstrafik.
 
 ### Steg 3 — Bryt ut kalenderupplösning
 I `server.py`, extrahera kärnan i `_resolve_calendar_dav(project, user)` till en

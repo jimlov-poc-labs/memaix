@@ -4,8 +4,7 @@
 # Täcker: install.sh (förkontroll, klon-detektering), bootstrap.py --init --yes
 # (trial-profil), config- och hemlighetsgenerering, vault-seed, `make up`
 # (bygger gateway + login-app, reser hydra-profilen: gateway, login-app, caddy,
-# postgres, hydra; ntfy har egen profil sedan paketeringsarbetet och
-# startar inte här), `make doctor` (config, gateway /health, Hydra
+# postgres, hydra), `make doctor` (config, gateway /health, Hydra
 # discovery), omkörning, samt hemlighetshygien: .env 600, inga hemligheter i
 # loggen, inget genererat som git ser.
 #
