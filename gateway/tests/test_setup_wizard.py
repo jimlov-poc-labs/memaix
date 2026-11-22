@@ -244,6 +244,25 @@ def test_apply_writes_config_and_shuts_down(wizard):
     assert not thread.is_alive()
 
 
+def test_apply_never_echoes_nextcloud_admin_password(wizard):
+    """Lösenordet till det Nextcloud-adminkonto write_config genererar (för
+    den bundlade profilen, oavsett om formuläret än frågar om den) ska aldrig
+    dyka upp i /apply-svaret eller i .setup-result.json."""
+    port, root, _ = wizard
+    fields = urlencode({
+        "track": "1", "admin_user": "jimmy",
+        "password": "hemligt123", "password2": "hemligt123",
+        "project_name": "acme",
+    })
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+
+    password = _nc_password((root / ".env").read_text())
+    assert password not in body
+    result_text = (root / ".setup-result.json").read_text()
+    assert password not in result_text
+
+
 def test_write_config_llm_api_provider(tmp_path):
     a = _answers(llm_provider="anthropic", llm_model="claude-sonnet-4-5",
                  llm_api_key="sk-ant-test")
@@ -400,9 +419,13 @@ def test_unattended_init_generates_password_file(tmp_path, monkeypatch, capsys):
     assert (pw_file.stat().st_mode & 0o777) == 0o600
     password = pw_file.read_text().strip()
     assert len(password) >= 20
-    assert password not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert password not in out
     acl = yaml.safe_load((tmp_path / "config" / "acl.yaml").read_text())
     assert acl["users"]["admin"]["admin"] is True
+
+    nc_password = _nc_password((tmp_path / ".env").read_text())
+    assert nc_password not in out
 
 
 def test_unattended_rejects_unknown_profile(monkeypatch):
