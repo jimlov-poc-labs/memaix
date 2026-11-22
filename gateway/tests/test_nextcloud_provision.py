@@ -177,17 +177,19 @@ def test_ocs_connection_error_still_raises_plain_provision_error_and_removes_sec
     assert not _secret_file(cfg_dir).exists()
 
 
-def test_ocs_connect_timeout_is_treated_as_outcome_unknown_too(cfg_dir):
-    """requests.exceptions.ConnectTimeout is both a ConnectionError and a Timeout.
-    This task deliberately treats it as a Timeout (OutcomeUnknown, secret kept)
-    even though the TCP handshake never completing arguably means the account
-    cannot exist; see report ("Behöver beslut") for the tradeoff. Pins the
-    current, intentional behaviour so a future change is a visible decision,
-    not a silent side effect of reordering the except clauses."""
+def test_ocs_connect_timeout_is_a_plain_provision_error_not_outcome_unknown(cfg_dir):
+    """requests.exceptions.ConnectTimeout is both a ConnectionError and a Timeout,
+    but it means the TCP/TLS handshake never completed — no request body was
+    ever sent, so the account cannot have been created. Caught ahead of the
+    generic Timeout branch and treated like any other unreachable-host
+    failure: plain ProvisionError, secret file removed."""
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
     boom = requests.exceptions.ConnectTimeout("connect timed out")
-    with pytest.raises(ProvisionError, match="may have been created anyway"):
+    with pytest.raises(ProvisionError) as err:
         provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
-    assert _secret_file(cfg_dir).exists()
+    assert not isinstance(err.value, OutcomeUnknown)
+    assert not _secret_file(cfg_dir).exists()
 
 
 def test_non_json_response_is_an_error(cfg_dir):

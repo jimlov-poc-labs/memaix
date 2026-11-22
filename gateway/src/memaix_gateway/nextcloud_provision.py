@@ -189,7 +189,16 @@ def _create_user(settings: dict, http, user: str, password: str, name: str) -> b
             },
             timeout=_OCS_TIMEOUT_S,
         )
+    except requests.exceptions.ConnectTimeout as exc:
+        # The TCP/TLS handshake itself never completed — no request body was
+        # ever sent, so the account cannot have been created. Treat like any
+        # other unreachable-host failure, not an unknown outcome.
+        raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
     except requests.exceptions.Timeout:
+        # A ConnectTimeout is also a Timeout, so this only catches what's left
+        # once the branch above has run: the connection succeeded and the
+        # request was sent (typically a ReadTimeout) — Nextcloud may have
+        # processed it before the response timed out.
         raise OutcomeUnknown(
             f"Nextcloud took longer than {_OCS_TIMEOUT_S}s to respond to the account-creation request for "
             f"{user}; the account may have been created anyway. The secret file nc-{name} was kept; "
