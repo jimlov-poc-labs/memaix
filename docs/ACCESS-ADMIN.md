@@ -77,7 +77,7 @@ Det finns två helt olika mekanismer i Memaix, och de blandas lätt ihop:
 
 | Vill du... | Mekanism | Vem ser mejlet |
 |---|---|---|
-| Ett **gemensamt** konto hela teamet läser som samma brevlåda (t.ex. `info@dittforetag.se`) | `acl.yaml`:s delade `mailbox`-resurs, lösenordet som `password_ref` i `.env` | Alla med åtkomst till projektet |
+| Ett **gemensamt** konto hela teamet läser som samma brevlåda (t.ex. `info@dittforetag.se`) | `cli.py mailbox-set` (nedan) — skriver `acl.yaml`:s delade `mailbox`-resurs | Alla med åtkomst till projektet |
 | **Din egen** inkorg, kopplad till ditt konto, synlig för dig i de projekt du väljer | `link-imap` (denna sida) | Bara du — varje person kör det för sig själv |
 
 `link-imap`/`account_link_imap` är den mekanism som redan finns färdigbyggd (BACKENDS.md,
@@ -89,9 +89,24 @@ länkade konto (`FEATURE-CONNECTOR-FRAMEWORK.md`, `test_bobs_linked_account_neve
 
 ### Ett delat teamkonto (den första raden i tabellen)
 
-Det finns inget CLI-kommando för det här — det är en vanlig konfigurationsrad i `acl.yaml` plus
-en hemlighet i `.env`, inte något `account_link_imap`/TokenStore hanterar. Lägg till i
-`acl.yaml` under projektet:
+```sh
+printf '%s\n' "$PW" | docker compose exec -T gateway \
+  python -m memaix_gateway.cli mailbox-set acme info@acme.se \
+  --host imap.purelymail.com
+```
+
+Lösenordet läses från stdin, aldrig argv (samma mönster som `link-imap`). Kommandot:
+
+- vägrar om `acme` inte redan finns som projekt i `acl.yaml`,
+- vägrar om projektet redan har en `mailbox:`-resurs — lägg till `--force` för att medvetet
+  byta ut den (t.ex. vid lösenordsrotation eller byte av brevlåda),
+- skriver lösenordet till en egen hemlighetsfil under `config/secrets/` (katalog `0700`, fil
+  `0600`, skapas aldrig tyst över en befintlig fil utan `--force` — samma mönster som
+  Nextcloud-provisioneringens hemlighetsfiler, SECRETS.md),
+- skriver `acl.yaml`s `mailbox:`-resurs via samma atomiska `AclWriter` (backup `.bak1-3`) som
+  övrig ACL-administration använder — aldrig en egen parallell YAML-skrivare.
+
+Resultatet i `acl.yaml`:
 
 ```yaml
 projects:
@@ -99,24 +114,33 @@ projects:
     mailbox:
       host: imap.purelymail.com
       user: info@acme.se
-      password_ref: env:ACME_MAILBOX_PW
+      password_ref: "file:/app/config/secrets/mailbox-acme"
 ```
 
-och i `.env` (bredvid containern, aldrig i repot):
+Valfria flaggor:
 
-```
-ACME_MAILBOX_PW=det-riktiga-lösenordet
-```
+- `--smtp-host`/`--smtp-port` — skriver en syskonresurs `smtp:` (host/port) som `email_send`/
+  `email_forward`/`email_reply` använder för utgående; utan den används mailboxens egen host på
+  port 587 med STARTTLS (ingen `imap.`→`smtp.`-gissning för delade mailboxar, till skillnad från
+  `link-imap`). SMTP-leveransen kör alltid STARTTLS — port 465 (implicit TLS) stöds inte här.
+- `--port` — tas emot och sparas på resursen för symmetri med `link-imap`, men läses i dagsläget
+  **inte** av den delade IMAP-adaptern (`tools/email.py`s `_make_mailbox`), som alltid kopplar på
+  standardporten. Känd begränsning, inte en bugg.
 
-Starta om gatewayen (`docker compose restart gateway`) så den läser det nya `.env`-värdet —
-till skillnad från `acl.yaml`, som login-appen läser om live, läses `.env` bara vid start.
-`password_ref` stöder även `file:`/`vault:`/`kms:` (docs/SECRETS.md); välj samma mönster som
-projektets övriga hemligheter.
+**Starta om gatewayen efteråt** (`docker compose restart gateway`): till skillnad från login-appen,
+som läser om `acl.yaml` live, cachar den körande gatewayprocessen `Acl` i minnet
+(`server._get_acl`/`reload_acl`) och ser bara en ändring skriven från en annan process (som denna
+CLI) efter omstart.
 
-**Det här är målet bakom "koppla teamets mejl"** om vad du vill är en enda delad brevlåda alla
-läser som samma identitet. Läget idag: ingen guidad flagga eller kommandoradsväg — bara denna
-manuella rad, och wizarden (BACKENDS.md fas 5, inte byggd än) kommer bara att skriva *avsikten*
-(`awaiting_link`, se nedan), aldrig själva hemligheten, eftersom den körs innan containern finns.
+`password_ref` stöder även `env:`/`vault:`/`kms:` (docs/SECRETS.md) om du hellre redigerar för
+hand, men `mailbox-set` skriver alltid `file:` — det går att läsa om direkt (ingen omstart krävs
+för att *läsa* den nya hemligheten, bara för att gatewayen ska se den nya `mailbox:`-resursen i
+`acl.yaml`).
+
+**OBS:** `mailbox-set` är en instansbred admin-operation (den som kan köra `docker compose exec`
+mot gatewayen), inte en projektägaroperation — det finns ingen inloggad "actor" i CLI:t att
+kontrollera mot, till skillnad från `project_member_set` m.fl. i `access_admin.py`. Skaladgång till
+containern är gränsen här, precis som för `link-imap` och `backend-status`.
 
 ### Var och ens egen inkorg (resten av det här avsnittet)
 
