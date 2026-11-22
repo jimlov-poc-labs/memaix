@@ -96,6 +96,14 @@ app-lösenord, som Nextcloud 32 vägrar för `addUser`). `method: occ_ssh` (ssh 
 `docs/SECRETS.md`) är en separat, senare optimering och gäller inte den bundlade containern, som
 saknar en SSH-server att nå in i.
 
+På `method: ocs`-vägen kan ett upprepat `project_create`-anrop efter ett tidigare timeout nu
+självläka: om hemlighetsfilen redan finns (lämnad kvar av ett avbrutet försök vars nätverksanrop
+kan ha gått igenom innan vi gav upp att vänta) görs en levande, läsande OCS-kontroll mot kontot
+`memaix-<namn>` med exakt det lösenordet. Stämmer den — kontot finns och svarar på just det
+lösenordet — behandlas försöket som redan lyckat (samma svar, ingen ny skrivning). Stämmer den
+inte (kontot saknas, eller lösenordet matchar inte) höjs samma fel som tidigare, och manuell
+uppstädning krävs fortfarande. Gäller bara OCS-vägen, inte `occ_ssh`.
+
 ## Config (per projekt-resurs)
 
 ```yaml

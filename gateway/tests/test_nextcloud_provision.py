@@ -18,10 +18,9 @@ ADMIN_PW = "admin-secret-value"
 
 
 class _Resp:
-    status_code = 200
-
-    def __init__(self, code=200, payload=None):
+    def __init__(self, code=200, payload=None, status_code=200):
         self._payload = payload if payload is not None else {"ocs": {"meta": {"statuscode": code}}}
+        self.status_code = status_code
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -98,15 +97,82 @@ def test_existing_user_raises_and_leaves_no_file(cfg_dir):
     assert not _secret_file(cfg_dir).exists()
 
 
-def test_existing_secret_file_is_never_overwritten(cfg_dir):
+def test_existing_secret_file_is_never_overwritten_when_no_matching_account_exists(cfg_dir):
+    """The file alone is never enough: a live auth check against Nextcloud,
+    with the file's own password, has to confirm a matching working account
+    before anything is adopted. Here it fails (401), so this stays the old
+    fail-closed behaviour — file untouched, no account-creating POST."""
     path = _secret_file(cfg_dir)
     path.parent.mkdir(parents=True)
     path.write_text("keep-me")
-    http = _Http()
+    http = _Http(_Resp(status_code=401))
     with pytest.raises(ProvisionError, match="already exists"):
         provision_project_files("acme", cfg=CFG, http=http)
     assert path.read_text() == "keep-me"
+    # One GET probe is made (to check), but it is never a write.
+    (url, kw), = http.calls
+    assert url == "https://nc.example/ocs/v2.php/cloud/users/memaix-acme"
+    assert kw["auth"] == ("memaix-acme", "keep-me")
+    assert "data" not in kw
+
+
+def test_adopts_matching_account_left_by_an_earlier_timeout_without_any_write(cfg_dir):
+    """Mirrors the OutcomeUnknown scenario: a secret file survived a prior
+    timeout, and the account it names turns out to work with that exact
+    password. That is not a conflict, just a provisioning that already
+    succeeded; this call self-heals instead of erroring."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("leftover-password-from-a-timed-out-run")
+    http = _Http(_Resp(200, status_code=200))
+    out = provision_project_files("acme", cfg=CFG, http=http)
+    assert out == {
+        "url": "https://nc.example/remote.php/dav/files/memaix-acme/",
+        "user": "memaix-acme",
+        "password_ref": f"file:{path}",
+    }
+    assert path.read_text() == "leftover-password-from-a-timed-out-run"
+    (url, kw), = http.calls
+    assert url == "https://nc.example/ocs/v2.php/cloud/users/memaix-acme"
+    assert kw["auth"] == ("memaix-acme", "leftover-password-from-a-timed-out-run")
+    assert kw["headers"] == {"OCS-APIRequest": "true", "Accept": "application/json"}
+    assert "data" not in kw  # a GET probe, never the account-creating POST
+
+
+def test_adopt_rejects_an_ocs_level_failure_even_with_http_200(cfg_dir):
+    """Nextcloud can answer HTTP 200 while the OCS payload itself reports
+    failure (e.g. statuscode 997, unauthorized); the probe must look at the
+    OCS status, not just the transport status code."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("keep-me")
+    http = _Http(_Resp(997, status_code=200))
+    with pytest.raises(ProvisionError, match="already exists"):
+        provision_project_files("acme", cfg=CFG, http=http)
+    assert path.read_text() == "keep-me"
+
+
+def test_adopt_skips_the_probe_entirely_for_an_empty_secret_file(cfg_dir):
+    """An empty file has no password to check against; fail closed without
+    making any network call at all."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("")
+    http = _Http()
+    with pytest.raises(ProvisionError, match="already exists"):
+        provision_project_files("acme", cfg=CFG, http=http)
     assert http.calls == []
+
+
+def test_ssh_method_never_attempts_adoption(cfg_dir):
+    """occ_ssh has its own account-check pattern; adoption is OCS-only."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("keep-me")
+    run = _Run()
+    with pytest.raises(ProvisionError, match="already exists"):
+        provision_project_files("acme", cfg=SSH_CFG, run=run)
+    assert run.calls == []
 
 
 def test_unconfigured_returns_none(monkeypatch, cfg_dir):
