@@ -158,9 +158,13 @@ def test_ocs_timeout_raises_outcome_unknown_and_keeps_secret(cfg_dir):
     from memaix_gateway.nextcloud_provision import OutcomeUnknown
 
     boom = requests.exceptions.ReadTimeout("read timed out")
-    with pytest.raises(OutcomeUnknown, match="may have been created anyway"):
+    with pytest.raises(OutcomeUnknown, match="may have been created anyway") as ei:
         provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
-    assert _secret_file(cfg_dir).exists()
+    path = _secret_file(cfg_dir)
+    assert path.exists()
+    password = path.read_text()
+    assert password not in str(ei.value)
+    assert ei.value.__cause__ is None and ei.value.__suppress_context__
 
 
 def test_ocs_connection_error_still_raises_plain_provision_error_and_removes_secret(cfg_dir):
@@ -171,6 +175,19 @@ def test_ocs_connection_error_still_raises_plain_provision_error_and_removes_sec
         provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
     assert not isinstance(err.value, OutcomeUnknown)
     assert not _secret_file(cfg_dir).exists()
+
+
+def test_ocs_connect_timeout_is_treated_as_outcome_unknown_too(cfg_dir):
+    """requests.exceptions.ConnectTimeout is both a ConnectionError and a Timeout.
+    This task deliberately treats it as a Timeout (OutcomeUnknown, secret kept)
+    even though the TCP handshake never completing arguably means the account
+    cannot exist; see report ("Behöver beslut") for the tradeoff. Pins the
+    current, intentional behaviour so a future change is a visible decision,
+    not a silent side effect of reordering the except clauses."""
+    boom = requests.exceptions.ConnectTimeout("connect timed out")
+    with pytest.raises(ProvisionError, match="may have been created anyway"):
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert _secret_file(cfg_dir).exists()
 
 
 def test_non_json_response_is_an_error(cfg_dir):
