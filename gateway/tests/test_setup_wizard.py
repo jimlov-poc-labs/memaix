@@ -448,6 +448,7 @@ def test_cli_wizard_api_choice_never_prints_the_key(monkeypatch, capsys):
         "1",                    # leverantör: Claude (Anthropic)
         "claude-sonnet-4-5",    # modellnamn
         "",                     # projektnamn (default shared)
+        "",                     # backends: senare (default)
         "j",                    # bekräfta
     ])
     secrets_in = iter(["hemligt123", "hemligt123", "topphemlig-nyckel"])
@@ -640,3 +641,211 @@ def test_validate_rejects_unknown_files_backend():
 def test_validate_accepts_known_files_backends():
     assert not engine.validate(_answers(files_backend=engine.FILES_BACKEND_NONE))
     assert not engine.validate(_answers(files_backend=engine.FILES_BACKEND_BUNDLED_NEXTCLOUD))
+
+
+# ───────────────── WIZARD.md fråga 6: mejl/kalender/filer ──────────────────
+
+
+def test_write_config_awaiting_link_writes_acl_metadata(tmp_path):
+    """Val [4] Egen IMAP/CalDAV: wizarden samlar inga credentials, bara en
+    `awaiting_link`-markering i acl.yaml som backend_status.py läser."""
+    a = _answers(backend_awaiting_link=True)
+    engine.write_config(a, tmp_path)
+    acl = yaml.safe_load((tmp_path / "config" / "acl.yaml").read_text())
+    assert acl["projects"]["acme"]["awaiting_link"] == ["mail", "calendar"]
+    assert acl["projects"]["shared"]["awaiting_link"] == ["mail", "calendar"]
+
+
+def test_write_config_no_awaiting_link_by_default(tmp_path):
+    engine.write_config(_answers(), tmp_path)
+    acl = yaml.safe_load((tmp_path / "config" / "acl.yaml").read_text())
+    assert "awaiting_link" not in acl["projects"]["acme"]
+
+
+def test_backend_report_lines_nextcloud():
+    # Ren summary-dict räcker (ingen disk-I/O behövs för report-logiken).
+    lines = engine.backend_report_lines({"files_backend": engine.FILES_BACKEND_BUNDLED_NEXTCLOUD})
+    assert any("Nextcloud" in line and "klar" in line for line in lines)
+
+
+def test_backend_report_lines_google_and_microsoft_point_to_per_user_link():
+    lines = engine.backend_report_lines({
+        "files_backend": engine.FILES_BACKEND_NONE,
+        "google_oauth_configured": True,
+        "microsoft_oauth_configured": True,
+    })
+    joined = " ".join(lines)
+    assert "/link/google" in joined
+    assert "/link/microsoft" in joined
+
+
+def test_backend_report_lines_later_or_imap_points_to_backend_status_and_link_imap():
+    lines = engine.backend_report_lines({"files_backend": engine.FILES_BACKEND_NONE})
+    joined = " ".join(lines)
+    assert "backend-status" in joined
+    assert "link-imap" in joined
+
+
+def _backend_wizard_inputs(backend_choice: str, extra: list[str] | None = None) -> list[str]:
+    base = [
+        "1",                    # spår: prova lokalt
+        "",                     # produktnamn
+        "",                     # support-mejl
+        "",                     # admin-användarnamn
+        "1",                    # AI-val: BYO (default)
+        "",                     # projektnamn
+        backend_choice,         # backends
+    ]
+    base += extra or []
+    base.append("j")           # bekräfta
+    return base
+
+
+def _run_cli_wizard_to_answers(monkeypatch, backend_choice: str, extra: list[str] | None = None,
+                                secrets: list[str] | None = None) -> dict:
+    inputs = iter(_backend_wizard_inputs(backend_choice, extra))
+    secrets_in = iter(["hemligt123", "hemligt123"] + (secrets or []))
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(inputs))
+    monkeypatch.setattr(bootstrap.getpass, "getpass", lambda *a, **kw: next(secrets_in))
+    captured: list[dict] = []
+    monkeypatch.setattr(bootstrap, "apply_answers", lambda answers, **kw: captured.append(answers))
+    bootstrap.run_wizard()
+    assert len(captured) == 1
+    return captured[0]
+
+
+def test_cli_wizard_backend_default_is_later(monkeypatch):
+    answers = _run_cli_wizard_to_answers(monkeypatch, "")
+    assert answers["files_backend"] == engine.FILES_BACKEND_NONE
+    assert answers["backend_awaiting_link"] is False
+    assert not answers["google_oauth_client_id"]
+    assert not answers["microsoft_oauth_client_id"]
+
+
+def test_cli_wizard_backend_nextcloud(monkeypatch):
+    answers = _run_cli_wizard_to_answers(monkeypatch, "2")
+    assert answers["files_backend"] == engine.FILES_BACKEND_BUNDLED_NEXTCLOUD
+
+
+def test_cli_wizard_backend_google(monkeypatch, capsys):
+    answers = _run_cli_wizard_to_answers(
+        monkeypatch, "3",
+        extra=["12345-abc.apps.googleusercontent.com"],
+        secrets=["topphemlig-google-secret"],
+    )
+    assert answers["google_oauth_client_id"] == "12345-abc.apps.googleusercontent.com"
+    assert answers["google_oauth_client_secret"] == "topphemlig-google-secret"
+    out = capsys.readouterr().out
+    assert "topphemlig-google-secret" not in out
+
+
+def test_cli_wizard_backend_microsoft(monkeypatch, capsys):
+    guid = "11111111-1111-1111-1111-111111111111"
+    tenant = "22222222-2222-2222-2222-222222222222"
+    answers = _run_cli_wizard_to_answers(
+        monkeypatch, "4",
+        extra=[guid, tenant],
+        secrets=["topphemlig-ms-secret"],
+    )
+    assert answers["microsoft_oauth_client_id"] == guid
+    assert answers["microsoft_oauth_tenant_id"] == tenant
+    assert answers["microsoft_oauth_client_secret"] == "topphemlig-ms-secret"
+    out = capsys.readouterr().out
+    assert "topphemlig-ms-secret" not in out
+
+
+def test_cli_wizard_backend_imap_sets_awaiting_link_not_credentials(monkeypatch):
+    answers = _run_cli_wizard_to_answers(monkeypatch, "5")
+    assert answers["backend_awaiting_link"] is True
+    assert answers["files_backend"] == engine.FILES_BACKEND_NONE
+    assert not answers["google_oauth_client_id"]
+    assert not answers["microsoft_oauth_client_id"]
+
+
+_PW = "hemligt123"
+
+
+def _apply_fields(**extra) -> str:
+    base = {
+        "track": "1", "admin_user": "jimmy",
+        "password": _PW, "password2": _PW,
+        "project_name": "acme",
+    }
+    base.update(extra)
+    return urlencode(base)
+
+
+def test_apply_backend_choice_nextcloud_writes_provision_block(wizard):
+    port, root, _ = wizard
+    fields = _apply_fields(backend_choice="nextcloud")
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+    cfg = yaml.safe_load((root / "config" / "memaix.yaml").read_text())
+    assert "nextcloud_provision" in cfg
+    assert "klar" in body.lower() or "Nextcloud" in body
+
+
+def test_apply_backend_choice_google_writes_oauth_and_never_leaks_secret(wizard):
+    port, root, _ = wizard
+    google_secret = "topphemlig-google-secret"
+    fields = _apply_fields(
+        backend_choice="google",
+        google_oauth_client_id="12345-abc.apps.googleusercontent.com",
+        google_oauth_client_secret=google_secret,
+    )
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+    assert google_secret not in body
+    cfg = yaml.safe_load((root / "config" / "memaix.yaml").read_text())
+    assert cfg["oauth_providers"]["google"]["client_id"] == "12345-abc.apps.googleusercontent.com"
+    env = (root / ".env").read_text()
+    assert f"GOOGLE_CLIENT_SECRET={google_secret}" in env
+    assert "/link/google" in body, "sluttexten ska peka mot per-user-länkningen"
+
+
+def test_apply_backend_choice_microsoft_requires_all_three_fields(wizard):
+    port, root, _ = wizard
+    fields = _apply_fields(
+        backend_choice="microsoft",
+        microsoft_oauth_client_id="11111111-1111-1111-1111-111111111111",
+        # tenant_id saknas med avsikt
+        microsoft_oauth_client_secret="topphemlig-ms-secret",
+    )
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200
+    assert "Microsoft" in body or "tenant" in body.lower()
+    assert not (root / "config" / "acl.yaml").exists()
+
+
+def test_apply_backend_choice_imap_sets_awaiting_link_not_credentials(wizard):
+    port, root, _ = wizard
+    fields = _apply_fields(backend_choice="imap")
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+    acl = yaml.safe_load((root / "config" / "acl.yaml").read_text())
+    assert acl["projects"]["acme"]["awaiting_link"] == ["mail", "calendar"]
+    assert "link-imap" in body or "backend-status" in body
+
+
+def test_apply_backend_choice_default_is_later(wizard):
+    port, root, _ = wizard
+    fields = _apply_fields()
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+    acl = yaml.safe_load((root / "config" / "acl.yaml").read_text())
+    assert "awaiting_link" not in acl["projects"]["acme"]
+    cfg = yaml.safe_load((root / "config" / "memaix.yaml").read_text())
+    assert "nextcloud_provision" not in cfg
+    assert "oauth_providers" not in cfg
+
+
+def test_apply_backend_choice_unknown_code_rejected_not_silent_later(wizard):
+    port, root, _ = wizard
+    fields = _apply_fields(backend_choice="dropbox")
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200
+    assert "Okänt backend-val" in body
+    assert not (root / "config" / "acl.yaml").exists(), (
+        "okänt backend_choice ska ge ett fel, inte tyst falla tillbaka till senare"
+    )
+

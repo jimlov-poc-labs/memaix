@@ -41,8 +41,8 @@ kunden, inte hos oss.
   gör redan länkade kontons krypterade tokens olästa och kan knäcka Hydra. Innan steg 3 (wizarden)
   finns, lägg till `oauth_providers`-blocket för hand i `config/memaix.yaml` (se
   `config/memaix.example.yaml`) och de två `*_CLIENT_SECRET`-raderna i `.env` manuellt.
-- Steg 3 i wizarden (ej byggt i detta uppdrag) kopplar frågorna i `bootstrap.py`/`setup_web.py`
-  till denna motor.
+- Steg 3 i wizarden kopplar frågorna i `bootstrap.py`/`setup_web.py` till denna motor
+  (`docs/WIZARD.md` fråga 6, val [2]/[3]) — klart, identiskt i båda bärarna.
 
 ### Vad en admin behöver hämta (på hög nivå — gränssnitten ändras, principen inte)
 

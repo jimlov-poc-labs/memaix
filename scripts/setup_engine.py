@@ -39,6 +39,27 @@ FILES_BACKEND_NONE = "none"
 FILES_BACKEND_BUNDLED_NEXTCLOUD = "bundled_nextcloud"
 FILES_BACKENDS = (FILES_BACKEND_NONE, FILES_BACKEND_BUNDLED_NEXTCLOUD)
 
+# WIZARD.md fråga 6, de fem valen på den yttre frågan ("nu eller senare?").
+# Bärarna (bootstrap.py/setup_web.py) tolkar koden till de befintliga
+# fälten (files_backend/google_oauth_*/microsoft_oauth_*/
+# backend_awaiting_link) INNAN de kallar hit — motorn ser bara resultatet,
+# precis som för llm_choice (CHOOSE-YOUR-LLM.md). Ett okänt kod-värde ska ge
+# ett tydligt fel, aldrig en tyst fallback till "senare"; bärarna gör det
+# genom att sätta files_backend till ett okänt värde, som validate() redan
+# vägrar (se FILES_BACKENDS-kontrollen).
+BACKEND_CHOICE_LATER = "later"
+BACKEND_CHOICE_NEXTCLOUD = "nextcloud"
+BACKEND_CHOICE_GOOGLE = "google"
+BACKEND_CHOICE_MICROSOFT = "microsoft"
+BACKEND_CHOICE_IMAP = "imap"
+BACKEND_CHOICES = (
+    BACKEND_CHOICE_LATER,
+    BACKEND_CHOICE_NEXTCLOUD,
+    BACKEND_CHOICE_GOOGLE,
+    BACKEND_CHOICE_MICROSOFT,
+    BACKEND_CHOICE_IMAP,
+)
+
 # Kontot nextcloud-imaget bootstrapar sig själv från (NEXTCLOUD_ADMIN_USER/
 # NEXTCLOUD_ADMIN_PASSWORD i .env, se docker-compose.yml) — samma konstant på
 # båda ställena write_config() skriver det, så de aldrig kan glida isär.
@@ -155,6 +176,13 @@ def defaults() -> dict:
         "microsoft_oauth_client_id": "",
         "microsoft_oauth_client_secret": "",
         "microsoft_oauth_tenant_id": "",
+        # WIZARD.md fråga 6, val [4] Egen IMAP/CalDAV: wizarden samlar INGA
+        # credentials här (den riktiga länkningen — account_link_imap/
+        # `memaix link-imap` — kräver en körande instans med en
+        # token-databas, som inte finns än medan setup körs på värden). Det
+        # enda setup gör är att markera att projektet väntar på en koppling,
+        # så `backend-status` kan visa det efteråt (docs/BACKENDS.md).
+        "backend_awaiting_link": False,
     }
 
 
@@ -392,8 +420,16 @@ def write_config(a: dict, root: Path) -> dict:
     if project != "shared":
         projects["shared"] = "/srv/vaults/shared"
     grants = "".join(f"      {p}: owner\n" for p in projects)
+    # WIZARD.md fråga 6, val [4] Egen IMAP/CalDAV: markera start-projekten som
+    # väntar på en koppling (backend_status.py::collect_status läser denna
+    # nyckel) i stället för att samla in credentials här — se defaults().
+    awaiting_link_lines = (
+        "    awaiting_link:\n      - mail\n      - calendar\n"
+        if a.get("backend_awaiting_link")
+        else ""
+    )
     project_blocks = "".join(
-        f"  {p}:\n    vault: {vault}\n    allow_send: false\n"
+        f"  {p}:\n    vault: {vault}\n    allow_send: false\n{awaiting_link_lines}"
         for p, vault in projects.items()
     )
     (config / "acl.yaml").write_text(
@@ -478,9 +514,50 @@ def write_config(a: dict, root: Path) -> dict:
         "files_backend": a.get("files_backend", FILES_BACKEND_NONE),
         "google_oauth_configured": google_oauth_configured,
         "microsoft_oauth_configured": microsoft_oauth_configured,
+        "backend_awaiting_link": bool(a.get("backend_awaiting_link")),
         "written": ["config/brand.yaml", "config/memaix.yaml", "config/acl.yaml", ".env"],
         "notice": files_notice(list(projects)),
     }
+
+
+def backend_report_lines(summary: dict) -> list[str]:
+    """Rader för wizardens sluttext om mejl/kalender/filer (WIZARD.md "Vad
+    wizarden skriver ut efteråt"). En källa delad av CLI och webb, så de
+    aldrig kan glida isär om texten ändras.
+
+    - Nextcloud: klar, ingen uppföljning krävs.
+    - Google/Microsoft konfigurerat på INSTANSNIVÅ (kundens egen OAuth-app):
+      varje person måste ändå länka sitt EGET konto (PER-USER-OAUTH.md) —
+      instansens config räcker inte själv.
+    - Annars (inget valt, eller [4] Egen IMAP/CalDAV): peka mot de verktyg
+      som redan finns för att se/koppla det efteråt.
+    """
+    lines: list[str] = []
+    if summary.get("files_backend") == FILES_BACKEND_BUNDLED_NEXTCLOUD:
+        lines.append(
+            "Filer: bundlad Nextcloud klar — ingen ytterligare koppling krävs."
+        )
+    if summary.get("google_oauth_configured"):
+        lines.append(
+            "Google/Workspace OAuth konfigurerad för instansen — varje person måste "
+            "ändå länka sitt EGET konto: /link/google (docs/PER-USER-OAUTH.md)."
+        )
+    if summary.get("microsoft_oauth_configured"):
+        lines.append(
+            "Microsoft/M365 OAuth konfigurerad för instansen — varje person måste "
+            "ändå länka sitt EGET konto: /link/microsoft (docs/PER-USER-OAUTH.md)."
+        )
+    if not (
+        summary.get("files_backend") == FILES_BACKEND_BUNDLED_NEXTCLOUD
+        or summary.get("google_oauth_configured")
+        or summary.get("microsoft_oauth_configured")
+    ):
+        lines.append(
+            "Mejl/kalender/filer: inget kopplat än. Se status med `memaix backend-status` "
+            "och koppla ett IMAP/CalDAV-konto med `memaix link-imap` när instansen kör "
+            "(docs/BACKENDS.md)."
+        )
+    return lines
 
 
 def seed_vaults(root: Path, project_names: list) -> list:

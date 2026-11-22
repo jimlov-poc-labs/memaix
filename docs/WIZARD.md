@@ -6,8 +6,9 @@ hemligheter** — du redigerar ingen YAML. Bäraren (webb vs CLI): `SETUP-UI.md`
 `SETUP-SIMPLIFICATION.md`.
 
 > **Status:** två bärare finns — `./setup.sh`/`.\setup.ps1` (lokal webb, rekommenderad) och
-> `make init` (CLI). Båda kör `scripts/setup_engine.py`. Fråga 6 (backends) nedan är ännu inte
-> implementerad i någon bärare; backends läggs till efteråt (docs/BACKENDS.md).
+> `make init` (CLI). Båda kör `scripts/setup_engine.py`. Fråga 6 (backends) nedan är
+> implementerad i båda bärarna (identiskt beteende, default "senare") — se docs/BACKENDS.md
+> och docs/PER-USER-OAUTH.md för vad varje val faktiskt gör.
 
 ## Principer
 - **Progressiv disclosure** — bara frågor som det valda spåret behöver.
@@ -55,6 +56,16 @@ Lägga till fler personer nu? [n]      (annars senare: memaix user add)
 Koppla backends nu eller senare? [senare]
   Om nu:  [1] Bundlad Nextcloud   [2] Gmail/Workspace   [3] M365   [4] Egen IMAP/CalDAV
 ```
+- **[1] Bundlad Nextcloud** — ren toggle (`files_backend: bundled_nextcloud`), ingen extra fråga;
+  motorn genererar adminkontot och skriver `nextcloud_provision` automatiskt.
+- **[2] Gmail/Workspace / [3] M365** — samlar in kundens EGNA OAuth-app (`client_id`/`client_secret`,
+  för M365 även `tenant_id`) på INSTANSNIVÅ; se docs/PER-USER-OAUTH.md för var en admin hämtar dem.
+  Varje person måste ändå länka sitt eget konto efteråt (`/link/google` resp. `/link/microsoft`) —
+  instanskonfigurationen räcker inte själv.
+- **[4] Egen IMAP/CalDAV** — samlar INGA credentials här. Wizarden kör på värden innan instansen
+  (och dess token-databas) finns, så den riktiga länkningen sker EFTER första start med
+  `memaix link-imap` (`account_link_imap`, redan byggd). Wizarden markerar bara projektet som
+  väntande (`awaiting_link`, läses av `backend-status`) och pekar mot det kommandot i sluttexten.
 
 **7. Sammanfattning → kör**
 ```
@@ -65,6 +76,14 @@ Visar dina val → "Kör nu? [j]"
 ## Vad wizarden skriver ut efteråt
 - **Spår 1 (trial):** den exakta raden att klistra in i Claude Desktop (lokal MCP) — klart.
 - **Spår 2/3:** "Din connector-URL: https://… — lägg in i din AI (`CHOOSE-YOUR-LLM.md`)."
+- **Backends (fråga 6), en rad beroende på valet** (`setup_engine.backend_report_lines`, delad av
+  båda bärarna):
+  - **[1] Bundlad Nextcloud:** "klar — ingen ytterligare koppling krävs."
+  - **[2]/[3] Gmail/Workspace eller M365:** instansens OAuth-app är konfigurerad, men varje person
+    måste ändå länka sitt EGET konto — pekar mot `/link/google` resp. `/link/microsoft`
+    (`docs/PER-USER-OAUTH.md`).
+  - **"Senare" (default) eller [4] Egen IMAP/CalDAV:** inget kopplat än — pekar mot
+    `memaix backend-status` (se läget) och `memaix link-imap` (koppla ett konto).
 - Alltid: "Lägg till mejl/kalender senare: `memaix backend add`. Lägg till folk: `memaix user add`.
   Ta trial → mobil: `make go-remote`."
 

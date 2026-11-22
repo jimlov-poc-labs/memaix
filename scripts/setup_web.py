@@ -56,6 +56,10 @@ function ai(){var v=document.querySelector('input[name=llm_choice]:checked').val
 document.getElementById('ai-api').style.display=(v==='api')?'block':'none';
 document.getElementById('ai-endpoint').style.display=(v==='endpoint')?'block':'none';}
 document.querySelectorAll('input[name=llm_choice]').forEach(function(r){r.onchange=ai});ai();
+function bk(){var v=document.querySelector('input[name=backend_choice]:checked').value;
+document.getElementById('backend-google').style.display=(v==='google')?'block':'none';
+document.getElementById('backend-microsoft').style.display=(v==='microsoft')?'block':'none';}
+document.querySelectorAll('input[name=backend_choice]').forEach(function(r){r.onchange=bk});bk();
 """
 
 
@@ -82,6 +86,16 @@ def _form(values: dict, errors: list) -> bytes:
     llm_model_api = v.get("llm_model", "") if llm_choice == "api" else ""
     llm_endpoint_v = v.get("llm_endpoint", "") if llm_choice == "endpoint" else ""
     llm_model_endpoint = v.get("llm_model", "") if llm_choice == "endpoint" else ""
+    backend_choice = str(values.get("backend_choice", "later"))
+    if backend_choice not in ("later", "nextcloud", "google", "microsoft", "imap"):
+        backend_choice = "later"  # okänt val: felet visas separat, radioknappen faller tillbaka visuellt
+    backend_checked = {
+        c: ("checked" if c == backend_choice else "")
+        for c in ("later", "nextcloud", "google", "microsoft", "imap")
+    }
+    google_client_id_v = v.get("google_oauth_client_id", "") if backend_choice == "google" else ""
+    ms_client_id_v = v.get("microsoft_oauth_client_id", "") if backend_choice == "microsoft" else ""
+    ms_tenant_id_v = v.get("microsoft_oauth_tenant_id", "") if backend_choice == "microsoft" else ""
     body = f"""
 {err_html}
 <form method="post" action="/apply" autocomplete="off">
@@ -144,6 +158,31 @@ def _form(values: dict, errors: list) -> bytes:
   value="{v.get('project_name','shared')}"></label>
 </fieldset>
 
+<fieldset><h2>6 · Mejl / kalender / filer?</h2>
+<label><input type="radio" name="backend_choice" value="later" {backend_checked['later']}> Senare
+  <small>— default, lägg till med <code>memaix backend add</code> när du är redo</small></label>
+<label><input type="radio" name="backend_choice" value="nextcloud" {backend_checked['nextcloud']}> Bundlad Nextcloud
+  <small>— filarea via den bundlade Nextcloud-containern, inget mer att fylla i</small></label>
+<label><input type="radio" name="backend_choice" value="google" {backend_checked['google']}> Gmail / Workspace
+  <small>— kundens EGEN Google OAuth-app, se docs/PER-USER-OAUTH.md</small></label>
+<label><input type="radio" name="backend_choice" value="microsoft" {backend_checked['microsoft']}> M365
+  <small>— kundens EGEN Azure/Entra-app, se docs/PER-USER-OAUTH.md</small></label>
+<label><input type="radio" name="backend_choice" value="imap" {backend_checked['imap']}> Egen IMAP/CalDAV
+  <small>— samlas inte in här: länkas EFTER första start med <code>memaix link-imap</code></small></label>
+<div id="backend-google" style="display:none">
+<label>Google OAuth client ID <small>(…apps.googleusercontent.com, Google Cloud Console)</small>
+  <input type="text" name="google_oauth_client_id" value="{google_client_id_v}"></label>
+<label>Google OAuth client secret <input type="password" name="google_oauth_client_secret"></label>
+</div>
+<div id="backend-microsoft" style="display:none">
+<label>Microsoft OAuth client ID <small>(GUID, Entra-portalen)</small>
+  <input type="text" name="microsoft_oauth_client_id" value="{ms_client_id_v}"></label>
+<label>Microsoft OAuth client secret <input type="password" name="microsoft_oauth_client_secret"></label>
+<label>Microsoft OAuth tenant ID <small>(GUID, kundens egen tenant)</small>
+  <input type="text" name="microsoft_oauth_tenant_id" value="{ms_tenant_id_v}"></label>
+</div>
+</fieldset>
+
 <button type="submit">Generera config &amp; hemligheter</button>
 <p><small>Hemligheter genereras på servern och visas aldrig här.
 Wizarden stänger av sig själv när den är klar.</small></p>
@@ -160,8 +199,12 @@ def _receipt(summary: dict) -> bytes:
         next_step = (f"<p>Startskriptet reser nu stacken och kör hälsokontrollen. "
                      f"Din connector-URL: <code>{html.escape(summary['public_url'])}</code></p>")
     notice = f"<p><strong>{html.escape(summary['notice'])}</strong></p>" if summary.get("notice") else ""
+    backend_lines = "".join(
+        f"<li>{html.escape(line)}</li>" for line in engine.backend_report_lines(summary)
+    )
+    backend_html = f"<ul>{backend_lines}</ul>" if backend_lines else ""
     body = (f"<p>✓ Config och hemligheter genererade:</p><ul>{files}</ul>"
-            f"{notice}{next_step}"
+            f"{notice}{next_step}{backend_html}"
             f"<p><small>Setup-webben är nu avstängd — den här fliken kan stängas. "
             f"Kör om installationen: starta setup-skriptet igen.</small></p>")
     return _page("Memaix — klart", body)
@@ -249,15 +292,50 @@ class Handler(BaseHTTPRequestHandler):
             # Okänt val ska ge ett tydligt fel, aldrig en tyst fallback till BYO.
             answers["llm_provider"] = "__unknown__"
 
+        # ── Mejl/kalender/filer (WIZARD.md fråga 6 / docs/BACKENDS.md) ───────
+        backend_choice = f.get("backend_choice", "later")
+        if backend_choice == "later":
+            pass
+        elif backend_choice == "nextcloud":
+            answers["files_backend"] = engine.FILES_BACKEND_BUNDLED_NEXTCLOUD
+        elif backend_choice == "google":
+            answers["google_oauth_client_id"] = f.get("google_oauth_client_id", "").strip()
+            answers["google_oauth_client_secret"] = f.get(
+                "google_oauth_client_secret", ""
+            ).strip()
+        elif backend_choice == "microsoft":
+            answers["microsoft_oauth_client_id"] = f.get(
+                "microsoft_oauth_client_id", ""
+            ).strip()
+            answers["microsoft_oauth_client_secret"] = f.get(
+                "microsoft_oauth_client_secret", ""
+            ).strip()
+            answers["microsoft_oauth_tenant_id"] = f.get(
+                "microsoft_oauth_tenant_id", ""
+            ).strip()
+        elif backend_choice == "imap":
+            # Ingen credential-insamling här — länkas EFTER första start via
+            # `memaix link-imap` (account_link_imap). Bara markera väntande.
+            answers["backend_awaiting_link"] = True
+        else:
+            # Okänt val ska ge ett tydligt fel, aldrig en tyst fallback till "senare".
+            # Återanvänder files_backend-valideringen (samma mönster som AI-valet
+            # ovan) så felmeddelandet alltid pekar på orsaken.
+            answers["files_backend"] = "__unknown__"
+
         errors = engine.validate(answers)
         if answers["llm_provider"] == "__unknown__":
             errors.insert(0, "Okänt AI-val.")
+        if answers["files_backend"] == "__unknown__":
+            errors.insert(0, "Okänt backend-val.")
         if f.get("password") != f.get("password2"):
             errors.insert(0, "Lösenorden matchar inte.")
         if errors:
             safe = {k: v for k, v in answers.items()
-                    if k not in ("password", "tunnel_token", "llm_api_key")}
+                    if k not in ("password", "tunnel_token", "llm_api_key",
+                                 "google_oauth_client_secret", "microsoft_oauth_client_secret")}
             safe["llm_choice"] = llm_choice
+            safe["backend_choice"] = backend_choice
             self._send(200, _form(safe, errors))
             return
 

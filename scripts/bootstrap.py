@@ -237,6 +237,55 @@ def run_wizard() -> None:
     hr()
     project_name = ask("Namn på ditt första projekt", "shared")
 
+    # ── Mejl/kalender/filer (WIZARD.md fråga 6 / docs/BACKENDS.md) ───────────
+    import setup_engine as engine
+
+    files_backend = engine.FILES_BACKEND_NONE
+    google_oauth_client_id = ""
+    google_oauth_client_secret = ""
+    microsoft_oauth_client_id = ""
+    microsoft_oauth_client_secret = ""
+    microsoft_oauth_tenant_id = ""
+    backend_awaiting_link = False
+
+    print()
+    hr()
+    backend_choice = choose(
+        "Koppla backends (mejl/kalender/filer) nu eller senare?",
+        [
+            ("Senare",            "lägg till när du är redo: `memaix backend add`"),
+            ("Bundlad Nextcloud", "filarea via den bundlade Nextcloud-containern — ingen extra fråga"),
+            ("Gmail / Workspace", "kundens EGEN Google OAuth-app (docs/PER-USER-OAUTH.md)"),
+            ("M365",              "kundens EGEN Azure/Entra-app (docs/PER-USER-OAUTH.md)"),
+            ("Egen IMAP/CalDAV",  "länkas EFTER första start: `memaix link-imap`"),
+        ],
+    )
+    if backend_choice == 2:
+        files_backend = engine.FILES_BACKEND_BUNDLED_NEXTCLOUD
+    elif backend_choice == 3:
+        print(
+            "\n  Hämta client ID och client secret i Google Cloud Console "
+            "— se docs/PER-USER-OAUTH.md för exakta steg."
+        )
+        google_oauth_client_id = ask(
+            "Google OAuth client ID (slutar på .apps.googleusercontent.com)"
+        )
+        google_oauth_client_secret = ask("Google OAuth client secret", secret=True)
+    elif backend_choice == 4:
+        print(
+            "\n  Hämta client ID, client secret och tenant ID i Entra-portalen "
+            "— se docs/PER-USER-OAUTH.md för exakta steg."
+        )
+        microsoft_oauth_client_id = ask("Microsoft OAuth client ID (GUID)")
+        microsoft_oauth_client_secret = ask("Microsoft OAuth client secret", secret=True)
+        microsoft_oauth_tenant_id = ask("Microsoft OAuth tenant ID (GUID)")
+    elif backend_choice == 5:
+        backend_awaiting_link = True
+        print(
+            "\n  Ingen koppling samlas in här — IMAP/CalDAV länkas EFTER att instansen "
+            "kör, med `memaix link-imap` (docs/BACKENDS.md). Markerat som väntande."
+        )
+
     # ── Sammanfattning ─────────────────────────────────────────────────────────
     print()
     hr()
@@ -246,6 +295,11 @@ def run_wizard() -> None:
     print(f"  Admin:     {admin_user}")
     print(f"  AI:        {llm_provider}" + (f" · {llm_model}" if llm_model else " (din egen AI-app)"))
     print(f"  Projekt:   {project_name}")
+    backend_summary = {
+        1: "senare", 2: "bundlad Nextcloud", 3: "Gmail/Workspace",
+        4: "M365", 5: "Egen IMAP/CalDAV (länkas efteråt)",
+    }[backend_choice]
+    print(f"  Backends:  {backend_summary}")
     hr()
     confirm = ask("Generera config och starta? [j/n]", "j")
     if confirm.lower() not in ("j", "y", "ja", "yes"):
@@ -269,6 +323,13 @@ def run_wizard() -> None:
         "llm_model": llm_model,
         "llm_endpoint": llm_endpoint,
         "llm_api_key": llm_api_key,
+        "files_backend": files_backend,
+        "google_oauth_client_id": google_oauth_client_id,
+        "google_oauth_client_secret": google_oauth_client_secret,
+        "microsoft_oauth_client_id": microsoft_oauth_client_id,
+        "microsoft_oauth_client_secret": microsoft_oauth_client_secret,
+        "microsoft_oauth_tenant_id": microsoft_oauth_tenant_id,
+        "backend_awaiting_link": backend_awaiting_link,
     }
     apply_answers(answers)
 
@@ -319,7 +380,9 @@ def apply_answers(answers: dict, *, open_browser: bool = True) -> None:
 
     print()
     hr()
-    print("  Klart! Lägg till backends och fler användare när du är redo:")
+    for line in engine.backend_report_lines(summary):
+        print(f"  · {line}")
+    print("  Klart! Lägg till fler användare när du är redo:")
     print("  docs/BACKENDS.md  ·  docs/AI-CLIENTS.md  ·  docs/EXPOSE.md")
     hr()
     print()
