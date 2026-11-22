@@ -1,33 +1,25 @@
 #!/usr/bin/env sh
-# Memaix paketerad installer — kör mot en PUBLICERAD GHCR-image, utan att
-# någonsin klona käll-repot (som är privat).
+# Memaix paketerad installer — kör mot en PUBLICERAD GHCR-image istället för
+# att bygga lokalt.
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Inspektera gärna detta skript innan du kör det.
 #
-# Skillnad mot install.sh: install.sh klonar källkoden och bygger imagen
-# lokalt (docker compose build). Det kräver läsrätt till memaix-repot, som är
-# privat. Det här skriptet bygger ALDRIG något lokalt — det hämtar bara de få
-# driftfiler som behövs (compose-filer, .env-mall, Caddyfile, config-mallar,
-# bootstrap.py) från den publika installer-bunten, och startar sedan de
-# publicerade images från ghcr.io/jimlov-poc-labs/memaix och
-# memaix-login-app.
+# Skillnad mot install.sh: install.sh bygger imagen lokalt
+# (docker compose build) efter att ha klonat detta repo. Det här skriptet
+# bygger ALDRIG något lokalt — det startar direkt de publicerade images från
+# ghcr.io/jimlov-poc-labs/memaix och memaix-login-app, mot de compose-filer
+# och config-mallar som redan ligger i detta repo.
 #
 # Användning:
-#   git clone https://github.com/jimlov-poc-labs/memaix-installer.git
-#   cd memaix-installer
+#   git clone https://github.com/jimlov-poc-labs/memaix.git
+#   cd memaix
 #   ./install-release.sh --yes
 #
 # Miljövariabler:
 #   MEMAIX_DIR          katalog att installera i (default: memaix-release)
 #   MEMAIX_IMAGE_TAG     vilken publicerad version (default: latest)
 #   MEMAIX_PROFILE, MEMAIX_DOMAIN: se docs/PACKAGED-INSTALL.md
-#
-# Bunten (denna fil + compose-filer + config-mallar + bootstrap.py, ingen
-# applikationskod) publiceras i jimlov-poc-labs/memaix-installer (publikt
-# repo, beslutat 2026-11-22) — eftersom GitHub-releaser på det privata
-# käll-repot ärver samma synlighet och aldrig blir publika. Se
-# docs/PACKAGED-INSTALL.md i käll-repot för helheten.
 
 set -eu
 

@@ -3,13 +3,7 @@
 Snabbaste vägen från färsk Linux-maskin till körande Memaix: klona och kör ett skript.
 
 ## Så installerar du i dag
-Repot är privat, så det finns ännu ingen publik installationsadress för `curl … | sh`.
-Repot förblir privat (beslutat) — adressen löses i stället via paketerad
-distribution: [`jimlov-poc-labs/memaix-installer`](https://github.com/jimlov-poc-labs/memaix-installer)
-(publikt, ingen applikationskod, bara compose-filer + installer-skript) +
-publicerade, signerade GHCR-images. Se [PACKAGED-INSTALL.md](PACKAGED-INSTALL.md)
-för hela flödet. Har du repo-åtkomst och vill bygga lokalt i stället —
-klona och kör:
+Repot är publikt — klona och kör:
 ```bash
 git clone https://github.com/jimlov-poc-labs/memaix.git
 cd memaix
