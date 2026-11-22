@@ -12,8 +12,9 @@ Scope, deliberately narrow:
   provider/account/project a token is scoped to) — never a credential's
   cleartext value, never `password_ref`'s target. It cannot answer "is the
   password still valid?", only "does something claim to serve this
-  capability for this project?" (see memory on "needs_relink" below for the
-  one exception it does check).
+  capability for this project?" (the `needs_relink` check below is the one
+  exception -- that flag means a refresh already failed, so it is treated
+  as known-dead rather than merely unverified).
 - A project resource is a SHARED credential (acl.yaml `mailbox`/`calendar`
   + a `*_ref` secret) — see BACKENDS.md. That is not the same thing as a
   per-user link (`account_link_imap`/`cli.py link-imap`), which only ever
@@ -38,12 +39,17 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(set(DEFAULT_TYPES) | set(RESOURCE
 
 # Fields that must be non-empty on a SHARED resource (acl.yaml's
 # mailbox/calendar/... dict) for it to count as configured, rather than a
-# placeholder stub an admin left half-filled. Capabilities not listed here
-# just need a non-empty resource dict.
+# placeholder stub a wizard wrote with intent but no secret yet.
+# `password_ref` is the actual credential pointer both tools/email.py's
+# `_make_mailbox` and tools/calendar.py's `_RealDavAdapter` read — host/user
+# alone (exactly what "I know who but not the password yet" looks like) must
+# not count as configured. We only check the key is PRESENT, never resolve
+# it (resolving a `*_ref` belongs to the adapter at request time, not to a
+# read-only status view).
 _REQUIRED_SHARED_FIELDS: dict[str, tuple[str, ...]] = {
-    "mail": ("host", "user"),
-    "calendar": ("url",),
-    "files": ("url",),
+    "mail": ("host", "user", "password_ref"),
+    "calendar": ("url", "password_ref"),
+    "files": ("url", "password_ref"),
 }
 
 
@@ -80,9 +86,19 @@ def _per_user_satisfied(acl: Acl, token_store, project: str, capability: str) ->
     user's link does not count as the project having access) and any token
     already flagged `needs_relink` (known-dead, not merely unverified; see
     ConnectorRegistry._scoped_accounts for the same rule on the read path).
+
+    `project in acl.visible_projects(user_id)` gates BOTH an explicit
+    project name and a '*' scope, not just '*' — a scope row naming this
+    exact project can still be stale if the user's grant on it was later
+    revoked (`project_member_set(role=None)`/acl.yaml edit). `enforce()`
+    would refuse that call at request time regardless of the scope row, so
+    reporting "kopplad" from the row alone would be fail-open; this view
+    must agree with what a real request would actually get.
     """
     for user_id in sorted(acl.users):
         if acl.is_disabled(user_id):
+            continue
+        if project not in acl.visible_projects(user_id):
             continue
         accounts = {(a["provider"], a["account"]): a for a in token_store.list_accounts(user_id)}
         for scope in token_store.list_scopes(user_id):
@@ -90,8 +106,6 @@ def _per_user_satisfied(acl: Acl, token_store, project: str, capability: str) ->
                 continue
             projects = scope["projects"]
             if project not in projects and "*" not in projects:
-                continue
-            if "*" in projects and project not in acl.visible_projects(user_id):
                 continue
             account = accounts.get((scope["provider"], scope["account"]))
             if account is None or account.get("status") == "needs_relink":

@@ -23,8 +23,10 @@ Commands:
                        python -m memaix_gateway.cli link-imap --user jimmy \
                        --account info@example.se --host imap.purelymail.com \
                        --projects memaix,jimlov --verify
-                   (-T disables the TTY, so a forgotten password still falls
-                   through to the pipe instead of popping a hidden prompt.)
+                   (-T is required when piping stdin into `exec` -- without
+                   it docker refuses with "the input device is not a TTY".
+                   For a one-off run without a pipe, drop -T and --user's
+                   password prompt (getpass) appears instead.)
                    Pass --verify to log in over IMAP before anything is
                    stored, so a typo'd host/port/password fails loudly here
                    instead of silently at the next email_list.
@@ -175,7 +177,9 @@ def cmd_backend_status(args, *, acl=None, store=None) -> int:
     Fails closed: a missing TOKEN_MASTER_KEY (the gateway's own guard, see
     cmd_link_imap) is an error, never silently "nothing pending" — reading
     `scoped` status without the token store would otherwise look identical
-    to an instance with nothing waiting."""
+    to an instance with nothing waiting. An unknown --project is likewise an
+    error, not a silent empty list — a typo'd project name must not read as
+    "everything is fine here"."""
     import os
 
     if store is None and not os.environ.get("TOKEN_MASTER_KEY"):
@@ -183,17 +187,22 @@ def cmd_backend_status(args, *, acl=None, store=None) -> int:
         return 1
     acl, store = _acl_and_store(acl, store)
 
+    project = getattr(args, "project", None)
+    if project and project not in acl.projects:
+        print(f"Okänt projekt: {project}", file=sys.stderr)
+        return 1
+
     from .backend_status import collect_status
 
     entries = collect_status(acl, store)
-    if getattr(args, "project", None):
-        entries = [e for e in entries if e.project == args.project]
+    if project:
+        entries = [e for e in entries if e.project == project]
     if not entries:
         print("Inget väntar på koppling (eller inget projekt har awaiting_link satt).")
         return 0
     for entry in entries:
         print(entry.line())
-    return 0
+    return 1 if any(e.status == "error" for e in entries) else 0
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -36,7 +36,12 @@ def test_project_without_awaiting_link_is_skipped(store):
 
 
 def test_satisfied_by_shared_mailbox(store):
-    acl = _acl({"alfa": {"awaiting_link": ["mail"], "mailbox": {"host": "imap.alfa.se", "user": "x@alfa.se"}}})
+    acl = _acl({
+        "alfa": {
+            "awaiting_link": ["mail"],
+            "mailbox": {"host": "imap.alfa.se", "user": "x@alfa.se", "password_ref": "env:ALFA_PW"},
+        }
+    })
     entries = collect_status(acl, store)
     assert len(entries) == 1
     assert entries[0].status == "satisfied"
@@ -45,6 +50,14 @@ def test_satisfied_by_shared_mailbox(store):
 
 def test_shared_mailbox_missing_required_fields_does_not_satisfy(store):
     acl = _acl({"alfa": {"awaiting_link": ["mail"], "mailbox": {"type": "imap"}}})
+    entries = collect_status(acl, store)
+    assert entries[0].status == "waiting"
+
+
+def test_shared_mailbox_without_password_ref_does_not_satisfy(store):
+    # host+user present (exactly what a wizard writing intent, no secret, would
+    # produce) must not read as configured.
+    acl = _acl({"alfa": {"awaiting_link": ["mail"], "mailbox": {"host": "imap.alfa.se", "user": "x@alfa.se"}}})
     entries = collect_status(acl, store)
     assert entries[0].status == "waiting"
 
@@ -103,6 +116,18 @@ def test_scope_for_a_different_project_does_not_satisfy(store):
     )
     store.store("jimmy", "imap", "me@box.se", {"host": "h", "user": "me@box.se", "password": "x"})
     store.set_scopes("jimmy", "imap", "me@box.se", "mail", ["beta"])
+    entries = collect_status(acl, store)
+    assert entries[0].status == "waiting"
+
+
+def test_revoked_grant_with_stale_scope_row_does_not_satisfy(store):
+    # jimmy was scoped to alfa while he had a grant; the grant was later
+    # removed (acl.yaml edited / project_member_set(role=None)) but nobody
+    # cleaned up the old scope row. enforce() would refuse this at request
+    # time, so this view must not report "kopplad" from the stale row alone.
+    acl = _acl({"alfa": {"awaiting_link": ["mail"]}}, users={"jimmy": {"grants": {}}})
+    store.store("jimmy", "imap", "me@box.se", {"host": "h", "user": "me@box.se", "password": "x"})
+    store.set_scopes("jimmy", "imap", "me@box.se", "mail", ["alfa"])
     entries = collect_status(acl, store)
     assert entries[0].status == "waiting"
 
@@ -180,6 +205,25 @@ def test_cli_backend_status_prints_entries_and_filters_by_project(store, capsys)
     assert rc == 0
     assert "beta: mail" in out
     assert "alfa: mail" not in out
+
+
+def test_cli_backend_status_unknown_project_is_an_error(store, capsys):
+    from memaix_gateway import cli
+
+    acl = _acl({"alfa": {"awaiting_link": ["mail"]}})
+    rc = cli.cmd_backend_status(_args(project="nope"), acl=acl, store=store)
+    assert rc == 1
+    assert "Okänt projekt: nope" in capsys.readouterr().err
+
+
+def test_cli_backend_status_exits_nonzero_on_malformed_entry(store, capsys):
+    from memaix_gateway import cli
+
+    acl = _acl({"alfa": {"awaiting_link": "mail"}})  # malformed: not a list
+    rc = cli.cmd_backend_status(_args(), acl=acl, store=store)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "lista" in out
 
 
 def test_cli_backend_status_loads_acl_and_store_from_server_when_not_given(monkeypatch, store):

@@ -87,6 +87,39 @@ brevlåda, aldrig ett delat teamkonto. Vill alla i teamet ha mejl i samma projek
 projektets delade mailbox (om en finns) när just den personen frågar — ingen ser någon annans
 länkade konto (`FEATURE-CONNECTOR-FRAMEWORK.md`, `test_bobs_linked_account_never_appears_for_alice`).
 
+### Ett delat teamkonto (den första raden i tabellen)
+
+Det finns inget CLI-kommando för det här — det är en vanlig konfigurationsrad i `acl.yaml` plus
+en hemlighet i `.env`, inte något `account_link_imap`/TokenStore hanterar. Lägg till i
+`acl.yaml` under projektet:
+
+```yaml
+projects:
+  acme:
+    mailbox:
+      host: imap.purelymail.com
+      user: info@acme.se
+      password_ref: env:ACME_MAILBOX_PW
+```
+
+och i `.env` (bredvid containern, aldrig i repot):
+
+```
+ACME_MAILBOX_PW=det-riktiga-lösenordet
+```
+
+Starta om gatewayen (`docker compose restart gateway`) så den läser det nya `.env`-värdet —
+till skillnad från `acl.yaml`, som login-appen läser om live, läses `.env` bara vid start.
+`password_ref` stöder även `file:`/`vault:`/`kms:` (docs/SECRETS.md); välj samma mönster som
+projektets övriga hemligheter.
+
+**Det här är målet bakom "koppla teamets mejl"** om vad du vill är en enda delad brevlåda alla
+läser som samma identitet. Läget idag: ingen guidad flagga eller kommandoradsväg — bara denna
+manuella rad, och wizarden (BACKENDS.md fas 5, inte byggd än) kommer bara att skriva *avsikten*
+(`awaiting_link`, se nedan), aldrig själva hemligheten, eftersom den körs innan containern finns.
+
+### Var och ens egen inkorg (resten av det här avsnittet)
+
 Resten av det här avsnittet gäller den andra kolumnen: en enskild persons egen koppling, körd av
 en admin åt dem (eller av dem själva, om de har skalaccess).
 
@@ -120,9 +153,11 @@ printf '%s\n' "$PW" | docker compose exec -T gateway \
 unset PW
 ```
 
-`-T` stänger av TTY:n i containern — glöms `read -rs` bort och lösenordet skrivs fel skulle
-kommandot annars tyst vänta på en prompt du aldrig ser; med `printf | ... -T` går det garanterat
-genom pipen. `--verify` loggar in över IMAP innan något sparas, så ett fel host/port/lösenord
+`-T` krävs när stdin kommer från en pipe (`printf ... | docker compose exec -T ...`) —
+utan `-T` vägrar docker med "the input device is not a TTY". Körs kommandot utan pipe
+(bara `docker compose exec gateway python -m memaix_gateway.cli link-imap ...`, inget `-T`)
+frågar det i stället efter lösenordet interaktivt (`getpass`, syns inte på skärmen) — enklare
+för en enstaka körning där du sitter kvar vid terminalen. `--verify` loggar in över IMAP innan något sparas, så ett fel host/port/lösenord
 ger ett tydligt fel direkt (`IMAP-inloggning misslyckades: <feltyp>`, aldrig lösenordet) istället
 för att först upptäckas nästa gång `email_list` körs. `--projects` är vilka projekt kontot blir
 synligt i för just `--user`; `*` betyder alla projekt personen redan har åtkomst till.
@@ -138,11 +173,13 @@ anrop mot projektet i din AI-klient.
 
 ### Särskilda leverantörer
 
-- **Microsoft 365:** IMAP med lösenord är avstängt hos Microsoft sedan 2026 (basic auth dog).
-  Använd i stället OAuth-kopplingen (`account_link(provider="microsoft")`, se PER-USER-OAUTH.md) —
-  `link-imap` fungerar inte mot M365.
-- **Gmail / Google Workspace:** kräver tvåstegsverifiering på kontot och ett app-lösenord
-  (inte det vanliga lösenordet). Se PER-USER-OAUTH.md §Scopes för alternativet att länka Gmail
-  över kalender-OAuth + IMAP-brevlåda i stället.
+- **Microsoft 365:** lösenordsbaserad IMAP fungerar inte mot Exchange Online/M365 —
+  `link-imap` är inte vägen dit. Använd OAuth-kopplingen i stället
+  (`account_link(provider="microsoft")`, se PER-USER-OAUTH.md).
+- **Gmail / Google Workspace:** `link-imap` ÄR Gmail-vägen (PER-USER-OAUTH.md) — Googles
+  Gmail-API används inte (restricted scope, kräver betald CASA-granskning). Kontot behöver
+  tvåstegsverifiering och ett app-lösenord (inte det vanliga lösenordet) som `--account`/
+  `--host imap.gmail.com`. Memaix läser mappen flaggad `\\All` och skriver utkast till
+  `\\Drafts` (flaggorna, inte de svenska/engelska mappnamnen).
 - **Purelymail och de flesta andra IMAP-leverantörer:** vanligt lösenord eller app-lösenord,
   `link-imap` fungerar rakt av.
