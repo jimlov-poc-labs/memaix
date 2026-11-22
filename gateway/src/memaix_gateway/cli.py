@@ -260,6 +260,11 @@ def cmd_mailbox_set(args, *, stdin=None, writer=None, secrets_dir=None) -> int:
     except MailboxAdminError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    except OSError as exc:
+        # shown without the password: the type only (same pattern as
+        # link-imap's _verified) — e.g. config/secrets/ not writable here.
+        print(f"Kunde inte skriva hemlighetsfilen: {type(exc).__name__}", file=sys.stderr)
+        return 1
     finally:
         del password
 
@@ -298,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     mailbox.add_argument("--host", required=True, help="IMAP host, e.g. imap.purelymail.com")
     mailbox.add_argument(
         "--port", type=int, default=None,
-        help="IMAP port (accepted, not yet read by the shared-IMAP adapter)",
+        help="IMAP port; the shared adapter is fixed on 993, so only 993 (or omitted) is accepted",
     )
     mailbox.add_argument("--smtp-host", default=None, help="SMTP host for outgoing mail from this mailbox")
     mailbox.add_argument("--smtp-port", type=int, default=None, help="SMTP port (default 587, STARTTLS)")

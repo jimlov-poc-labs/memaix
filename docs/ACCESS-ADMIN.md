@@ -99,12 +99,20 @@ Lösenordet läses från stdin, aldrig argv (samma mönster som `link-imap`). Ko
 
 - vägrar om `acme` inte redan finns som projekt i `acl.yaml`,
 - vägrar om projektet redan har en `mailbox:`-resurs — lägg till `--force` för att medvetet
-  byta ut den (t.ex. vid lösenordsrotation eller byte av brevlåda),
+  byta ut den (t.ex. vid lösenordsrotation eller byte av brevlåda). `--force` utan `--smtp-host`
+  tar även bort en befintlig `smtp:`-resurs, så den inte pekar kvar på den gamla brevlådans
+  avsändarkonto (se nedan),
+- vägrar skriva `--smtp-host` över en redan existerande `smtp:`-resurs utan `--force` — samma
+  spärr som för `mailbox:` själv,
 - skriver lösenordet till en egen hemlighetsfil under `config/secrets/` (katalog `0700`, fil
   `0600`, skapas aldrig tyst över en befintlig fil utan `--force` — samma mönster som
-  Nextcloud-provisioneringens hemlighetsfiler, SECRETS.md),
+  Nextcloud-provisioneringens hemlighetsfiler, SECRETS.md). Med `--force` skrivs det nya
+  lösenordet först till en temporär fil och byts in bara om `acl.yaml`-skrivningen faktiskt
+  lyckas, så en misslyckad skrivning aldrig lämnar en brevlåda med nytt lösenord men gammal
+  host/user (eller tvärtom),
 - skriver `acl.yaml`s `mailbox:`-resurs via samma atomiska `AclWriter` (backup `.bak1-3`) som
-  övrig ACL-administration använder — aldrig en egen parallell YAML-skrivare.
+  övrig ACL-administration använder — aldrig en egen parallell YAML-skrivare. Som alla
+  `AclWriter`-skrivningar tappas ev. kommentarer i filen vid omskrivningen.
 
 Resultatet i `acl.yaml`:
 
@@ -119,13 +127,19 @@ projects:
 
 Valfria flaggor:
 
-- `--smtp-host`/`--smtp-port` — skriver en syskonresurs `smtp:` (host/port) som `email_send`/
-  `email_forward`/`email_reply` använder för utgående; utan den används mailboxens egen host på
-  port 587 med STARTTLS (ingen `imap.`→`smtp.`-gissning för delade mailboxar, till skillnad från
-  `link-imap`). SMTP-leveransen kör alltid STARTTLS — port 465 (implicit TLS) stöds inte här.
-- `--port` — tas emot och sparas på resursen för symmetri med `link-imap`, men läses i dagsläget
-  **inte** av den delade IMAP-adaptern (`tools/email.py`s `_make_mailbox`), som alltid kopplar på
-  standardporten. Känd begränsning, inte en bugg.
+- `--smtp-host`/`--smtp-port` — skriver en syskonresurs `smtp:` (host/port) som både `email_send`
+  (`tools/email.py`) och `email_forward`/`email_reply` (`connectors/mail_accounts.py`) läser för
+  utgående. **Dessa två vägarna beter sig olika idag** (befintlig inkonsekvens, inte något detta
+  kommando inför): `email_send` kör alltid STARTTLS oavsett port och gissar aldrig
+  `imap.`→`smtp.` om `smtp:` saknas (faller tillbaka på mailboxens egen host, port 587);
+  `email_forward`/`email_reply` väljer implicit TLS på port 465 annars STARTTLS, och *gissar*
+  `smtp.`-host från ett `imap.`-prefix om `smtp:` saknas (och felar annars). Ange `--smtp-host`
+  explicit för en brevlåda där de två vägarna annars skulle koppla till olika servrar.
+- `--port` — den delade IMAP-adaptern (`tools/email.py`s `_make_mailbox`) kopplar alltid på
+  standardporten 993 och läser aldrig ett konfigurerat värde (till skillnad från `link-imap`s
+  per-person-koppling, som har sin egen adapter och gör det). För att inte låtsas att ett annat
+  värde sparas och faktiskt används accepterar `mailbox-set` bara `--port 993` eller att flaggan
+  utelämnas — allt annat är ett fel, inte en tyst no-op.
 
 **Starta om gatewayen efteråt** (`docker compose restart gateway`): till skillnad från login-appen,
 som läser om `acl.yaml` live, cachar den körande gatewayprocessen `Acl` i minnet

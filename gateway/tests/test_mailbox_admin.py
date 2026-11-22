@@ -32,6 +32,19 @@ _BASE = {
             "allow_send": False,
             "mailbox": {"host": "imap.old.se", "user": "old@beta.se", "password_ref": "env:OLD_PW"},
         },
+        "gamma": {
+            "vault": "/srv/vaults/gamma",
+            "allow_send": False,
+            "mailbox": {"host": "imap.old.se", "user": "old@gamma.se", "password_ref": "env:OLD_PW"},
+            "smtp": {"host": "smtp.old.se", "user": "old@gamma.se", "password_ref": "env:OLD_SMTP_PW"},
+        },
+        # smtp: without mailbox: isn't a realistic hand-written config, but
+        # isolates the smtp: conflict check below from the mailbox: one.
+        "delta": {
+            "vault": "/srv/vaults/delta",
+            "allow_send": False,
+            "smtp": {"host": "smtp.old.se", "user": "old@delta.se", "password_ref": "env:OLD_SMTP_PW"},
+        },
     },
 }
 
@@ -87,10 +100,10 @@ def test_secret_file_is_0600_and_dir_0700(env):
 def test_smtp_flags_write_sibling_smtp_resource(env):
     set_mailbox(
         env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", _SECRET_PW,
-        smtp_host="smtp.acme.se", smtp_port=465,
+        smtp_host="smtp.acme.se", smtp_port=587,
     )
     smtp = env.data()["projects"]["acme"]["smtp"]
-    assert smtp == {"host": "smtp.acme.se", "port": 465}
+    assert smtp == {"host": "smtp.acme.se", "port": 587}
 
 
 def test_no_smtp_flags_writes_no_smtp_resource(env):
@@ -98,11 +111,52 @@ def test_no_smtp_flags_writes_no_smtp_resource(env):
     assert "smtp" not in env.data()["projects"]["acme"]
 
 
-def test_port_is_stored_when_given(env):
-    out = set_mailbox(
-        env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", _SECRET_PW, port=1993,
+def test_smtp_host_refused_over_existing_smtp_without_force(env):
+    before = env.data()["projects"]["delta"]["smtp"]
+    with pytest.raises(MailboxAdminError, match="already has an smtp"):
+        set_mailbox(
+            env.writer, env.secrets_dir, "delta", "new@delta.se", "imap.new.se", _SECRET_PW,
+            smtp_host="smtp.new.se",
+        )
+    assert env.data()["projects"]["delta"]["smtp"] == before
+    assert "mailbox" not in env.data()["projects"]["delta"]
+
+
+def test_force_without_smtp_host_drops_stale_smtp(env):
+    """A forced mailbox swap with no new --smtp-host must not leave the old
+    smtp: resource pointing at the previous account's send credentials
+    (mail_accounts.py's _project_smtp prefers smtp: over mailbox:)."""
+    set_mailbox(
+        env.writer, env.secrets_dir, "gamma", "new@gamma.se", "imap.new.se", _SECRET_PW, force=True,
     )
-    assert out["mailbox"]["port"] == 1993
+    assert "smtp" not in env.data()["projects"]["gamma"]
+    assert env.data()["projects"]["gamma"]["mailbox"]["user"] == "new@gamma.se"
+
+
+def test_force_with_smtp_host_replaces_smtp(env):
+    set_mailbox(
+        env.writer, env.secrets_dir, "gamma", "new@gamma.se", "imap.new.se", _SECRET_PW,
+        smtp_host="smtp.new.se", smtp_port=587, force=True,
+    )
+    assert env.data()["projects"]["gamma"]["smtp"] == {"host": "smtp.new.se", "port": 587}
+
+
+def test_port_993_is_accepted_and_stored(env):
+    out = set_mailbox(
+        env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", _SECRET_PW, port=993,
+    )
+    assert out["mailbox"]["port"] == 993
+
+
+def test_non_default_port_rejected(env):
+    """The shared IMAP adapter never reads a configured port (tools/email.py
+    _make_mailbox) — accepting and storing an unread value would fail open:
+    the admin would believe 1993 is configured while 993 is actually used."""
+    with pytest.raises(MailboxAdminError, match="port"):
+        set_mailbox(
+            env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", _SECRET_PW, port=1993,
+        )
+    assert "mailbox" not in env.data()["projects"]["acme"]
 
 
 def test_unknown_project_writes_nothing(env):
@@ -153,6 +207,35 @@ def test_whitespace_padded_password_rejected(env):
         set_mailbox(env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", " pw \n")
 
 
+def test_failed_acl_write_unlinks_newly_created_secret(env, monkeypatch):
+    """If AclWriter._write_atomic blows up AFTER the exclusive secret file
+    was created, the orphan must not survive — otherwise a retry without
+    --force would wrongly report 'secret file already exists'."""
+    monkeypatch.setattr(env.writer, "_write_atomic", lambda data: (_ for _ in ()).throw(RuntimeError("disk full")))
+    with pytest.raises(RuntimeError):
+        set_mailbox(env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", _SECRET_PW)
+    assert not (env.secrets_dir / "mailbox-acme").exists()
+    assert "mailbox" not in env.data()["projects"]["acme"]
+
+
+def test_failed_acl_write_under_force_keeps_old_password(env, monkeypatch):
+    """Under --force the new password is written to a temp file and only
+    swapped into place once the acl.yaml write actually succeeds — so a
+    failed write must leave the OLD secret completely untouched, not a
+    half-replaced one."""
+    old_secret = env.secrets_dir / "mailbox-beta"
+    old_secret.parent.mkdir(mode=0o700, parents=True)
+    old_secret.write_text("the-old-password")
+    monkeypatch.setattr(env.writer, "_write_atomic", lambda data: (_ for _ in ()).throw(RuntimeError("disk full")))
+    with pytest.raises(RuntimeError):
+        set_mailbox(
+            env.writer, env.secrets_dir, "beta", "new@beta.se", "imap.new.se", _SECRET_PW, force=True,
+        )
+    assert old_secret.read_text() == "the-old-password"
+    assert not (env.secrets_dir / "mailbox-beta.tmp").exists()
+    assert env.data()["projects"]["beta"]["mailbox"]["user"] == "old@beta.se"
+
+
 def test_orphan_secret_file_refused_without_force(env):
     """A leftover secret file from an earlier failed/aborted run must not be
     silently overwritten either, even though acl.yaml has no mailbox: key."""
@@ -175,13 +258,18 @@ def test_password_not_in_acl_yaml_text(env):
 
 def test_password_not_leaked_on_any_error_path(env, caplog):
     caplog.set_level(logging.DEBUG)
-    for args in (
-        ("nope", "info@nope.se", "imap.nope.se", _SECRET_PW),
-        ("acme", "not-an-email", "imap.acme.se", _SECRET_PW),
-        ("acme", "info@acme.se", "", _SECRET_PW),
+    env.secrets_dir.mkdir(mode=0o700, parents=True)
+    (env.secrets_dir / "mailbox-acme").write_text("leftover")
+    for kw, args in (
+        ({}, ("nope", "info@nope.se", "imap.nope.se", _SECRET_PW)),
+        ({}, ("acme", "not-an-email", "imap.acme.se", _SECRET_PW)),
+        ({}, ("acme", "info@acme.se", "", _SECRET_PW)),
+        ({}, ("acme", "info@acme.se", "imap.acme.se", _SECRET_PW)),  # orphan secret file
+        ({"port": 1993}, ("beta", "new@beta.se", "imap.new.se", _SECRET_PW)),
+        ({"smtp_host": "smtp.x.se"}, ("delta", "new@delta.se", "imap.new.se", _SECRET_PW)),
     ):
         try:
-            set_mailbox(env.writer, env.secrets_dir, *args)
+            set_mailbox(env.writer, env.secrets_dir, *args, **kw)
         except MailboxAdminError as exc:
             assert _SECRET_PW not in str(exc)
     assert _SECRET_PW not in caplog.text
@@ -247,3 +335,33 @@ def test_cli_unknown_project(env, capsys):
     out = capsys.readouterr()
     assert "unknown project" in out.err
     assert "ghost" not in env.data()["projects"]
+
+
+def test_cli_refuses_smtp_over_existing_without_force(env, capsys):
+    rc = _run(env, project="delta", email="new@delta.se", host="imap.new.se", smtp_host="smtp.new.se")
+    assert rc == 1
+    out = capsys.readouterr()
+    assert "smtp" in out.err
+    assert _SECRET_PW not in out.err
+    assert env.data()["projects"]["delta"]["smtp"]["user"] == "old@delta.se"
+
+
+def test_cli_non_default_port_rejected(env, capsys):
+    rc = _run(env, port=1993)
+    assert rc == 1
+    out = capsys.readouterr()
+    assert "port" in out.err
+    assert _SECRET_PW not in out.err
+
+
+def test_cli_os_error_reports_type_only(env, capsys, monkeypatch):
+    def boom(data):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(env.writer, "_write_atomic", boom)
+    rc = _run(env)
+    assert rc == 1
+    out = capsys.readouterr()
+    assert "PermissionError" in out.err
+    assert _SECRET_PW not in out.err
+    assert _SECRET_PW not in out.out
