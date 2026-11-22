@@ -137,9 +137,10 @@ Valfria flaggor:
   explicit för en brevlåda där de två vägarna annars skulle koppla till olika servrar.
 - `--port` — den delade IMAP-adaptern (`tools/email.py`s `_make_mailbox`) kopplar alltid på
   standardporten 993 och läser aldrig ett konfigurerat värde (till skillnad från `link-imap`s
-  per-person-koppling, som har sin egen adapter och gör det). För att inte låtsas att ett annat
-  värde sparas och faktiskt används accepterar `mailbox-set` bara `--port 993` eller att flaggan
-  utelämnas — allt annat är ett fel, inte en tyst no-op.
+  per-person-koppling, som har sin egen adapter och gör det). `mailbox-set` accepterar bara
+  `--port 993` (ren bekräftelse, skrivs inte till resursen — en `port:`-nyckel som ändå ignoreras
+  vore påhittat schema) eller att flaggan utelämnas; allt annat fel direkt i stället för att tyst
+  sparas och ignoreras.
 
 **Starta om gatewayen efteråt** (`docker compose restart gateway`): till skillnad från login-appen,
 som läser om `acl.yaml` live, cachar den körande gatewayprocessen `Acl` i minnet

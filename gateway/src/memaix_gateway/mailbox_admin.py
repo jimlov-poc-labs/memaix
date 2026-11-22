@@ -70,9 +70,12 @@ _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 # resource feeds) calls `MailBox(cfg["host"], ...)` with no port argument at
 # all — unlike the per-user link-imap path (mail_imap_user.py's
 # `build_mailbox`, explicitly "never imported by tools/email.py"), which
-# does read a stored port. Accepting an arbitrary --port here and writing
-# it to the resource would fail OPEN: the admin believes a non-default
-# port is configured, while the connection silently keeps using 993.
+# does read a stored port. --port is therefore validated but never WRITTEN
+# to the resource: storing an unread "port" key would be inventing schema
+# (the task explicitly asks to stay exactly to docs/BACKENDS.md's
+# host/user/password_ref) and would fail OPEN — the admin would believe a
+# non-default port is configured while the connection silently keeps using
+# the fixed default below.
 _FIXED_IMAP_PORT = 993
 
 
@@ -127,9 +130,10 @@ def set_mailbox(
 
     *port*, if given, must be 993 (the shared IMAP adapter's fixed,
     unconfigurable port) — see the module-level note on _FIXED_IMAP_PORT.
-    It is accepted (rather than simply refused) only for symmetry with
-    link-imap's --port and to document the port explicitly on the
-    resource; any other value is rejected rather than silently ignored.
+    It is accepted (rather than simply refused outright) only for symmetry
+    with link-imap's --port, as a way to say "yes, I know, and it's 993" —
+    it is validated but never written to the resource, so any OTHER value
+    is rejected rather than silently stored-but-ignored.
     """
     if not isinstance(project, str) or not _PROJECT_RE.match(project):
         raise MailboxAdminError("project name must be 2-32 chars of a-z, 0-9, '-' or '_'")
@@ -173,8 +177,6 @@ def set_mailbox(
             created_exclusive = True
 
         mailbox: dict = {"host": host, "user": email, "password_ref": f"file:{secret_path}"}
-        if port is not None:
-            mailbox["port"] = int(port)
         proj["mailbox"] = mailbox
 
         if smtp_host:

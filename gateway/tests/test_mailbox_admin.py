@@ -141,11 +141,15 @@ def test_force_with_smtp_host_replaces_smtp(env):
     assert env.data()["projects"]["gamma"]["smtp"] == {"host": "smtp.new.se", "port": 587}
 
 
-def test_port_993_is_accepted_and_stored(env):
+def test_port_993_is_accepted_but_not_stored(env):
+    """993 is accepted as a no-op confirmation, not written: nothing reads
+    a port on the shared IMAP resource (see mailbox_admin's module docs),
+    so writing one — even the correct value — would invent schema."""
     out = set_mailbox(
         env.writer, env.secrets_dir, "acme", "info@acme.se", "imap.acme.se", _SECRET_PW, port=993,
     )
-    assert out["mailbox"]["port"] == 993
+    assert "port" not in out["mailbox"]
+    assert "port" not in env.data()["projects"]["acme"]["mailbox"]
 
 
 def test_non_default_port_rejected(env):

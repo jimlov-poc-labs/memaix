@@ -13,8 +13,7 @@ Commands:
                    inbox" (every teammate who wants their own mail linked
                    runs this once for themselves). For a mailbox the whole
                    team shares as one identity (e.g. info@example.se read by
-                   everyone), use acl.yaml's `mailbox:` resource with a
-                   `password_ref` secret instead (docs/BACKENDS.md) — this
+                   everyone), use `mailbox-set` below instead — this
                    command is not that.
                    The password is read from stdin (one line), never from
                    argv, so it stays out of shell history, `ps` and logs:
