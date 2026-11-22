@@ -154,6 +154,25 @@ def test_unreachable_nextcloud_leaves_no_file_and_hides_details(cfg_dir):
     assert not _secret_file(cfg_dir).exists()
 
 
+def test_ocs_timeout_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ReadTimeout("read timed out")
+    with pytest.raises(OutcomeUnknown, match="may have been created anyway"):
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert _secret_file(cfg_dir).exists()
+
+
+def test_ocs_connection_error_still_raises_plain_provision_error_and_removes_secret(cfg_dir):
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ConnectionError("connection refused")
+    with pytest.raises(ProvisionError) as err:
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert not isinstance(err.value, OutcomeUnknown)
+    assert not _secret_file(cfg_dir).exists()
+
+
 def test_non_json_response_is_an_error(cfg_dir):
     with pytest.raises(ProvisionError, match="unexpected"):
         provision_project_files("acme", cfg=CFG, http=_Http(_Resp(payload=ValueError("not json"))))
