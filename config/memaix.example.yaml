@@ -101,11 +101,30 @@ onboarding:
 # own isolated file area (browsable at /app/files). Needs a Nextcloud admin
 # account allowed to create users. The generated password is written to
 # <config dir>/secrets/nc-<project> (mode 0600) and referenced as `file:`.
+#
+# Bundled Nextcloud (the `nextcloud` compose profile, docker-compose.yml): the
+# setup wizard writes this block itself (scripts/setup_engine.py) when that
+# profile is chosen, pointing at the container's internal address and the
+# admin account the Nextcloud image bootstraps itself from
+# NEXTCLOUD_ADMIN_USER/NEXTCLOUD_ADMIN_PASSWORD in .env — nothing to type in
+# by hand. `nextcloud` resolves on the compose network; the image listens on
+# port 80 internally regardless of which host port docker-compose.yml maps it
+# to (8081), so the URL here is never the host-published port.
 # nextcloud_provision:
-#   url: "http://nextcloud:8081"
-#   admin_user: "memaix-provisioner"
+#   url: "http://nextcloud"
+#   admin_user: "admin"
 #   admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"
 #   quota: "2GB"           # optional, default 2GB
+#
+# External, already-existing Nextcloud (customer brings their own instance):
+# the customer must supply a real admin account on THAT instance — the wizard
+# cannot generate or bootstrap one, because it doesn't own that server. See
+# docs/BACKENDS.md ("Bundlad Nextcloud vs extern Nextcloud").
+# nextcloud_provision:
+#   url: "https://cloud.kund.se"
+#   admin_user: "memaix-provisioner"
+#   admin_password_ref: "env:EXTERNAL_NEXTCLOUD_ADMIN_PASSWORD"
+#   quota: "2GB"
 
 # Require a file area for every new project (optional, default false). When
 # true, project_create FAILS (and creates nothing) unless nextcloud_provision

@@ -244,6 +244,25 @@ def test_apply_writes_config_and_shuts_down(wizard):
     assert not thread.is_alive()
 
 
+def test_apply_never_echoes_nextcloud_admin_password(wizard):
+    """Lösenordet till det Nextcloud-adminkonto write_config genererar (för
+    den bundlade profilen, oavsett om formuläret än frågar om den) ska aldrig
+    dyka upp i /apply-svaret eller i .setup-result.json."""
+    port, root, _ = wizard
+    fields = urlencode({
+        "track": "1", "admin_user": "jimmy",
+        "password": "hemligt123", "password2": "hemligt123",
+        "project_name": "acme",
+    })
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+
+    password = _nc_password((root / ".env").read_text())
+    assert password not in body
+    result_text = (root / ".setup-result.json").read_text()
+    assert password not in result_text
+
+
 # ───────────────────── kundens egen OAuth-app (PER-USER-OAUTH.md) ──────────
 
 
@@ -530,9 +549,13 @@ def test_unattended_init_generates_password_file(tmp_path, monkeypatch, capsys):
     assert (pw_file.stat().st_mode & 0o777) == 0o600
     password = pw_file.read_text().strip()
     assert len(password) >= 20
-    assert password not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert password not in out
     acl = yaml.safe_load((tmp_path / "config" / "acl.yaml").read_text())
     assert acl["users"]["admin"]["admin"] is True
+
+    nc_password = _nc_password((tmp_path / ".env").read_text())
+    assert nc_password not in out
 
 
 def test_unattended_rejects_unknown_profile(monkeypatch):
@@ -546,3 +569,74 @@ def test_unattended_rejects_unknown_profile(monkeypatch):
 def test_summary_warns_that_start_projects_have_no_file_area(tmp_path):
     summary = engine.write_config(_answers(), tmp_path)
     assert "filarea" in summary["notice"] and "require_files" in summary["notice"]
+
+
+# ───────────────── bundlad Nextcloud (compose-profilen "nextcloud") ────────
+
+
+def _nc_password(env_text: str) -> str:
+    for line in env_text.splitlines():
+        if line.startswith("NEXTCLOUD_ADMIN_PASSWORD="):
+            return line.split("=", 1)[1]
+    raise AssertionError("NEXTCLOUD_ADMIN_PASSWORD saknas i .env")
+
+
+def test_write_config_no_files_backend_writes_no_provision_block(tmp_path):
+    """Default (files_backend inte satt): inget nextcloud_provision-block,
+    och compose-profilerna reser inte nextcloud-tjänsten."""
+    engine.write_config(_answers(), tmp_path)
+    cfg = yaml.safe_load((tmp_path / "config" / "memaix.yaml").read_text())
+    assert "nextcloud_provision" not in cfg
+    env = (tmp_path / ".env").read_text()
+    assert "COMPOSE_PROFILES=hydra\n" in env
+    # Lösenordet genereras ändå (kontot kan läggas till senare utan omkörning
+    # av wizarden) men inget är kopplat till det i memaix.yaml.
+    assert "NEXTCLOUD_ADMIN_PASSWORD=" in env
+
+
+def test_write_config_bundled_nextcloud_writes_matching_provision_block(tmp_path):
+    """Valt files_backend: nextcloud_provision pekar på EXAKT samma konto
+    (användare + env-ref) som nextcloud-tjänsten bootstrapar sig själv från,
+    på den interna Docker-adressen (inte host-porten 8081)."""
+    a = _answers(files_backend=engine.FILES_BACKEND_BUNDLED_NEXTCLOUD)
+    engine.write_config(a, tmp_path)
+
+    env = (tmp_path / ".env").read_text()
+    assert "COMPOSE_PROFILES=hydra,nextcloud\n" in env
+    password = _nc_password(env)
+    assert len(password) >= 20
+
+    cfg = yaml.safe_load((tmp_path / "config" / "memaix.yaml").read_text())
+    block = cfg["nextcloud_provision"]
+    assert block["url"] == "http://nextcloud", "interna nätverksnamnet, inte host-porten 8081"
+    assert block["admin_user"] == engine.BUNDLED_NEXTCLOUD_ADMIN_USER
+    assert block["admin_password_ref"] == "env:NEXTCLOUD_ADMIN_PASSWORD"
+    # Samma env-variabel som NEXTCLOUD_ADMIN_USER i .env, så refen faktiskt
+    # löser till det konto imaget bootstrapades med.
+    assert f"NEXTCLOUD_ADMIN_USER={block['admin_user']}" in env
+
+    # Lösenordet syns aldrig i memaix.yaml, i sammanfattningen eller i en
+    # json-dump av den.
+    memaix_yaml_text = (tmp_path / "config" / "memaix.yaml").read_text()
+    assert password not in memaix_yaml_text
+
+
+def test_bundled_nextcloud_password_never_leaks_into_summary_or_stdout(tmp_path, capsys):
+    a = _answers(files_backend=engine.FILES_BACKEND_BUNDLED_NEXTCLOUD)
+    summary = engine.write_config(a, tmp_path)
+    password = _nc_password((tmp_path / ".env").read_text())
+
+    assert password not in json.dumps(summary)
+    assert password not in (tmp_path / "config" / "memaix.yaml").read_text()
+    out = capsys.readouterr().out
+    assert password not in out
+
+
+def test_validate_rejects_unknown_files_backend():
+    errors = engine.validate(_answers(files_backend="dropbox"))
+    assert errors and any("filer-backend" in e.lower() for e in errors)
+
+
+def test_validate_accepts_known_files_backends():
+    assert not engine.validate(_answers(files_backend=engine.FILES_BACKEND_NONE))
+    assert not engine.validate(_answers(files_backend=engine.FILES_BACKEND_BUNDLED_NEXTCLOUD))
