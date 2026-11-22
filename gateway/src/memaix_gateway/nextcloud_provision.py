@@ -96,6 +96,12 @@ def _http_post(url: str, *, timeout: float = _OCS_TIMEOUT_S, **kwargs):
     return requests.post(url, timeout=timeout, **kwargs)
 
 
+def _http_get(url: str, *, timeout: float = _OCS_TIMEOUT_S, **kwargs):
+    import requests
+
+    return requests.get(url, timeout=timeout, **kwargs)
+
+
 def _run(argv: list[str], *, input: str, timeout: float):
     return subprocess.run(argv, input=input, capture_output=True, text=True, timeout=timeout, check=False)
 
@@ -300,6 +306,39 @@ def _create_user(settings: dict, http, user: str, password: str, name: str) -> b
     return True
 
 
+def _probe_adopted_account(settings: dict, http, user: str, password: str) -> bool:
+    """True only when `password` is this exact account's current working
+    password, confirmed live against Nextcloud's own user-info endpoint
+    (GET, never a write). Used to decide whether a secret file left behind by
+    an OCS OutcomeUnknown (a timeout whose request may have gone through
+    anyway) matches a real, usable account — i.e. a self-healing no-op rather
+    than a stale conflict. Any failure (network, auth, unexpected response)
+    returns False and the caller falls back to the existing fail-closed
+    behaviour; this function never raises."""
+    import requests
+
+    try:
+        resp = http(
+            settings["url"].rstrip("/") + OCS_USERS + f"/{user}",
+            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            auth=(user, password),
+            timeout=_OCS_TIMEOUT_S,
+        )
+    except (requests.exceptions.RequestException, OSError):
+        return False
+    if getattr(resp, "status_code", None) != 200:
+        return False
+    try:
+        if _ocs_status(resp) not in _OK_CODES:
+            return False
+        # Auth succeeding only proves *some* account named `user` accepted this
+        # password; also check the identity Nextcloud reports back matches, so
+        # a same-named-but-different account (however unlikely) is never adopted.
+        return resp.json()["ocs"]["data"]["id"] == user
+    except (ProvisionError, KeyError, TypeError):
+        return False
+
+
 def _create_user_ssh(settings: dict, run, user: str, password: str, name: str) -> bool:
     """True when created, False when the user already exists."""
     argv = [
@@ -337,7 +376,16 @@ def provision_project_files(
     is not on (when it is, that is a ProvisionError). Raises
     ProvisionError on any failure — including an account or secret file that
     already exists, which is never overwritten — leaving no new secret file
-    behind."""
+    behind.
+
+    OCS exception: if a secret file already exists but a live check (GET
+    against Nextcloud, with that file's own password) confirms the matching
+    account already works, this is treated as an earlier, already-successful
+    provisioning — not a conflict — and the same dict a fresh success would
+    have returned is handed back, with no write of any kind. This only
+    adopts an account whose password matches the local file exactly; it can
+    never apply to anyone else's account, since our generated password is
+    cryptographically unique per run."""
     required = files_required()
     settings = _settings(cfg)
     if settings is None:
@@ -351,6 +399,26 @@ def provision_project_files(
     password = "".join(secrets.choice(_ALPHABET) for _ in range(_PASSWORD_LEN))
     # File first: if it cannot be written there is no account whose password is lost.
     if not _write_secret(secret_path, password):
+        # A leftover file from an earlier OutcomeUnknown (OCS path only) may be
+        # legitimate: the matching account could already exist and work, left
+        # by a request that actually succeeded before we gave up waiting on it.
+        # Confirm that live, with the file's own password, before treating this
+        # as adopted — never on the strength of the file's mere presence, and
+        # never for occ_ssh, which has its own account-check pattern.
+        if _method(settings) != "occ_ssh":
+            # Resolve exactly how the password will later be resolved at use (file:
+            # scheme, config.secret() -- which also strips), so "the probe passed"
+            # and "the account actually works at runtime" can never disagree.
+            try:
+                existing_password = config.secret(f"file:{secret_path}") or ""
+            except (KeyError, OSError):
+                existing_password = ""  # nosec B105 -- empty sentinel meaning "unreadable", not a credential
+            if existing_password and _probe_adopted_account(settings, http or _http_get, user, existing_password):
+                return {
+                    "url": f"{settings['url'].rstrip('/')}/remote.php/dav/files/{user}/",
+                    "user": user,
+                    "password_ref": f"file:{secret_path}",
+                }
         raise ProvisionError(f"a secret file for {name} already exists; remove it or the stale account first")
     try:
         if _method(settings) == "occ_ssh":
