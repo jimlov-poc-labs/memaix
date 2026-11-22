@@ -15,3 +15,7 @@ projects:
     vault: /tmp/memaix-demo-vault
     # allow_send: true = email_send tillåtet för ägare.
     allow_send: false
+    # awaiting_link: valfri lista — vilka kapabiliteter som väntar på en
+    # koppling (ingen hemlighet, bara en lapp för `cli.py backend-status`
+    # att läsa, se docs/ACCESS-ADMIN.md §Koppla teamets mejl). Exempel:
+    # awaiting_link: ["mail"]
