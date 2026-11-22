@@ -13,8 +13,7 @@ Commands:
                    inbox" (every teammate who wants their own mail linked
                    runs this once for themselves). For a mailbox the whole
                    team shares as one identity (e.g. info@example.se read by
-                   everyone), use acl.yaml's `mailbox:` resource with a
-                   `password_ref` secret instead (docs/BACKENDS.md) — this
+                   everyone), use `mailbox-set` below instead — this
                    command is not that.
                    The password is read from stdin (one line), never from
                    argv, so it stays out of shell history, `ps` and logs:
@@ -37,6 +36,23 @@ Commands:
                    makes sense via `docker compose exec`, not on the host:
                      docker compose exec -T gateway \
                        python -m memaix_gateway.cli backend-status
+  mailbox-set    — set up a SHARED team mailbox (e.g. info@example.se, read
+                   as the same identity by everyone with access to the
+                   project) for an instance-wide system admin to run — this
+                   is not a person's own inbox (that's link-imap above).
+                   Writes acl.yaml's `mailbox:` resource for --project and
+                   stores the password as a 0600 secret file under
+                   config/secrets/ (docs/ACCESS-ADMIN.md §Ett delat
+                   teamkonto); refuses to replace an existing mailbox
+                   resource for the same project unless --force is given.
+                   Password on stdin, same as link-imap:
+                     printf '%s\n' "$PW" | docker compose exec -T gateway \
+                       python -m memaix_gateway.cli mailbox-set acme \
+                       info@acme.se --host imap.purelymail.com
+                   Restart the gateway afterwards (`docker compose restart
+                   gateway`) — like every acl.yaml change made outside the
+                   admin web UI, it only takes effect once the running
+                   process re-reads the file.
 """
 
 from __future__ import annotations
@@ -205,6 +221,59 @@ def cmd_backend_status(args, *, acl=None, store=None) -> int:
     return 1 if any(e.status == "error" for e in entries) else 0
 
 
+def cmd_mailbox_set(args, *, stdin=None, writer=None, secrets_dir=None) -> int:
+    """Write a SHARED mailbox resource for args.project. Prints no secret;
+    returns a process exit code. See `mailbox-set`'s help text in main()."""
+    password = _read_password(stdin)
+    if not password:
+        print("Tomt lösenord på stdin — ingenting skrevs.", file=sys.stderr)
+        return 1
+
+    from pathlib import Path
+
+    from .mailbox_admin import MailboxAdminError, set_mailbox
+    from .web.acl_writer import AclWriter
+
+    if writer is None:
+        from . import config
+
+        writer = AclWriter(config.CONFIG_DIR / "acl.yaml")
+    if secrets_dir is None:
+        from . import config
+
+        secrets_dir = config.CONFIG_DIR / "secrets"
+
+    try:
+        out = set_mailbox(
+            writer,
+            Path(secrets_dir),
+            args.project,
+            args.email,
+            args.host,
+            password,
+            port=args.port,
+            smtp_host=args.smtp_host,
+            smtp_port=args.smtp_port,
+            force=args.force,
+        )
+    except MailboxAdminError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # shown without the password: the type only (same pattern as
+        # link-imap's _verified) — e.g. config/secrets/ not writable here.
+        print(f"Kunde inte skriva hemlighetsfilen: {type(exc).__name__}", file=sys.stderr)
+        return 1
+    finally:
+        del password
+
+    print(
+        f"Satte delad mailbox för {out['project']}: {out['mailbox']['user']} "
+        f"@ {out['mailbox']['host']}. Starta om gatewayen för att den läses in."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m memaix_gateway.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -224,6 +293,23 @@ def main(argv: list[str] | None = None) -> int:
         help="list project mail/calendar resources declared awaiting_link that nothing has linked yet",
     )
     status.add_argument("--project", default=None, help="show only this project (default: all)")
+    mailbox = sub.add_parser(
+        "mailbox-set",
+        help="set up a SHARED team mailbox for a project (system admin only); password on stdin",
+    )
+    mailbox.add_argument("project", help="Memaix project name (acl.yaml)")
+    mailbox.add_argument("email", help="shared mailbox address, e.g. info@example.se")
+    mailbox.add_argument("--host", required=True, help="IMAP host, e.g. imap.purelymail.com")
+    mailbox.add_argument(
+        "--port", type=int, default=None,
+        help="IMAP port; the shared adapter is fixed on 993, so only 993 (or omitted) is accepted",
+    )
+    mailbox.add_argument("--smtp-host", default=None, help="SMTP host for outgoing mail from this mailbox")
+    mailbox.add_argument("--smtp-port", type=int, default=None, help="SMTP port (default 587, STARTTLS)")
+    mailbox.add_argument(
+        "--force", action="store_true",
+        help="replace an existing mailbox resource for this project instead of refusing",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "hash-password":
@@ -232,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_link_imap(args)
     if args.command == "backend-status":
         return cmd_backend_status(args)
+    if args.command == "mailbox-set":
+        return cmd_mailbox_set(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 
