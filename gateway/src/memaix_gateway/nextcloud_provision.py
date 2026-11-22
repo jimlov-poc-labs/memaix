@@ -243,8 +243,13 @@ def _probe_adopted_account(settings: dict, http, user: str, password: str) -> bo
     if getattr(resp, "status_code", None) != 200:
         return False
     try:
-        return _ocs_status(resp) in _OK_CODES
-    except ProvisionError:
+        if _ocs_status(resp) not in _OK_CODES:
+            return False
+        # Auth succeeding only proves *some* account named `user` accepted this
+        # password; also check the identity Nextcloud reports back matches, so
+        # a same-named-but-different account (however unlikely) is never adopted.
+        return resp.json()["ocs"]["data"]["id"] == user
+    except (ProvisionError, KeyError, TypeError):
         return False
 
 

@@ -124,7 +124,8 @@ def test_adopts_matching_account_left_by_an_earlier_timeout_without_any_write(cf
     path = _secret_file(cfg_dir)
     path.parent.mkdir(parents=True)
     path.write_text("leftover-password-from-a-timed-out-run")
-    http = _Http(_Resp(200, status_code=200))
+    payload = {"ocs": {"meta": {"statuscode": 200}, "data": {"id": "memaix-acme"}}}
+    http = _Http(_Resp(payload=payload, status_code=200))
     out = provision_project_files("acme", cfg=CFG, http=http)
     assert out == {
         "url": "https://nc.example/remote.php/dav/files/memaix-acme/",
@@ -162,6 +163,42 @@ def test_adopt_skips_the_probe_entirely_for_an_empty_secret_file(cfg_dir):
     with pytest.raises(ProvisionError, match="already exists"):
         provision_project_files("acme", cfg=CFG, http=http)
     assert http.calls == []
+
+
+def test_adopt_rejects_a_successful_auth_for_a_different_reported_identity(cfg_dir):
+    """Auth succeeding only proves some account named `user` accepted the
+    password; Nextcloud's own reported id must also match, so a same-named
+    but different account is never adopted."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("keep-me")
+    payload = {"ocs": {"meta": {"statuscode": 200}, "data": {"id": "someone-else"}}}
+    http = _Http(_Resp(payload=payload, status_code=200))
+    with pytest.raises(ProvisionError, match="already exists"):
+        provision_project_files("acme", cfg=CFG, http=http)
+    assert path.read_text() == "keep-me"
+
+
+def test_adopt_uses_the_real_get_endpoint_and_never_the_create_post(cfg_dir, monkeypatch):
+    """Exercises the production wiring (no http= injected): the default GET
+    probe must never be, or become, the account-creating POST."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("leftover-password-from-a-timed-out-run")
+    payload = {"ocs": {"meta": {"statuscode": 200}, "data": {"id": "memaix-acme"}}}
+
+    def fail_if_called(*args, **kwargs):
+        pytest.fail("the account-creating POST must never run during adoption")
+
+    def fake_get(url, **kwargs):
+        assert url == "https://nc.example/ocs/v2.php/cloud/users/memaix-acme"
+        return _Resp(payload=payload, status_code=200)
+
+    monkeypatch.setattr(np_, "_http_post", fail_if_called)
+    monkeypatch.setattr(np_, "_http_get", fake_get)
+    out = provision_project_files("acme", cfg=CFG)
+    assert out["user"] == "memaix-acme"
+    assert path.read_text() == "leftover-password-from-a-timed-out-run"
 
 
 def test_ssh_method_never_attempts_adoption(cfg_dir):
