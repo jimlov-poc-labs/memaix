@@ -145,13 +145,18 @@ def test_ocs_failure_leaves_no_file_and_no_password_in_error(cfg_dir):
     assert not _secret_file(cfg_dir).exists()
 
 
-def test_unreachable_nextcloud_leaves_no_file_and_hides_details(cfg_dir):
+def test_unreachable_nextcloud_hides_admin_password_in_error(cfg_dir):
+    """requests.exceptions.ConnectionError is also what a connection-refused
+    or DNS failure raises, but the error message must never leak the admin
+    password regardless of which bucket it lands in."""
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
     boom = requests.ConnectionError(f"failed for auth root:{ADMIN_PW}")
-    with pytest.raises(ProvisionError) as err:
+    with pytest.raises(OutcomeUnknown) as err:
         provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
-    assert ADMIN_PW not in str(err.value) and "ConnectionError" in str(err.value)
+    assert ADMIN_PW not in str(err.value)
     assert err.value.__cause__ is None and err.value.__suppress_context__
-    assert not _secret_file(cfg_dir).exists()
+    assert _secret_file(cfg_dir).exists()
 
 
 def test_ocs_timeout_raises_outcome_unknown_and_keeps_secret(cfg_dir):
@@ -167,14 +172,61 @@ def test_ocs_timeout_raises_outcome_unknown_and_keeps_secret(cfg_dir):
     assert ei.value.__cause__ is None and ei.value.__suppress_context__
 
 
-def test_ocs_connection_error_still_raises_plain_provision_error_and_removes_secret(cfg_dir):
+def test_ocs_connection_error_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    """A generic requests.exceptions.ConnectionError (e.g. "connection
+    refused") is funnelled through the same requests code path as a
+    mid-response disconnect, with no reliable public way to tell them apart
+    (see the comment at this handler in nextcloud_provision.py). Treated as
+    an unknown outcome rather than guessed at."""
     from memaix_gateway.nextcloud_provision import OutcomeUnknown
 
     boom = requests.exceptions.ConnectionError("connection refused")
-    with pytest.raises(ProvisionError) as err:
+    with pytest.raises(OutcomeUnknown, match="may have reached Nextcloud") as err:
         provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
-    assert not isinstance(err.value, OutcomeUnknown)
-    assert not _secret_file(cfg_dir).exists()
+    assert err.value.__cause__ is None and err.value.__suppress_context__
+    assert _secret_file(cfg_dir).exists()
+
+
+def test_ocs_remote_disconnected_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    """A connection that breaks *after* the request body was sent — e.g. the
+    stdlib's http.client.RemoteDisconnected, which requests/urllib3 wrap in
+    a ConnectionError — must keep the secret file: Nextcloud may have
+    already created the account before the response was lost."""
+    from http.client import RemoteDisconnected
+
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ConnectionError(RemoteDisconnected("Remote end closed connection without response"))
+    with pytest.raises(OutcomeUnknown, match="may have reached Nextcloud"):
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert _secret_file(cfg_dir).exists()
+
+
+def test_ocs_chunked_encoding_error_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    """requests.exceptions.ChunkedEncodingError is a RequestException/OSError,
+    not a ConnectionError subclass, but it is still caught by the broad
+    OSError handler: it's raised when the response body is cut off
+    mid-stream — again, after the request was already sent."""
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead")
+    with pytest.raises(OutcomeUnknown, match="may have reached Nextcloud"):
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert _secret_file(cfg_dir).exists()
+
+
+def test_ocs_content_decoding_error_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    """requests.exceptions.ContentDecodingError (e.g. a corrupt gzip body) is
+    another RequestException/OSError that only happens after Nextcloud has
+    already answered, which is exactly the class of failure the broad
+    OSError handler exists to catch — not just the named ConnectionError/
+    ChunkedEncodingError cases."""
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ContentDecodingError("Received response with content-encoding: gzip, but failed")
+    with pytest.raises(OutcomeUnknown, match="may have reached Nextcloud"):
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert _secret_file(cfg_dir).exists()
 
 
 def test_ocs_connect_timeout_is_a_plain_provision_error_not_outcome_unknown(cfg_dir):

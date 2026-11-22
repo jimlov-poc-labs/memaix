@@ -72,7 +72,19 @@ class ProvisionError(Exception):
 
 
 class OutcomeUnknown(ProvisionError):
-    """The remote command may have finished after we gave up; keep the secret file."""
+    """The remote command may have finished after we gave up; keep the secret file.
+
+    Raised for the OCS path on every requests failure except ConnectTimeout:
+    a read/response timeout, any requests.exceptions.ConnectionError, and
+    ChunkedEncodingError. ConnectTimeout alone is proven connect-phase-only
+    (requests documents it as "safe to retry"); every other failure requests
+    can raise here — including a generic ConnectionError, which covers both
+    a refused connection and a connection that broke after the request was
+    already sent, indistinguishably — is treated as an unknown outcome by
+    default rather than guessed at. See the comment at the OSError handler
+    in _create_user for the detail. Also raised for the ssh path on a
+    timeout, for the same "may have finished anyway" reason.
+    """
 
 
 def _http_post(url: str, *, timeout: float = _OCS_TIMEOUT_S, **kwargs):
@@ -191,21 +203,44 @@ def _create_user(settings: dict, http, user: str, password: str, name: str) -> b
         )
     except requests.exceptions.ConnectTimeout as exc:
         # The TCP/TLS handshake itself never completed — no request body was
-        # ever sent, so the account cannot have been created. Treat like any
-        # other unreachable-host failure, not an unknown outcome.
+        # ever sent, so the account cannot have been created. This is the one
+        # failure requests documents as connect-phase-only ("safe to retry"),
+        # so it is the one case proven to belong on the plain-ProvisionError
+        # side rather than the unknown-outcome side below.
         raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
-    except requests.exceptions.Timeout:
-        # A ConnectTimeout is also a Timeout, so this only catches what's left
-        # once the branch above has run: the connection succeeded and the
-        # request was sent (typically a ReadTimeout) — Nextcloud may have
-        # processed it before the response timed out.
+    except OSError as exc:
+        # Everything else requests/urllib3 can raise from this call —
+        # ReadTimeout, the generic ConnectionError, ChunkedEncodingError, and
+        # whatever else inherits from OSError here — is NOT provably a
+        # "never reached Nextcloud" failure, so none of it gets the easy
+        # answer of a plain ProvisionError (which deletes the secret file).
+        #
+        # In particular, requests.adapters.HTTPAdapter.send() has a single
+        # except clause — `except (ProtocolError, OSError) as err: raise
+        # ConnectionError(err, request=request)` — that turns both "the
+        # socket never connected" (plain OSError, e.g. connection refused)
+        # and "the connection broke after the request was already written"
+        # (ProtocolError, e.g. RemoteDisconnected) into the exact same
+        # requests.exceptions.ConnectionError, with no documented, stable way
+        # to tell them apart from the caller's side afterwards — the cause
+        # chain requests leaves behind is wrapping urllib3 internals it does
+        # not promise to keep shaped the same way release to release.
+        # ChunkedEncodingError (body cut off mid-stream) is a separate class
+        # for the same "request already sent" reason, and is covered by this
+        # same broad branch because it, too, cannot be a pre-send failure.
+        #
+        # Given that, anything landing here defaults to OutcomeUnknown rather
+        # than being sorted case by case: a false positive here costs one
+        # manual account check before retrying; a false negative (treating an
+        # orphaned account as "clearly failed, safe to delete the secret and
+        # retry") costs a silently broken login the next person hits. The
+        # cheaper mistake is the one this code makes.
         raise OutcomeUnknown(
-            f"Nextcloud took longer than {_OCS_TIMEOUT_S}s to respond to the account-creation request for "
-            f"{user}; the account may have been created anyway. The secret file nc-{name} was kept; "
-            "check the account, then remove whichever is stale before retrying"
+            f"Nextcloud account creation for {user} failed with {type(exc).__name__}, and the connection "
+            "may have reached Nextcloud before it broke; the account may have been created anyway. "
+            f"The secret file nc-{name} was kept; check the account, then remove whichever is stale "
+            "before retrying"
         ) from None
-    except OSError as exc:  # requests' other exceptions derive from OSError too; the call never reached Nextcloud
-        raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
     status = _ocs_status(resp)
     if status == _ALREADY_EXISTS:
         return False
