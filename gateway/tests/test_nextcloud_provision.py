@@ -154,6 +154,44 @@ def test_unreachable_nextcloud_leaves_no_file_and_hides_details(cfg_dir):
     assert not _secret_file(cfg_dir).exists()
 
 
+def test_ocs_timeout_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ReadTimeout("read timed out")
+    with pytest.raises(OutcomeUnknown, match="may have been created anyway") as ei:
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    path = _secret_file(cfg_dir)
+    assert path.exists()
+    password = path.read_text()
+    assert password not in str(ei.value)
+    assert ei.value.__cause__ is None and ei.value.__suppress_context__
+
+
+def test_ocs_connection_error_still_raises_plain_provision_error_and_removes_secret(cfg_dir):
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ConnectionError("connection refused")
+    with pytest.raises(ProvisionError) as err:
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert not isinstance(err.value, OutcomeUnknown)
+    assert not _secret_file(cfg_dir).exists()
+
+
+def test_ocs_connect_timeout_is_a_plain_provision_error_not_outcome_unknown(cfg_dir):
+    """requests.exceptions.ConnectTimeout is both a ConnectionError and a Timeout,
+    but it means the TCP/TLS handshake never completed — no request body was
+    ever sent, so the account cannot have been created. Caught ahead of the
+    generic Timeout branch and treated like any other unreachable-host
+    failure: plain ProvisionError, secret file removed."""
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    boom = requests.exceptions.ConnectTimeout("connect timed out")
+    with pytest.raises(ProvisionError) as err:
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert not isinstance(err.value, OutcomeUnknown)
+    assert not _secret_file(cfg_dir).exists()
+
+
 def test_non_json_response_is_an_error(cfg_dir):
     with pytest.raises(ProvisionError, match="unexpected"):
         provision_project_files("acme", cfg=CFG, http=_Http(_Resp(payload=ValueError("not json"))))

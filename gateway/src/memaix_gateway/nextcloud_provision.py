@@ -40,7 +40,12 @@ _EXISTS_EXIT = 10
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _ALPHABET = string.ascii_letters + string.digits
 _PASSWORD_LEN = 32
-_TIMEOUT_S = 15
+_TIMEOUT_S = 15  # ssh path's own timeout; used as _TIMEOUT_S * 2 there, unaffected by the OCS bump below
+# A fresh Nextcloud install's first OCS call pays an opcache/cache warm-up
+# cost (~11.5s measured, vs ~2.2s afterwards); 25s covers that with headroom
+# without masking a genuinely unreachable host. OCS-only: the ssh path keeps
+# its own, already generous, timeout above.
+_OCS_TIMEOUT_S = 25
 
 
 _MISSING_BLOCK = (
@@ -70,7 +75,7 @@ class OutcomeUnknown(ProvisionError):
     """The remote command may have finished after we gave up; keep the secret file."""
 
 
-def _http_post(url: str, *, timeout: float = 15, **kwargs):
+def _http_post(url: str, *, timeout: float = _OCS_TIMEOUT_S, **kwargs):
     import requests
 
     return requests.post(url, timeout=timeout, **kwargs)
@@ -169,6 +174,8 @@ def _ocs_status(resp) -> int:
 
 def _create_user(settings: dict, http, user: str, password: str, name: str) -> bool:
     """True when created, False when the user already exists."""
+    import requests
+
     try:
         resp = http(
             settings["url"].rstrip("/") + OCS_USERS,
@@ -180,9 +187,24 @@ def _create_user(settings: dict, http, user: str, password: str, name: str) -> b
                 "displayName": f"Memaix {name}",
                 "quota": settings.get("quota") or DEFAULT_QUOTA,
             },
-            timeout=_TIMEOUT_S,
+            timeout=_OCS_TIMEOUT_S,
         )
-    except OSError as exc:  # requests' exceptions derive from OSError
+    except requests.exceptions.ConnectTimeout as exc:
+        # The TCP/TLS handshake itself never completed — no request body was
+        # ever sent, so the account cannot have been created. Treat like any
+        # other unreachable-host failure, not an unknown outcome.
+        raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
+    except requests.exceptions.Timeout:
+        # A ConnectTimeout is also a Timeout, so this only catches what's left
+        # once the branch above has run: the connection succeeded and the
+        # request was sent (typically a ReadTimeout) — Nextcloud may have
+        # processed it before the response timed out.
+        raise OutcomeUnknown(
+            f"Nextcloud took longer than {_OCS_TIMEOUT_S}s to respond to the account-creation request for "
+            f"{user}; the account may have been created anyway. The secret file nc-{name} was kept; "
+            "check the account, then remove whichever is stale before retrying"
+        ) from None
+    except OSError as exc:  # requests' other exceptions derive from OSError too; the call never reached Nextcloud
         raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
     status = _ocs_status(resp)
     if status == _ALREADY_EXISTS:
