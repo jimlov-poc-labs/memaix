@@ -21,6 +21,7 @@ import os
 import re
 import secrets
 import shutil
+import string
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,23 @@ TRACK_TRIAL, TRACK_SELFHOST, TRACK_MANAGED = 1, 2, 3
 # endpoint-lägen (LLM på lokala nätet ELLER egen molninstans) kräver bas-URL.
 LLM_API_PROVIDERS = ("anthropic", "openai", "google", "openrouter", "mistral")
 LLM_ENDPOINT_PROVIDERS = ("openai-compatible", "ollama", "vllm")
+
+# WIZARD.md fråga 6 (backends): "senare" (default) eller en av dessa fyra val.
+# Bara BUNDLED_NEXTCLOUD har motor-stöd idag — resten (Gmail/M365/extern IMAP)
+# är fortfarande "lägg till senare" via `memaix backend add` (docs/BACKENDS.md).
+FILES_BACKEND_NONE = "none"
+FILES_BACKEND_BUNDLED_NEXTCLOUD = "bundled_nextcloud"
+FILES_BACKENDS = (FILES_BACKEND_NONE, FILES_BACKEND_BUNDLED_NEXTCLOUD)
+
+# Kontot nextcloud-imaget bootstrapar sig själv från (NEXTCLOUD_ADMIN_USER/
+# NEXTCLOUD_ADMIN_PASSWORD i .env, se docker-compose.yml) — samma konstant på
+# båda ställena write_config() skriver det, så de aldrig kan glida isär.
+BUNDLED_NEXTCLOUD_ADMIN_USER = "admin"
+# Interna Docker-nätverksadressen till nextcloud-tjänsten (compose service-
+# namnet); porten 8081 i docker-compose.yml är bara host-publiceringen.
+BUNDLED_NEXTCLOUD_URL = "http://nextcloud"
+_NC_PASSWORD_LEN = 32
+_NC_ALPHABET = string.ascii_letters + string.digits
 
 _USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _PROJECT_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
@@ -69,6 +87,8 @@ def compose_profiles(a: dict) -> str:
     profiles = ["hydra"]
     if a.get("tunnel_provider") in ("cloudflare", "cloudflare-quick"):
         profiles.append("tunnel")
+    if a.get("files_backend") == FILES_BACKEND_BUNDLED_NEXTCLOUD:
+        profiles.append("nextcloud")
     return ",".join(profiles)
 
 
@@ -87,6 +107,7 @@ def defaults() -> dict:
         "llm_model": "",
         "llm_endpoint": "",
         "llm_api_key": "",
+        "files_backend": FILES_BACKEND_NONE,
     }
 
 
@@ -120,6 +141,10 @@ def validate(a: dict) -> list[str]:
             a.get("llm_endpoint", "")
         ).startswith(("http://", "https://")):
             errors.append("Lokal/egen LLM kräver en endpoint-URL (http(s)://…).")
+
+    files_backend = a.get("files_backend", FILES_BACKEND_NONE)
+    if files_backend not in FILES_BACKENDS:
+        errors.append(f"Okänt filer-backend-val: {files_backend!r}.")
     return errors
 
 
@@ -137,8 +162,13 @@ FILES_NOTICE = (
 
 
 def files_notice(projects: list) -> str | None:
-    """Notis när start-projekten skapas utan filarea. write_config skriver aldrig
-    nextcloud_provision, så för nya installationer gäller notisen alltid."""
+    """Notis när start-projekten skapas utan filarea.
+
+    write_config KAN skriva nextcloud_provision nu (files_backend ==
+    bundled_nextcloud), men bara för nya projekt skapade EFTER installationen
+    via project_create — start-projekten själva får ändå ingen filarea
+    (seed_vaults/write_config provisionerar inget Nextcloud-konto för dem),
+    så notisen gäller oförändrat varje installation som skapar projekt."""
     return FILES_NOTICE if projects else None
 
 
@@ -176,6 +206,21 @@ def write_config(a: dict, root: Path) -> dict:
         if a.get("llm_endpoint"):
             model_block += f'  endpoint: "{a["llm_endpoint"]}"\n'
 
+    # Bundlad Nextcloud (compose-profilen "nextcloud"): peka gatewayens OCS-
+    # provisionering på exakt det konto nextcloud-imaget bootstrapar sig själv
+    # från (samma NEXTCLOUD_ADMIN_USER/PASSWORD som skrivs till .env nedan) —
+    # ingen handpåskriven adminidentitet. docs/BACKENDS.md förklarar skillnaden
+    # mot en kunds egen, EXTERNA Nextcloud (dit skriver kunden själv in riktiga
+    # adminuppgifter; den vägen bygger write_config aldrig).
+    nextcloud_block = ""
+    if a.get("files_backend") == FILES_BACKEND_BUNDLED_NEXTCLOUD:
+        nextcloud_block = (
+            f'\nnextcloud_provision:\n'
+            f'  url: "{BUNDLED_NEXTCLOUD_URL}"\n'
+            f'  admin_user: "{BUNDLED_NEXTCLOUD_ADMIN_USER}"\n'
+            f'  admin_password_ref: "env:NEXTCLOUD_ADMIN_PASSWORD"\n'
+        )
+
     (config / "memaix.yaml").write_text(
         f'server:\n'
         f'  bind: "0.0.0.0:8080"\n'
@@ -188,6 +233,7 @@ def write_config(a: dict, root: Path) -> dict:
         f'onboarding:\n'
         f'  enabled: true\n'
         f'{model_block}'
+        f'{nextcloud_block}'
     )
 
     projects = {project: f"/srv/vaults/{project}"}
@@ -223,7 +269,7 @@ def write_config(a: dict, root: Path) -> dict:
         f"TOKEN_MASTER_KEY={fernet_key()}",
         f"MEMAIX_ALLOWED_USERS={admin}",
         f"MEMAIX_LOGIN_PASSWORD_HASH_{admin.upper()}={password_hash}",
-        "NEXTCLOUD_ADMIN_USER=admin",
+        f"NEXTCLOUD_ADMIN_USER={BUNDLED_NEXTCLOUD_ADMIN_USER}",
         f"NEXTCLOUD_ADMIN_PASSWORD={secrets.token_hex(16)}",
         "NEXTCLOUD_PUBLIC_HOST=",
     ]
@@ -262,6 +308,7 @@ def write_config(a: dict, root: Path) -> dict:
         "admin_user": admin,
         "project_name": project,
         "llm_provider": a.get("llm_provider", "byo"),
+        "files_backend": a.get("files_backend", FILES_BACKEND_NONE),
         "written": ["config/brand.yaml", "config/memaix.yaml", "config/acl.yaml", ".env"],
         "notice": files_notice(list(projects)),
     }

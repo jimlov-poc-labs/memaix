@@ -184,13 +184,23 @@ services:
     profiles: ["hydra"]
 
   # Valfritt: Nextcloud som backend för kalender (CalDAV) + filer (WebDAV).
+  #
+  # SQLITE_DATABASE krävs för att nextcloud-imagets entrypoint ska köra
+  # `occ maintenance:install` automatiskt vid första start -- utan en
+  # databasvariabel (SQLITE_DATABASE/MYSQL_*/POSTGRES_*) stannar den vid
+  # NEXTCLOUD_ADMIN_USER/PASSWORD ensamma och väntar i stället på den
+  # webbaserade installationsguiden (se nextcloud-imagets docker-entrypoint.sh).
+  # "nextcloud" måste stå i TRUSTED_DOMAINS: gatewayen anropar
+  # http://nextcloud (det interna Docker-nätverksnamnet) för OCS/WebDAV, och
+  # Nextclouds host-kontroll avvisar annars det anropet (ej "localhost").
   nextcloud:
     image: nextcloud:latest
     restart: unless-stopped
     environment:
       NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
-      NEXTCLOUD_TRUSTED_DOMAINS: "localhost ${NEXTCLOUD_PUBLIC_HOST:-}"
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost nextcloud ${NEXTCLOUD_PUBLIC_HOST:-}"
     volumes:
       - nextcloud-data:/var/www/html
     ports:

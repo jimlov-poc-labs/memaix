@@ -68,6 +68,34 @@ som skiljer är registreringsvägen per kontotyp:
 CASA-kostnaden gäller alltså bara publik åtkomst till *privat* Gmail i skala — inte Workspace,
 inte M365. Det är ett vägval per kund, inte en spärr.
 
+## Bundlad Nextcloud vs extern Nextcloud (filarea per projekt)
+
+Två helt olika vägar delar samma mekanism (`nextcloud_provision` i `memaix.yaml`,
+`gateway/src/memaix_gateway/nextcloud_provision.py`, se `docs/SECRETS.md`):
+
+- **Bundlad Nextcloud** — compose-profilen `nextcloud` i `docker-compose.yml`, startad t.ex. med
+  `docker compose --profile hydra --profile nextcloud up -d`. Nextcloud-imaget bootstrapar sig
+  själv med ett adminkonto från `NEXTCLOUD_ADMIN_USER`/`NEXTCLOUD_ADMIN_PASSWORD` i `.env` (det
+  officiella `nextcloud`-imagets `docker-entrypoint.sh` kör `occ maintenance:install` automatiskt
+  vid första start när dessa + en databasvariabel är satta — `docker-compose.yml` sätter
+  `SQLITE_DATABASE` för just detta). Setup-motorn (`scripts/setup_engine.py::write_config`)
+  **genererar lösenordet och skriver `nextcloud_provision`-blocket åt dig**, med `url:
+  "http://nextcloud"` (det interna Docker-nätverksnamnet — porten 8081 i compose-filen är bara
+  host-publiceringen, aldrig vad gatewayen själv anropar) och `admin_password_ref:
+  "env:NEXTCLOUD_ADMIN_PASSWORD"`, som pekar på exakt det konto imaget bootstrapades med. Ingen
+  manuell adminidentitet behövs — wizard-fråga 6 (`docs/WIZARD.md`) kommer koppla in detta val
+  (`files_backend: bundled_nextcloud`), motorn har redan stödet.
+- **Extern, redan existerande Nextcloud** (kunden har redan en instans, bundlar ingen egen) — kräver
+  fortfarande ett **riktigt adminkonto som kunden själv skapar** på just den instansen, och matar in
+  `url`/`admin_user`/`admin_password_ref` för hand (`config/memaix.example.yaml` har ett exempel).
+  Wizarden kan inte generera eller bootstrapa en adminidentitet på en server den inte äger — det är
+  skillnaden mot den bundlade vägen ovan, inte en brist som ska byggas bort.
+
+Båda vägarna använder `method: ocs` (OCS-provisioneringsAPI:t, med ett riktigt lösenord — inte ett
+app-lösenord, som Nextcloud 32 vägrar för `addUser`). `method: occ_ssh` (ssh till värden, se
+`docs/SECRETS.md`) är en separat, senare optimering och gäller inte den bundlade containern, som
+saknar en SSH-server att nå in i.
+
 ## Config (per projekt-resurs)
 
 ```yaml
