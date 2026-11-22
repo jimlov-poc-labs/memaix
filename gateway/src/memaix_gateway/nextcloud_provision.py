@@ -74,16 +74,19 @@ class ProvisionError(Exception):
 class OutcomeUnknown(ProvisionError):
     """The remote command may have finished after we gave up; keep the secret file.
 
-    Raised for the OCS path on every requests failure except ConnectTimeout:
-    a read/response timeout, any requests.exceptions.ConnectionError, and
-    ChunkedEncodingError. ConnectTimeout alone is proven connect-phase-only
-    (requests documents it as "safe to retry"); every other failure requests
-    can raise here — including a generic ConnectionError, which covers both
-    a refused connection and a connection that broke after the request was
-    already sent, indistinguishably — is treated as an unknown outcome by
-    default rather than guessed at. See the comment at the OSError handler
-    in _create_user for the detail. Also raised for the ssh path on a
-    timeout, for the same "may have finished anyway" reason.
+    Raised for the OCS path on every requests failure that isn't provably
+    pre-send: a read/response timeout, ChunkedEncodingError,
+    ContentDecodingError, and a requests.exceptions.ConnectionError unless
+    it carries the MaxRetryError/NewConnectionError signal that proves a
+    refused connection or DNS failure (see
+    _is_proven_presend_connection_error). Those proven pre-send cases —
+    ConnectTimeout, the refused/DNS-failure shape of ConnectionError, and
+    the request-building errors MissingSchema/InvalidSchema/InvalidURL/
+    InvalidHeader — get a plain ProvisionError instead, because they cannot
+    have created the account. Everything else defaults to OutcomeUnknown
+    rather than being guessed at: see the comments in _create_user. Also
+    raised for the ssh path on a timeout, for the same "may have finished
+    anyway" reason.
     """
 
 
@@ -184,6 +187,33 @@ def _ocs_status(resp) -> int:
         raise ProvisionError(f"unexpected Nextcloud response (HTTP {resp.status_code})") from None
 
 
+def _is_proven_presend_connection_error(exc) -> bool:
+    """True when a requests.exceptions.ConnectionError is provably "never
+    reached the socket" rather than "reached it, then something broke".
+
+    This is the same signal requests' own HTTPAdapter.send() uses
+    internally to recognise a connect-phase failure (see the ConnectTimeout
+    special-case there: `isinstance(e.reason, ConnectTimeoutError) and not
+    isinstance(e.reason, NewConnectionError)`): a refused connection or a
+    DNS failure surfaces as urllib3.exceptions.MaxRetryError wrapping a
+    NewConnectionError (urllib3.exceptions.NameResolutionError is a
+    NewConnectionError subclass, so DNS failures match too).
+
+    Verified empirically (not just read from the source) against three
+    real cases on this machine: a closed local TCP port (connection
+    refused), a `.invalid` hostname (DNS failure) — both match this check —
+    and a local server that accepts the connection, reads the request, then
+    closes without replying — which raises a bare urllib3.ProtocolError
+    with no MaxRetryError wrapper and correctly does NOT match. That last
+    shape is the genuinely unknown "sent but the reply was lost" case and
+    must stay OutcomeUnknown; see the caller.
+    """
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+
+    cause = exc.args[0] if exc.args else None
+    return isinstance(cause, MaxRetryError) and isinstance(cause.reason, NewConnectionError)
+
+
 def _create_user(settings: dict, http, user: str, password: str, name: str) -> bool:
     """True when created, False when the user already exists."""
     import requests
@@ -205,33 +235,54 @@ def _create_user(settings: dict, http, user: str, password: str, name: str) -> b
         # The TCP/TLS handshake itself never completed — no request body was
         # ever sent, so the account cannot have been created. This is the one
         # failure requests documents as connect-phase-only ("safe to retry"),
-        # so it is the one case proven to belong on the plain-ProvisionError
-        # side rather than the unknown-outcome side below.
+        # so it is proven to belong on the plain-ProvisionError side rather
+        # than the unknown-outcome side below.
         raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
+    except (
+        requests.exceptions.MissingSchema,
+        requests.exceptions.InvalidSchema,
+        requests.exceptions.InvalidURL,
+        requests.exceptions.InvalidHeader,
+    ) as exc:
+        # Raised while requests builds/validates the PreparedRequest, before
+        # any socket is ever opened — a malformed nextcloud_provision.url or
+        # similar config problem, not a network failure. Provably pre-send,
+        # same bucket as ConnectTimeout.
+        raise ProvisionError(f"Nextcloud request malformed ({type(exc).__name__})") from None
+    except requests.exceptions.ConnectionError as exc:
+        # requests.adapters.HTTPAdapter.send() has a single except clause —
+        # `except (ProtocolError, OSError) as err: raise ConnectionError(err,
+        # request=request)` — that turns both "the socket never connected"
+        # (e.g. connection refused, DNS failure) and "the connection broke
+        # after the request was already written" (e.g. RemoteDisconnected)
+        # into the same requests.exceptions.ConnectionError. But unlike the
+        # generic case, refused/DNS failures carry a reliable signal: they
+        # reach here via urllib3.exceptions.MaxRetryError wrapping a
+        # NewConnectionError, the same shape requests' own ConnectTimeout
+        # branch keys off internally — see _is_proven_presend_connection_error
+        # for the check and how it was verified against real sockets, not
+        # just read from source. A bare ProtocolError (no MaxRetryError
+        # wrapper) is the genuinely ambiguous "sent, then lost the reply"
+        # case and has no such signal, so it falls through to OutcomeUnknown.
+        if _is_proven_presend_connection_error(exc):
+            raise ProvisionError(f"Nextcloud unreachable ({type(exc).__name__})") from None
+        raise OutcomeUnknown(
+            f"Nextcloud account creation for {user} failed with {type(exc).__name__}, and the connection "
+            "may have reached Nextcloud before it broke; the account may have been created anyway. "
+            f"The secret file nc-{name} was kept; check the account, then remove whichever is stale "
+            "before retrying"
+        ) from None
     except OSError as exc:
         # Everything else requests/urllib3 can raise from this call —
-        # ReadTimeout, the generic ConnectionError, ChunkedEncodingError, and
-        # whatever else inherits from OSError here — is NOT provably a
-        # "never reached Nextcloud" failure, so none of it gets the easy
-        # answer of a plain ProvisionError (which deletes the secret file).
+        # ReadTimeout, ChunkedEncodingError, ContentDecodingError, and
+        # whatever else inherits from OSError here but isn't one of the
+        # provably pre-send cases handled above — is NOT provably a "never
+        # reached Nextcloud" failure, so none of it gets the easy answer of
+        # a plain ProvisionError (which deletes the secret file).
         #
-        # In particular, requests.adapters.HTTPAdapter.send() has a single
-        # except clause — `except (ProtocolError, OSError) as err: raise
-        # ConnectionError(err, request=request)` — that turns both "the
-        # socket never connected" (plain OSError, e.g. connection refused)
-        # and "the connection broke after the request was already written"
-        # (ProtocolError, e.g. RemoteDisconnected) into the exact same
-        # requests.exceptions.ConnectionError, with no documented, stable way
-        # to tell them apart from the caller's side afterwards — the cause
-        # chain requests leaves behind is wrapping urllib3 internals it does
-        # not promise to keep shaped the same way release to release.
-        # ChunkedEncodingError (body cut off mid-stream) is a separate class
-        # for the same "request already sent" reason, and is covered by this
-        # same broad branch because it, too, cannot be a pre-send failure.
-        #
-        # Given that, anything landing here defaults to OutcomeUnknown rather
-        # than being sorted case by case: a false positive here costs one
-        # manual account check before retrying; a false negative (treating an
+        # Anything landing here defaults to OutcomeUnknown rather than being
+        # sorted case by case: a false positive here costs one manual
+        # account check before retrying; a false negative (treating an
         # orphaned account as "clearly failed, safe to delete the secret and
         # retry") costs a silently broken login the next person hits. The
         # cheaper mistake is the one this code makes.

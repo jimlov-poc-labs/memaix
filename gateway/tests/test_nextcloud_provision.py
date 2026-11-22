@@ -172,12 +172,12 @@ def test_ocs_timeout_raises_outcome_unknown_and_keeps_secret(cfg_dir):
     assert ei.value.__cause__ is None and ei.value.__suppress_context__
 
 
-def test_ocs_connection_error_raises_outcome_unknown_and_keeps_secret(cfg_dir):
-    """A generic requests.exceptions.ConnectionError (e.g. "connection
-    refused") is funnelled through the same requests code path as a
-    mid-response disconnect, with no reliable public way to tell them apart
-    (see the comment at this handler in nextcloud_provision.py). Treated as
-    an unknown outcome rather than guessed at."""
+def test_ocs_connection_error_unrecognized_shape_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    """A bare requests.exceptions.ConnectionError with no urllib3 cause
+    attached (an unrecognised shape, not the proven connection-refused/DNS
+    shape covered by test_ocs_connection_refused_* below) has no signal to
+    prove it never reached Nextcloud, so it stays an unknown outcome rather
+    than being guessed at."""
     from memaix_gateway.nextcloud_provision import OutcomeUnknown
 
     boom = requests.exceptions.ConnectionError("connection refused")
@@ -187,16 +187,59 @@ def test_ocs_connection_error_raises_outcome_unknown_and_keeps_secret(cfg_dir):
     assert _secret_file(cfg_dir).exists()
 
 
-def test_ocs_remote_disconnected_raises_outcome_unknown_and_keeps_secret(cfg_dir):
-    """A connection that breaks *after* the request body was sent — e.g. the
-    stdlib's http.client.RemoteDisconnected, which requests/urllib3 wrap in
-    a ConnectionError — must keep the secret file: Nextcloud may have
-    already created the account before the response was lost."""
-    from http.client import RemoteDisconnected
+def test_ocs_connection_refused_raises_provision_error_and_removes_secret(cfg_dir):
+    """Regression guard (Simon's review, 2026-11-22): a connection refused
+    by the OS before any data was sent surfaces as
+    urllib3.exceptions.MaxRetryError wrapping a NewConnectionError — the
+    same signal requests' own ConnectTimeout branch keys off. This is
+    proven pre-send, so it must get the plain ProvisionError (and the
+    secret file removed) just like ConnectTimeout, NOT OutcomeUnknown —
+    treating ordinary "Nextcloud is down" as an unknown outcome would block
+    every retry on a stale secret file for a case that never risked an
+    orphaned account."""
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
 
     from memaix_gateway.nextcloud_provision import OutcomeUnknown
 
-    boom = requests.exceptions.ConnectionError(RemoteDisconnected("Remote end closed connection without response"))
+    reason = NewConnectionError(None, "Failed to establish a new connection: [Errno 61] Connection refused")
+    boom = requests.exceptions.ConnectionError(MaxRetryError(None, "http://nc.example/", reason=reason))
+    with pytest.raises(ProvisionError) as err:
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert not isinstance(err.value, OutcomeUnknown)
+    assert not _secret_file(cfg_dir).exists()
+
+
+def test_ocs_dns_failure_raises_provision_error_and_removes_secret(cfg_dir):
+    """Same proven-pre-send signal as connection-refused above, but for a
+    DNS failure: urllib3.exceptions.NameResolutionError is a
+    NewConnectionError subclass, so it matches the same check."""
+    from urllib3.exceptions import MaxRetryError, NameResolutionError
+
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    reason = NameResolutionError("nc.invalid", None, OSError("nodename nor servname provided"))
+    boom = requests.exceptions.ConnectionError(MaxRetryError(None, "http://nc.invalid/", reason=reason))
+    with pytest.raises(ProvisionError) as err:
+        provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
+    assert not isinstance(err.value, OutcomeUnknown)
+    assert not _secret_file(cfg_dir).exists()
+
+
+def test_ocs_remote_disconnected_raises_outcome_unknown_and_keeps_secret(cfg_dir):
+    """A connection that breaks *after* the request body was sent surfaces
+    as urllib3.exceptions.ProtocolError with no MaxRetryError wrapper — the
+    genuinely ambiguous case, unlike the proven-pre-send connection-refused/
+    DNS-failure tests above. Nextcloud may already have created the account
+    before the reply was lost, so the secret file must be kept."""
+    from http.client import RemoteDisconnected
+
+    from urllib3.exceptions import ProtocolError
+
+    from memaix_gateway.nextcloud_provision import OutcomeUnknown
+
+    remote_disconnected = RemoteDisconnected("Remote end closed connection without response")
+    protocol_error = ProtocolError("Connection aborted.", remote_disconnected)
+    boom = requests.exceptions.ConnectionError(protocol_error)
     with pytest.raises(OutcomeUnknown, match="may have reached Nextcloud"):
         provision_project_files("acme", cfg=CFG, http=_Http(exc=boom))
     assert _secret_file(cfg_dir).exists()
