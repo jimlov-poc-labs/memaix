@@ -69,6 +69,29 @@ _GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"  # nosec B105 -- endpo
 _DEFAULT_PUBLIC_URL = "http://localhost:8080"
 _DEFAULT_ISSUER = "https://mcp.example.com"
 _CALENDAR_SETUP_HINT = "Kör calendar_setup för att välja åtkomstläge"
+_MICROSOFT_COMMON_TENANT = "common"
+
+
+def _microsoft_tenant(provider_cfg: dict) -> str:
+    """Tenant segment for Microsoft's OAuth endpoints.
+
+    Falls back to the multi-tenant ``common`` endpoint when a provider
+    config has no ``tenant_id`` (an older installation, or a deliberately
+    multi-tenant Entra app). Entra apps created after Microsoft's cutoff are
+    registered single-tenant and are rejected at ``/common`` with
+    AADSTS50194 — so once ``tenant_id`` is configured it must be used
+    consistently everywhere a Microsoft OAuth URL is built (authorize,
+    token exchange, refresh); a mismatch between those three makes a token
+    minted against the tenant endpoint unrefreshable against ``/common``."""
+    return provider_cfg.get("tenant_id") or _MICROSOFT_COMMON_TENANT
+
+
+def _microsoft_authorize_url(provider_cfg: dict) -> str:
+    return f"https://login.microsoftonline.com/{_microsoft_tenant(provider_cfg)}/oauth2/v2.0/authorize"
+
+
+def _microsoft_token_url(provider_cfg: dict) -> str:
+    return f"https://login.microsoftonline.com/{_microsoft_tenant(provider_cfg)}/oauth2/v2.0/token"
 
 
 def _stada_dcr_svar(data: object) -> object:
@@ -3724,7 +3747,7 @@ def _refresh_microsoft_token(cfg: dict, store, user: str, account: str, token_da
     client_secret = config.secret(provider_cfg.get("client_secret_ref", "")) or ""
     try:
         resp = req_lib.post(
-            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            _microsoft_token_url(provider_cfg),
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,

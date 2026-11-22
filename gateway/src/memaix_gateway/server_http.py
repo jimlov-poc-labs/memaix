@@ -23,7 +23,13 @@ from starlette.routing import Route
 
 from . import config
 from . import server as _server
-from .server import _DEFAULT_ISSUER, _DEFAULT_PUBLIC_URL, _GOOGLE_TOKEN_URI
+from .server import (
+    _DEFAULT_ISSUER,
+    _DEFAULT_PUBLIC_URL,
+    _GOOGLE_TOKEN_URI,
+    _microsoft_authorize_url,
+    _microsoft_token_url,
+)
 
 _HYDRA = "http://hydra:4444"
 _REGISTER_PATH = "/oauth2/register"
@@ -38,14 +44,30 @@ _RESOURCE_URL = "resource_server_url"
 _GOOGLE = "google"
 _MICROSOFT = "microsoft"
 
+# Kända providers och deras statiska URL:er. Microsoft är inte statisk —
+# dess URL:er är tenant-beroende (se _microsoft_authorize_url/
+# _microsoft_token_url i server.py) och byggs per anrop i
+# _provider_authorize_url/_provider_token_url nedan, utifrån providerns
+# oauth_providers.microsoft.tenant_id.
+_KNOWN_PROVIDERS = (_GOOGLE, _MICROSOFT)
 _PROVIDER_AUTH_URLS = {
     _GOOGLE: "https://accounts.google.com/o/oauth2/v2/auth",
-    _MICROSOFT: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
 }
 _PROVIDER_TOKEN_URLS = {
     _GOOGLE: _GOOGLE_TOKEN_URI,
-    _MICROSOFT: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
 }
+
+
+def _provider_authorize_url(provider: str, provider_cfg: dict) -> str:
+    if provider == _MICROSOFT:
+        return _microsoft_authorize_url(provider_cfg)
+    return _PROVIDER_AUTH_URLS[provider]
+
+
+def _provider_token_url(provider: str, provider_cfg: dict) -> str:
+    if provider == _MICROSOFT:
+        return _microsoft_token_url(provider_cfg)
+    return _PROVIDER_TOKEN_URLS.get(provider, "")
 
 
 # ----------------------------------------------------------------------
@@ -220,7 +242,7 @@ def link_start(request: Request) -> "RedirectResponse | JSONResponse":
     provider = request.path_params["provider"]
     state = request.query_params.get(_STATE, "")
 
-    if provider not in _PROVIDER_AUTH_URLS:
+    if provider not in _KNOWN_PROVIDERS:
         return _json_error("unknown_provider", 400)
 
     provider_cfg, _public_url, redirect_uri = _provider_settings(provider)
@@ -243,7 +265,7 @@ def link_start(request: Request) -> "RedirectResponse | JSONResponse":
     if provider == _GOOGLE:
         # Incremental authorization: a re-link keeps scopes granted earlier.
         params["include_granted_scopes"] = "true"
-    return RedirectResponse(_PROVIDER_AUTH_URLS[provider] + "?" + urlencode(params))
+    return RedirectResponse(_provider_authorize_url(provider, provider_cfg) + "?" + urlencode(params))
 
 
 async def _exchange_code(token_url: str, form: dict) -> dict:
@@ -365,7 +387,7 @@ async def link_callback(request: Request) -> Response:
 
     user_id = pending["user_id"]
     provider_cfg, public_url, redirect_uri = _provider_settings(provider)
-    token_url = _PROVIDER_TOKEN_URLS.get(provider, "")
+    token_url = _provider_token_url(provider, provider_cfg)
     client_secret = config.secret(provider_cfg.get("client_secret_ref", "")) or ""
     form = {
         "grant_type": "authorization_code",
