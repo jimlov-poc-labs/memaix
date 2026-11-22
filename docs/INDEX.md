@@ -53,6 +53,7 @@ Läs i den ordning som passar din roll.
 0. [USER-MANUAL.md](USER-MANUAL.md) — **användarmanual**: installation, konfiguration, verktygskatalog, säkerhetsmodell och vanliga arbetsflöden i ett dokument. Börja här om du vill *använda* Memaix.
 1. [INSTALL.md](INSTALL.md) — installation (automatisk + manuell).
    · [QUICK-INSTALL.md](QUICK-INSTALL.md) — **ett kommando i terminalen** (curl … | sh).
+   · [PACKAGED-INSTALL.md](PACKAGED-INSTALL.md) — publicerade, signerade images (GHCR) utan källkodsåtkomst till det privata repot.
    · [EXPOSE.md](EXPOSE.md) — alla sätt att exponera Memaix: Cloudflare Tunnel, Caddy, Tailscale, ngrok, underkatalog.
    · [SETUP-SIMPLIFICATION.md](SETUP-SIMPLIFICATION.md) — tre nivåer; börja smått (trial → remote).
    · [IMPORT.md](IMPORT.md) — kallstart & import (största adoptionshindret).

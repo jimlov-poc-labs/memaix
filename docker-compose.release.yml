@@ -1,0 +1,24 @@
+# Override för paketerad installation: kör från publicerade GHCR-images i
+# stället för att bygga lokalt från källkod.
+#
+# Används ihop med docker-compose.yml, ALDRIG ensam (saknar resten av
+# tjänsterna, nätverk, volymer):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.release.yml \
+#     --profile hydra up -d
+#
+# MEMAIX_IMAGE_TAG väljer version (default: latest). Sätt den i .env för att
+# låsa en specifik release, t.ex. MEMAIX_IMAGE_TAG=v1.24.0.
+#
+# `!reset null` (Compose Specification ≥ 2.24, Docker Compose CLI ≥ v2.24.0)
+# tar bort `build:` från basfilen helt — annars tolkar Compose närvaron av
+# både `build:` och `image:` som "bygg lokalt och tagga som image:", vilket
+# är precis den lokala-bygg-vägen den här filen ska undvika.
+services:
+  gateway:
+    build: !reset null
+    image: ghcr.io/jimlov-poc-labs/memaix:${MEMAIX_IMAGE_TAG:-latest}
+
+  login-app:
+    build: !reset null
+    image: ghcr.io/jimlov-poc-labs/memaix-login-app:${MEMAIX_IMAGE_TAG:-latest}

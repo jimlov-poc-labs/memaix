@@ -4,7 +4,10 @@ Snabbaste vägen från färsk Linux-maskin till körande Memaix: klona och kör 
 
 ## Så installerar du i dag
 Repot är privat, så det finns ännu ingen publik installationsadress för `curl … | sh`.
-Den fastställs när repot publiceras. Fram till dess — klona och kör:
+Repot förblir privat (beslutat) — adressen löses i stället via paketerad
+distribution, se [PACKAGED-INSTALL.md](PACKAGED-INSTALL.md): publicerade,
+signerade images utan källkodsåtkomst. Fram till dess, eller om du har
+repo-åtkomst och vill bygga lokalt — klona och kör:
 ```bash
 git clone https://github.com/jimlov-poc-labs/memaix.git
 cd memaix

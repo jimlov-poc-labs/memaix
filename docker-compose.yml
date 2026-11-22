@@ -217,6 +217,11 @@ services:
       - ./ntfy/cache:/var/cache/ntfy
     ports:
       - "127.0.0.1:8082:80"
+    # Profil, inte alltid-på: utan denna startade ntfy — hårdkodad mot
+    # ntfy.jimlov.se — på varje `docker compose up`, oavsett vilken profil
+    # som begärts. En paketerad instans hos en extern kund hade fått Jimmys
+    # push-tjänst med. Aktivera med: docker compose --profile ntfy up -d
+    profiles: ["ntfy"]
 
 volumes:
   nextcloud-data:
