@@ -320,9 +320,12 @@ def provision_project_files(
         # as adopted — never on the strength of the file's mere presence, and
         # never for occ_ssh, which has its own account-check pattern.
         if _method(settings) != "occ_ssh":
+            # Resolve exactly how the password will later be resolved at use (file:
+            # scheme, config.secret() -- which also strips), so "the probe passed"
+            # and "the account actually works at runtime" can never disagree.
             try:
-                existing_password = secret_path.read_text()
-            except OSError:
+                existing_password = config.secret(f"file:{secret_path}") or ""
+            except (KeyError, OSError):
                 existing_password = ""  # nosec B105 -- empty sentinel meaning "unreadable", not a credential
             if existing_password and _probe_adopted_account(settings, http or _http_get, user, existing_password):
                 return {

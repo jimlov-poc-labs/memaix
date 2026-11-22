@@ -165,6 +165,22 @@ def test_adopt_skips_the_probe_entirely_for_an_empty_secret_file(cfg_dir):
     assert http.calls == []
 
 
+def test_adopt_strips_a_trailing_newline_like_config_secret_would(cfg_dir):
+    """The probe must resolve the password exactly as config.secret() would
+    at actual use time (file: scheme, which strips), so a file written with
+    a trailing newline still probes with the password the gateway would
+    really send."""
+    path = _secret_file(cfg_dir)
+    path.parent.mkdir(parents=True)
+    path.write_text("leftover-password-from-a-timed-out-run\n")
+    payload = {"ocs": {"meta": {"statuscode": 200}, "data": {"id": "memaix-acme"}}}
+    http = _Http(_Resp(payload=payload, status_code=200))
+    out = provision_project_files("acme", cfg=CFG, http=http)
+    assert out["user"] == "memaix-acme"
+    (_, kw), = http.calls
+    assert kw["auth"] == ("memaix-acme", "leftover-password-from-a-timed-out-run")
+
+
 def test_adopt_rejects_a_successful_auth_for_a_different_reported_identity(cfg_dir):
     """Auth succeeding only proves some account named `user` accepted the
     password; Nextcloud's own reported id must also match, so a same-named
