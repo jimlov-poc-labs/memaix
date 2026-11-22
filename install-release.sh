@@ -14,22 +14,20 @@
 # memaix-login-app.
 #
 # Användning:
-#   curl -fsSL <installer-bunt-url>/install-release.sh | sh
-# eller, om du redan har bunten lokalt (zip/tarball från en release-sida):
-#   cd memaix-release-bundle && ./install-release.sh
+#   git clone https://github.com/jimlov-poc-labs/memaix-installer.git
+#   cd memaix-installer
+#   ./install-release.sh --yes
 #
 # Miljövariabler:
-#   MEMAIX_BUNDLE_URL   bas-URL att hämta resten av bunten från, om skriptet
-#                       körs fristående (utan övriga filer bredvid sig).
-#                       Default: ingen — skriptet kräver då att filerna redan
-#                       finns i katalogen (se docs/PACKAGED-INSTALL.md).
 #   MEMAIX_DIR          katalog att installera i (default: memaix-release)
 #   MEMAIX_IMAGE_TAG     vilken publicerad version (default: latest)
 #   MEMAIX_PROFILE, MEMAIX_DOMAIN: se docs/PACKAGED-INSTALL.md
 #
-# VIKTIGT: var den här bunten faktiskt publiceras publikt (en separat liten
-# installer-sida/repo, eftersom GitHub-releaser på ett privat repo ärver
-# samma synlighet) är ÄNNU INTE bestämt — se docs/PACKAGED-INSTALL.md.
+# Bunten (denna fil + compose-filer + config-mallar + bootstrap.py, ingen
+# applikationskod) publiceras i jimlov-poc-labs/memaix-installer (publikt
+# repo, beslutat 2026-11-22) — eftersom GitHub-releaser på det privata
+# käll-repot ärver samma synlighet och aldrig blir publika. Se
+# docs/PACKAGED-INSTALL.md i käll-repot för helheten.
 
 set -eu
 

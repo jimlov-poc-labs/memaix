@@ -10,8 +10,10 @@ Se `docs/QUICK-INSTALL.md` för den väg som förutsätter repo-åtkomst
 
 ## Vad en extern admin faktiskt behöver
 
-Inte hela repot. Dessa filer, ~125 kB totalt, innehåller ingen
-applikationskällkod (ingen `gateway/src`, ingen `login-app/*.py`):
+Inte hela repot. Dessa filer, ~150 kB totalt, innehåller ingen
+applikationskällkod (ingen `gateway/src`, ingen `login-app/*.py`), och de
+publiceras i det publika repot
+[`jimlov-poc-labs/memaix-installer`](https://github.com/jimlov-poc-labs/memaix-installer):
 
 ```
 docker-compose.yml
@@ -73,8 +75,8 @@ från repo-synligheten** — paketen görs publika oavsett. Varje image:
 ## Installera
 
 ```sh
-mkdir memaix-release && cd memaix-release
-# hämta bunten (se "Var bunten publiceras" — olöst, se nedan)
+git clone https://github.com/jimlov-poc-labs/memaix-installer.git
+cd memaix-installer
 MEMAIX_PROFILE=trial ./install-release.sh --yes
 ```
 
@@ -88,39 +90,36 @@ Docker Compose ≥ v2.24 för `!reset`) och pekar `image:` på GHCR. Samma
 Lås en version: sätt `MEMAIX_IMAGE_TAG=v1.24.0` i `.env` innan `make
 up-release`.
 
-## Var bunten publiceras — OLÖST, kräver beslut
+## Var bunten publiceras — beslutat 2026-11-22
 
 Releaser (och deras bifogade tillgångar, t.ex. SBOM) på ett privat repo ärver
 repots synlighet — de blir INTE publika bara genom att publiceras. GitHub
 erbjuder ingen inställning för "gör den här releasen publik men repot
-privat". Det
-betyder att `docker-compose.yml` + `docker-compose.release.yml` +
-`install-release.sh` + resten av bunten ovan i dag INTE kan hämtas av en
-extern admin utan repo-åtkomst, trots att själva applikationen (images) kan.
+privat". Bunten (`docker-compose.yml`, `docker-compose.release.yml`,
+`install-release.sh` och resten, aldrig applikationskod) ligger därför i ett
+eget, litet, publikt repo: **`jimlov-poc-labs/memaix-installer`**.
 
-Två alternativ, inget byggt än:
+```sh
+git clone https://github.com/jimlov-poc-labs/memaix-installer.git
+```
 
-1. **Ett nytt, litet publikt repo** (t.ex. `jimlov-poc-labs/memaix-installer`)
-   som bara innehåller bunten ovan, uppdaterat av CI vid varje release.
-   Innehåller aldrig applikationskod.
-2. **Den redan publika `memaix-site`/jimlov.se-sidan** (används redan av
-   `.github/workflows/update-release-page.yml` för releasenoter) utökas med
-   nedladdningsbara bunt-zippar per version.
+Det repot hålls i synk manuellt för nu (inget CI-flöde kopierar över filer
+automatiskt vid release ännu) — flagga som uppföljning om bunten börjar
+driva isär från käll-repots `docker-compose.yml`/`install-release.sh`.
 
-Jimmy/Mal avgör vilket. Tills det är klart gäller: en extern admin kan
-verifiera och köra de publicerade images, men måste få bunten (några KB) på
-annat sätt — mejl, en delad länk, eller manuellt kopierad från detta repo av
-någon med åtkomst.
-
-## Källan är inte dold, bara historiken
+## Källkoden är inte hemlig — Jimmys beslut 2026-11-22
 
 Repot-privat skyddar historik, interna diskussioner och ej släppt arbete —
-INTE den körbara koden. `pip install .` i gateway-imagen lägger `.py`-filerna
-i klartext i `site-packages`; login-app-imagen kopierar `app.py` m.fl.
-oförändrade. Den som drar en publicerad image kan läsa källan i den. Det här
-är en AGPL-licensierad produkt (`LICENSE`), och vad det kravet innebär när
-objektkod (en container-image) sprids till en kund är en licensfråga —
-flaggas här, löses inte av detta dokument.
+INTE den körbara koden, och det är avsiktligt, inte en lucka att täppa till.
+`pip install .` i gateway-imagen lägger `.py`-filerna i klartext i
+`site-packages`; login-app-imagen kopierar `app.py` m.fl. oförändrade. Den
+som drar en publicerad image kan läsa källan i den.
+
+Memaix är AGPL-3.0-or-later (`LICENSE`). AGPL §13 kräver att källkoden för
+den körande versionen erbjuds till varje användare som interagerar med
+instansen över ett nätverk, oavsett om imagen "försvåras". Att minifiera
+eller dölja koden i imagen löser alltså ingen juridisk skyldighet och
+kostar bara underhåll — därför görs det inte.
 
 ## Känt läge / inte testat
 
