@@ -8,12 +8,33 @@ Commands:
                    output into acl.yaml (users.<id>.password_hash) or set it
                    as MEMAIX_LOGIN_PASSWORD_HASH_<USER>.
   link-imap      — link a per-user IMAP mailbox (docs/FEATURE-MAIL-DIALOG.md).
+                   This gives the ONE user named --user their OWN mailbox,
+                   scoped into --projects; it does not make a shared "team
+                   inbox" (every teammate who wants their own mail linked
+                   runs this once for themselves). For a mailbox the whole
+                   team shares as one identity (e.g. info@example.se read by
+                   everyone), use acl.yaml's `mailbox:` resource with a
+                   `password_ref` secret instead (docs/BACKENDS.md) — this
+                   command is not that.
                    The password is read from stdin (one line), never from
                    argv, so it stays out of shell history, `ps` and logs:
+                     read -rs PW   # prompts, doesn't echo, not in history
                      printf '%s\n' "$PW" | docker compose exec -T gateway \
                        python -m memaix_gateway.cli link-imap --user jimmy \
                        --account info@example.se --host imap.purelymail.com \
-                       --projects memaix,jimlov
+                       --projects memaix,jimlov --verify
+                   (-T disables the TTY, so a forgotten password still falls
+                   through to the pipe instead of popping a hidden prompt.)
+                   Pass --verify to log in over IMAP before anything is
+                   stored, so a typo'd host/port/password fails loudly here
+                   instead of silently at the next email_list.
+  backend-status — list project mail/calendar resources declared
+                   `awaiting_link` in acl.yaml that nothing has linked yet
+                   (docs/ACCESS-ADMIN.md §Koppla teamets mejl). Needs the
+                   running gateway's TokenStore, so like link-imap it only
+                   makes sense via `docker compose exec`, not on the host:
+                     docker compose exec -T gateway \
+                       python -m memaix_gateway.cli backend-status
 """
 
 from __future__ import annotations
@@ -149,6 +170,32 @@ def cmd_link_imap(args, *, stdin=None, acl=None, store=None, verify=_verify_imap
     return 0
 
 
+def cmd_backend_status(args, *, acl=None, store=None) -> int:
+    """Print one line per (project, capability) declared `awaiting_link`.
+    Fails closed: a missing TOKEN_MASTER_KEY (the gateway's own guard, see
+    cmd_link_imap) is an error, never silently "nothing pending" — reading
+    `scoped` status without the token store would otherwise look identical
+    to an instance with nothing waiting."""
+    import os
+
+    if store is None and not os.environ.get("TOKEN_MASTER_KEY"):
+        print("TOKEN_MASTER_KEY saknas — kan inte läsa kopplingsstatus.", file=sys.stderr)
+        return 1
+    acl, store = _acl_and_store(acl, store)
+
+    from .backend_status import collect_status
+
+    entries = collect_status(acl, store)
+    if getattr(args, "project", None):
+        entries = [e for e in entries if e.project == args.project]
+    if not entries:
+        print("Inget väntar på koppling (eller inget projekt har awaiting_link satt).")
+        return 0
+    for entry in entries:
+        print(entry.line())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m memaix_gateway.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -163,12 +210,19 @@ def main(argv: list[str] | None = None) -> int:
     link.add_argument("--smtp-port", type=int, default=None, help="SMTP port (default 587; 465 = TLS)")
     link.add_argument("--projects", required=True, help="comma-separated projects to share mail with, or *")
     link.add_argument("--verify", action="store_true", help="log in over IMAP before storing")
+    status = sub.add_parser(
+        "backend-status",
+        help="list project mail/calendar resources declared awaiting_link that nothing has linked yet",
+    )
+    status.add_argument("--project", default=None, help="show only this project (default: all)")
     args = parser.parse_args(argv)
 
     if args.command == "hash-password":
         return _cmd_hash_password()
     if args.command == "link-imap":
         return cmd_link_imap(args)
+    if args.command == "backend-status":
+        return cmd_backend_status(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

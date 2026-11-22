@@ -66,3 +66,83 @@ Login-appen läser `acl.yaml` när filen ändras, så nya konton kan logga in ut
 Login-appen monterar `acl.yaml` som fil; `AclWriter` skriver i samma fil (samma inode, `.bak1` först) och
 en omkopierad fil skulle annars lämna login-appen med den gamla. Hela `config/` monteras inte: där ligger servicekontonycklar.
 `MEMAIX_VAULTS_DIR` (standard `/srv/vaults`) styr var nya valv skapas.
+
+## Koppla teamets mejl — hela flödet, från färdig instans till fungerande koppling
+
+Din instans kör, du är admin. Så kopplar du mejl.
+
+### Första frågan: ett delat teamkonto, eller var och ens egen inkorg?
+
+Det finns två helt olika mekanismer i Memaix, och de blandas lätt ihop:
+
+| Vill du... | Mekanism | Vem ser mejlet |
+|---|---|---|
+| Ett **gemensamt** konto hela teamet läser som samma brevlåda (t.ex. `info@dittforetag.se`) | `acl.yaml`:s delade `mailbox`-resurs, lösenordet som `password_ref` i `.env` | Alla med åtkomst till projektet |
+| **Din egen** inkorg, kopplad till ditt konto, synlig för dig i de projekt du väljer | `link-imap` (denna sida) | Bara du — varje person kör det för sig själv |
+
+`link-imap`/`account_link_imap` är den mekanism som redan finns färdigbyggd (BACKENDS.md,
+PER-USER-OAUTH.md, FEATURE-CONNECTOR-FRAMEWORK.md §6b) — den ger **en** person **sin egen**
+brevlåda, aldrig ett delat teamkonto. Vill alla i teamet ha mejl i samma projekt kör var och en
+`link-imap` en gång för sitt eget konto; gatewayen slår ihop varje persons egna källor med
+projektets delade mailbox (om en finns) när just den personen frågar — ingen ser någon annans
+länkade konto (`FEATURE-CONNECTOR-FRAMEWORK.md`, `test_bobs_linked_account_never_appears_for_alice`).
+
+Resten av det här avsnittet gäller den andra kolumnen: en enskild persons egen koppling, körd av
+en admin åt dem (eller av dem själva, om de har skalaccess).
+
+### Steg 1 — hitta vad som väntar på koppling (valfritt, men ett bra första steg)
+
+Om du (eller den som satte upp instansen) redan skrivit in i `acl.yaml` vilka projekt som väntar
+på en mejlkoppling (`projects.<namn>.awaiting_link: ["mail"]` — bara en lapp, inget lösenord),
+kan du se listan:
+
+```sh
+docker compose exec -T gateway python -m memaix_gateway.cli backend-status
+```
+
+Visar t.ex. `acme: mail — väntar på koppling`, eller `acme: mail — kopplad för jimmy
+(imap/jimmy@acme.se)` om någon redan länkat. Ingen `awaiting_link` satt alls → kommandot säger att
+inget väntar; det är inte samma som "allt är kopplat", bara att ingenting är deklarerat som
+väntande. `--project <namn>` filtrerar till ett projekt.
+
+### Steg 2 — länka mejlboxen
+
+Du behöver IMAP-uppgifterna för kontot (host, användarnamn, lösenord — en app-lösenord om kontot
+har tvåstegsverifiering, se nedan). Lösenordet skickas **aldrig** som kommandoradsargument — det
+läses från standard in, en rad:
+
+```sh
+read -rs PW                              # skriv lösenordet, syns inte, hamnar inte i historiken
+printf '%s\n' "$PW" | docker compose exec -T gateway \
+  python -m memaix_gateway.cli link-imap \
+  --user jimmy --account jimmy@acme.se --host imap.purelymail.com \
+  --projects acme --verify
+unset PW
+```
+
+`-T` stänger av TTY:n i containern — glöms `read -rs` bort och lösenordet skrivs fel skulle
+kommandot annars tyst vänta på en prompt du aldrig ser; med `printf | ... -T` går det garanterat
+genom pipen. `--verify` loggar in över IMAP innan något sparas, så ett fel host/port/lösenord
+ger ett tydligt fel direkt (`IMAP-inloggning misslyckades: <feltyp>`, aldrig lösenordet) istället
+för att först upptäckas nästa gång `email_list` körs. `--projects` är vilka projekt kontot blir
+synligt i för just `--user`; `*` betyder alla projekt personen redan har åtkomst till.
+
+Kommandot skriver aldrig ut lösenordet — bekräftelsen är `Länkade jimmy@acme.se för jimmy; mejl
+delas med: acme`.
+
+### Steg 3 — bekräfta
+
+Kör `backend-status` igen (steg 1) om projektet har `awaiting_link` satt — raden ska nu säga
+`kopplad för <user> (imap/<konto>)`. Annars: be personen (eller kör själv) ett vanligt `email_list`-
+anrop mot projektet i din AI-klient.
+
+### Särskilda leverantörer
+
+- **Microsoft 365:** IMAP med lösenord är avstängt hos Microsoft sedan 2026 (basic auth dog).
+  Använd i stället OAuth-kopplingen (`account_link(provider="microsoft")`, se PER-USER-OAUTH.md) —
+  `link-imap` fungerar inte mot M365.
+- **Gmail / Google Workspace:** kräver tvåstegsverifiering på kontot och ett app-lösenord
+  (inte det vanliga lösenordet). Se PER-USER-OAUTH.md §Scopes för alternativet att länka Gmail
+  över kalender-OAuth + IMAP-brevlåda i stället.
+- **Purelymail och de flesta andra IMAP-leverantörer:** vanligt lösenord eller app-lösenord,
+  `link-imap` fungerar rakt av.
