@@ -2,10 +2,12 @@
 """backend-status — list project mail/calendar resources an admin has
 declared but nothing has linked yet.
 
-This is the "awaiting_link" hook the setup wizard (a later, separate step —
-not built here, see docs/BACKENDS.md fas 5) will write to once it runs
-*after* a container exists and can reach the encrypted TokenStore. Today it
-is written by hand in acl.yaml, or left absent (nothing pending).
+This is the "awaiting_link" hook the setup wizard writes to (question 6,
+`scripts/bootstrap.py`/`scripts/setup_web.py`) when an admin picks Gmail,
+M365, or "own IMAP/CalDAV" without entering credentials during setup — the
+wizard runs on the host before a container exists and can reach the
+encrypted TokenStore, so it can only record intent. It is also written by
+hand in acl.yaml, or left absent (nothing pending).
 
 Scope, deliberately narrow:
 - This module only ever READS acl.yaml and the TokenStore's metadata (which
