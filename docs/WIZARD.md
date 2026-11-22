@@ -6,8 +6,8 @@ hemligheter** — du redigerar ingen YAML. Bäraren (webb vs CLI): `SETUP-UI.md`
 `SETUP-SIMPLIFICATION.md`.
 
 > **Status:** två bärare finns — `./setup.sh`/`.\setup.ps1` (lokal webb, rekommenderad) och
-> `make init` (CLI). Båda kör `scripts/setup_engine.py`. Frågorna 4 (AI-val) och 6 (backends)
-> nedan är ännu inte implementerade i någon bärare; backends läggs till efteråt (docs/BACKENDS.md).
+> `make init` (CLI). Båda kör `scripts/setup_engine.py`. Fråga 6 (backends) nedan är ännu inte
+> implementerad i någon bärare; backends läggs till efteråt (docs/BACKENDS.md).
 
 ## Principer
 - **Progressiv disclosure** — bara frågor som det valda spåret behöver.

@@ -23,6 +23,7 @@ import yaml
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import bootstrap  # noqa: E402
 import setup_engine as engine  # noqa: E402
 import setup_web  # noqa: E402
 
@@ -145,6 +146,77 @@ def test_apply_validates_and_never_echoes_secrets(wizard):
     assert "hemligt123" not in body and "annat-lösen" not in body
 
 
+def test_apply_llm_api_choice_writes_model_block_and_never_leaks_key(wizard):
+    port, root, _ = wizard
+    fields = urlencode({
+        "track": "1", "admin_user": "jimmy",
+        "password": "hemligt123", "password2": "hemligt123",
+        "project_name": "acme",
+        "llm_choice": "api", "llm_provider_api": "anthropic",
+        "llm_model_api": "claude-sonnet-4-5", "llm_api_key": "topphemlig-nyckel",
+    })
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+    assert "topphemlig-nyckel" not in body
+
+    cfg = yaml.safe_load((root / "config" / "memaix.yaml").read_text())
+    assert cfg["model"] == {
+        "provider": "anthropic", "name": "claude-sonnet-4-5", "api_key_ref": "LLM_API_KEY",
+    }
+    assert "topphemlig-nyckel" not in (root / "config" / "memaix.yaml").read_text()
+    env = (root / ".env").read_text()
+    assert "LLM_API_KEY=topphemlig-nyckel" in env
+    result_text = (root / ".setup-result.json").read_text()
+    assert "topphemlig-nyckel" not in result_text
+
+
+def test_apply_llm_endpoint_choice_writes_endpoint_no_key(wizard):
+    port, root, _ = wizard
+    fields = urlencode({
+        "track": "1", "admin_user": "jimmy",
+        "password": "hemligt123", "password2": "hemligt123",
+        "project_name": "acme",
+        "llm_choice": "endpoint", "llm_endpoint": "http://192.168.1.20:11434",
+        "llm_model_endpoint": "qwen3-coder:30b",
+    })
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200 and "✓" in body
+    cfg = yaml.safe_load((root / "config" / "memaix.yaml").read_text())
+    assert cfg["model"]["endpoint"] == "http://192.168.1.20:11434"
+    assert "LLM_API_KEY" not in (root / ".env").read_text()
+
+
+def test_apply_llm_api_unknown_provider_rejected_not_byo(wizard):
+    port, root, _ = wizard
+    fields = urlencode({
+        "track": "1", "admin_user": "jimmy",
+        "password": "hemligt123", "password2": "hemligt123",
+        "project_name": "acme",
+        "llm_choice": "api", "llm_provider_api": "skynet",
+        "llm_model_api": "m", "llm_api_key": "k",
+    })
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200
+    assert "Okänd AI-leverantör" in body
+    assert not (root / "config" / "acl.yaml").exists(), "ett ogiltigt val ska inte skriva config"
+
+
+def test_apply_llm_choice_unknown_value_rejected_not_silent_byo(wizard):
+    port, root, _ = wizard
+    fields = urlencode({
+        "track": "1", "admin_user": "jimmy",
+        "password": "hemligt123", "password2": "hemligt123",
+        "project_name": "acme",
+        "llm_choice": "nonsense",
+    })
+    status, body = _request(port, "POST", f"/apply?token={TOKEN}", fields)
+    assert status == 200
+    assert "Okänt AI-val" in body
+    assert not (root / "config" / "acl.yaml").exists(), (
+        "okänt llm_choice ska ge ett fel, inte tyst falla tillbaka till BYO"
+    )
+
+
 def test_done_flag_closes_surface(wizard):
     port, _, _ = wizard
     setup_web.Handler.done = True
@@ -209,6 +281,44 @@ def test_validate_llm():
         llm_provider="google", llm_model="gemini-2.5-pro", llm_api_key="k"))
     assert not engine.validate(_answers(
         llm_provider="vllm", llm_model="m", llm_endpoint="https://gpu.moln.se:8000"))
+
+
+# ───────────────────────────── CLI-wizarden (bootstrap.py) ─────────────────
+
+
+def test_cli_wizard_api_choice_never_prints_the_key(monkeypatch, capsys):
+    """run_wizard() -> val [2] API-nyckel. Nyckeln matas in maskerat (getpass)
+    och ska aldrig dyka upp i terminalutskriften (sammanfattningen skriver
+    bara ut leverantör/modell, inte nyckeln)."""
+    inputs = iter([
+        "1",                    # spår: prova lokalt
+        "",                     # produktnamn (default Memaix)
+        "",                     # support-mejl (default)
+        "",                     # admin-användarnamn (default admin)
+        "2",                    # AI-val: API-nyckel
+        "1",                    # leverantör: Claude (Anthropic)
+        "claude-sonnet-4-5",    # modellnamn
+        "",                     # projektnamn (default shared)
+        "j",                    # bekräfta
+    ])
+    secrets_in = iter(["hemligt123", "hemligt123", "topphemlig-nyckel"])
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(inputs))
+    monkeypatch.setattr(bootstrap.getpass, "getpass", lambda *a, **kw: next(secrets_in))
+
+    captured: list[dict] = []
+    monkeypatch.setattr(bootstrap, "apply_answers",
+                         lambda answers, **kw: captured.append(answers))
+
+    bootstrap.run_wizard()
+
+    assert len(captured) == 1
+    answers = captured[0]
+    assert answers["llm_provider"] == "anthropic"
+    assert answers["llm_model"] == "claude-sonnet-4-5"
+    assert answers["llm_api_key"] == "topphemlig-nyckel"
+
+    out = capsys.readouterr().out
+    assert "topphemlig-nyckel" not in out, "API-nyckeln ska aldrig synas i stdout/terminalhistorik"
 
 
 # ───────────────────────────── installer ───────────────────────────────────

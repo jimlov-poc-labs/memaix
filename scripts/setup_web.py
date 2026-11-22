@@ -74,6 +74,14 @@ def _form(values: dict, errors: list) -> bytes:
     err_html = "".join(f"<div class='err'>{html.escape(e)}</div>" for e in errors)
     checked = {1: "", 2: "", 3: ""}
     checked[int(values.get("track", 1))] = "checked"
+    llm_choice = str(values.get("llm_choice", "byo"))
+    if llm_choice not in ("byo", "api", "endpoint"):
+        llm_choice = "byo"  # okänt val: felet visas separat, radioknappen faller tillbaka visuellt
+    llm_checked = {c: ("checked" if c == llm_choice else "") for c in ("byo", "api", "endpoint")}
+    llm_provider_api = v.get("llm_provider", "") if llm_choice == "api" else ""
+    llm_model_api = v.get("llm_model", "") if llm_choice == "api" else ""
+    llm_endpoint_v = v.get("llm_endpoint", "") if llm_choice == "endpoint" else ""
+    llm_model_endpoint = v.get("llm_model", "") if llm_choice == "endpoint" else ""
     body = f"""
 {err_html}
 <form method="post" action="/apply" autocomplete="off">
@@ -101,29 +109,29 @@ def _form(values: dict, errors: list) -> bytes:
 </fieldset>
 
 <fieldset><h2>4 · Vilken AI driver Memaix?</h2>
-<label><input type="radio" name="llm_choice" value="byo" checked> Min egen AI
+<label><input type="radio" name="llm_choice" value="byo" {llm_checked['byo']}> Min egen AI
   <small>— Claude/ChatGPT/Mistral-appen ansluter till Memaix (BYO, default)</small></label>
-<label><input type="radio" name="llm_choice" value="api"> API-nyckel
+<label><input type="radio" name="llm_choice" value="api" {llm_checked['api']}> API-nyckel
   <small>— Claude, ChatGPT, Gemini eller OpenRouter; betala per token</small></label>
-<label><input type="radio" name="llm_choice" value="endpoint"> Egen LLM-server
+<label><input type="radio" name="llm_choice" value="endpoint" {llm_checked['endpoint']}> Egen LLM-server
   <small>— på ditt lokala nät eller en molninstans (Ollama/vLLM/OpenAI-kompatibel)</small></label>
 <div id="ai-api" style="display:none">
 <label>Leverantör
   <select name="llm_provider_api">
-    <option value="anthropic">Claude (Anthropic)</option>
-    <option value="openai">ChatGPT (OpenAI)</option>
-    <option value="google">Gemini (Google)</option>
-    <option value="openrouter">OpenRouter — en nyckel, alla leverantörer</option>
-    <option value="mistral">Mistral</option>
+    <option value="anthropic" {"selected" if llm_provider_api == "anthropic" else ""}>Claude (Anthropic)</option>
+    <option value="openai" {"selected" if llm_provider_api == "openai" else ""}>ChatGPT (OpenAI)</option>
+    <option value="google" {"selected" if llm_provider_api == "google" else ""}>Gemini (Google)</option>
+    <option value="openrouter" {"selected" if llm_provider_api == "openrouter" else ""}>OpenRouter — en nyckel, alla leverantörer</option>
+    <option value="mistral" {"selected" if llm_provider_api == "mistral" else ""}>Mistral</option>
   </select></label>
-<label>Modellnamn <input type="text" name="llm_model_api"
+<label>Modellnamn <input type="text" name="llm_model_api" value="{llm_model_api}"
   placeholder="claude-sonnet-4-5 / gpt-… / gemini-…"></label>
 <label>API-nyckel <input type="password" name="llm_api_key"></label>
 </div>
 <div id="ai-endpoint" style="display:none">
-<label>Endpoint-URL <input type="text" name="llm_endpoint"
+<label>Endpoint-URL <input type="text" name="llm_endpoint" value="{llm_endpoint_v}"
   placeholder="http://192.168.1.20:11434 eller https://din-molninstans:8000"></label>
-<label>Modellnamn <input type="text" name="llm_model_endpoint"
+<label>Modellnamn <input type="text" name="llm_model_endpoint" value="{llm_model_endpoint}"
   placeholder="qwen3-coder:30b / mistral-small …"></label>
 </div>
 </fieldset>
@@ -225,7 +233,9 @@ class Handler(BaseHTTPRequestHandler):
             answers["tunnel_provider"] = "cloudflare" if answers["tunnel_token"] else "none"
 
         llm_choice = f.get("llm_choice", "byo")
-        if llm_choice == "api":
+        if llm_choice == "byo":
+            pass
+        elif llm_choice == "api":
             answers["llm_provider"] = f.get("llm_provider_api", "").strip()
             answers["llm_model"] = f.get("llm_model_api", "").strip()
             answers["llm_api_key"] = f.get("llm_api_key", "").strip()
@@ -235,13 +245,19 @@ class Handler(BaseHTTPRequestHandler):
             answers["llm_provider"] = "openai-compatible"
             answers["llm_endpoint"] = f.get("llm_endpoint", "").strip()
             answers["llm_model"] = f.get("llm_model_endpoint", "").strip()
+        else:
+            # Okänt val ska ge ett tydligt fel, aldrig en tyst fallback till BYO.
+            answers["llm_provider"] = "__unknown__"
 
         errors = engine.validate(answers)
+        if answers["llm_provider"] == "__unknown__":
+            errors.insert(0, "Okänt AI-val.")
         if f.get("password") != f.get("password2"):
             errors.insert(0, "Lösenorden matchar inte.")
         if errors:
             safe = {k: v for k, v in answers.items()
                     if k not in ("password", "tunnel_token", "llm_api_key")}
+            safe["llm_choice"] = llm_choice
             self._send(200, _form(safe, errors))
             return
 
