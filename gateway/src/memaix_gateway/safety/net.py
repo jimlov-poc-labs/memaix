@@ -3,7 +3,7 @@
 
 Some tools accept a URL from an authenticated user (or an agent acting as
 them) that the server then fetches/posts to: an iCal secret URL
-(calendar_setup) and notification channel webhook/ntfy URLs
+(calendar_setup) and notification channel webhook URLs
 (brief_configure). Without a guard, a user — or a prompt-injected agent —
 can point those at internal targets (cloud metadata at 169.254.169.254,
 localhost services, RFC1918 hosts) and turn the gateway into a confused
@@ -166,7 +166,7 @@ def validate_external_url(url: str, *, resolve: bool = True) -> str:
     (requests) or ``follow_redirects=False`` (httpx). Current call sites:
 
         tools/calendar.py       iCal fetch
-        notify/channels.py      webhook + ntfy POST
+        notify/channels.py      webhook POST
         llm/client.py           already correct
 
     If a caller genuinely needs to follow a redirect, it has to re-validate the

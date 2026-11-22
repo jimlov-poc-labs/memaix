@@ -370,7 +370,7 @@ def test_indexing_hook_failure_does_not_break_the_write(wired, monkeypatch):
 def test_brief_configure_then_status_reflects_settings(wired):
     result = server.brief_configure(
         enabled=True, brief_time="08:30", timezone="Europe/Stockholm",
-        channels=[{"type": "ntfy", "topic": "t"}],
+        channels=[{"type": "webhook", "url": "https://hook.example/t"}],
     )
     assert result["ok"] is True
     assert result["next_run"]

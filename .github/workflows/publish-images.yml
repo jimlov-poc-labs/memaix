@@ -1,0 +1,211 @@
+# Bygger och publicerar gateway- och login-app-images till GitHub Container
+# Registry (GHCR) vid varje publicerad release, signerar dem keyless med
+# cosign (OIDC via Actions, ingen nyckelhantering) och bifogar en SBOM per
+# image — både som signerad attestering (cosign attest) och som
+# releasetillgång/artefakt.
+#
+# Käll-repot är och förblir privat (Jimmys beslut). Image-SYNLIGHET sätts
+# separat på paketet i GHCR — se docs/PACKAGED-INSTALL.md för det
+# engångs-steget (kräver orgbehörighet, görs manuellt i GitHub-UI, inte av
+# detta workflow).
+#
+# OBS (flaggat i docs/PACKAGED-INSTALL.md, inte löst här): keyless-signering
+# skriver repots namn, workflow-sökväg och ref till den publika Rekor-loggen.
+#
+# Alla tredjepartsactions är SHA-pinnade (kommentar per rad = taggad version
+# vid pinningstillfället).
+name: publish-images
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git-tagg att bygga om (t.ex. v1.24.0)"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GATEWAY_IMAGE: ghcr.io/jimlov-poc-labs/memaix
+  LOGIN_APP_IMAGE: ghcr.io/jimlov-poc-labs/memaix-login-app
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # bifoga SBOM till releasen (gh release upload)
+      packages: write      # docker push till ghcr.io
+      id-token: write      # cosign keyless (Sigstore/Fulcio OIDC)
+    steps:
+      - name: Sätt versionstagg
+        id: ver
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          IS_RELEASE: ${{ github.event_name == 'release' }}
+        run: |
+          TAG="${INPUT_TAG:-$RELEASE_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Ingen tagg angiven (inputs.tag eller release.tag_name saknas)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # :latest flyttas bara framåt av en riktig release. En manuell
+          # ombyggnad av en äldre tagg (workflow_dispatch) ska aldrig kunna
+          # dra :latest bakåt.
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Logga in på GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Installera cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Taggar — gateway
+        id: tags-gateway
+        env:
+          IMG: ${{ env.GATEWAY_IMAGE }}
+          VER: ${{ steps.ver.outputs.tag }}
+          IS_RELEASE: ${{ steps.ver.outputs.is_release }}
+        run: |
+          TAGS="${IMG}:${VER}"
+          [ "$IS_RELEASE" = "true" ] && TAGS="${TAGS}
+          ${IMG}:latest"
+          { echo "tags<<EOT"; echo "$TAGS"; echo "EOT"; } >> "$GITHUB_OUTPUT"
+
+      - name: Taggar — login-app
+        id: tags-login-app
+        env:
+          IMG: ${{ env.LOGIN_APP_IMAGE }}
+          VER: ${{ steps.ver.outputs.tag }}
+          IS_RELEASE: ${{ steps.ver.outputs.is_release }}
+        run: |
+          TAGS="${IMG}:${VER}"
+          [ "$IS_RELEASE" = "true" ] && TAGS="${TAGS}
+          ${IMG}:latest"
+          { echo "tags<<EOT"; echo "$TAGS"; echo "EOT"; } >> "$GITHUB_OUTPUT"
+
+      - name: Bygg och pusha gateway-image
+        id: build-gateway
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./gateway
+          push: true
+          tags: ${{ steps.tags-gateway.outputs.tags }}
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+
+      - name: Bygg och pusha login-app-image
+        id: build-login-app
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./login-app/Dockerfile
+          push: true
+          tags: ${{ steps.tags-login-app.outputs.tags }}
+          cache-from: type=gha,scope=login-app
+          cache-to: type=gha,mode=max,scope=login-app
+
+      # Signera BY DIGEST (inte tagg — en tagg kan flyttas, en digest inte).
+      - name: Signera images (cosign, keyless)
+        env:
+          GATEWAY_DIGEST: ${{ steps.build-gateway.outputs.digest }}
+          LOGIN_APP_DIGEST: ${{ steps.build-login-app.outputs.digest }}
+        run: |
+          cosign sign --yes "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+          cosign sign --yes "${LOGIN_APP_IMAGE}@${LOGIN_APP_DIGEST}"
+
+      # upload-artifact/-release-assets: false — vi laddar upp SBOM:erna
+      # själva (uttryckliga steg nedan), annars dubbellagras/krockar namnen.
+      - name: SBOM — gateway (SPDX JSON)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.GATEWAY_IMAGE }}@${{ steps.build-gateway.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-gateway.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: SBOM — login-app (SPDX JSON)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.LOGIN_APP_IMAGE }}@${{ steps.build-login-app.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-login-app.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      # Attestera SBOM:erna mot imagens digest, signerat med samma keyless
+      # OIDC-identitet. Ger utomstående (utan repo-åtkomst) ett sätt att
+      # verifiera SBOM:en mot imagen med `cosign verify-attestation`, inte
+      # bara lita på en bifogad fil.
+      - name: Attestera SBOM — gateway
+        env:
+          GATEWAY_DIGEST: ${{ steps.build-gateway.outputs.digest }}
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate sbom-gateway.spdx.json \
+            "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+
+      - name: Attestera SBOM — login-app
+        env:
+          LOGIN_APP_DIGEST: ${{ steps.build-login-app.outputs.digest }}
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate sbom-login-app.spdx.json \
+            "${LOGIN_APP_IMAGE}@${LOGIN_APP_DIGEST}"
+
+      - name: Spara SBOM som artefakt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-images-${{ steps.ver.outputs.tag }}
+          path: |
+            sbom-gateway.spdx.json
+            sbom-login-app.spdx.json
+
+      # OBS: releasetillgångar på ett privat repo är privata (samma
+      # synlighet som repot). Bifogningen här ger repo-medlemmar SBOM:en
+      # bredvid releasen; den gör INTE SBOM:en publikt hämtbar. Publikt
+      # verifierbar SBOM = `cosign verify-attestation` mot den publika
+      # GHCR-imagen (steget ovan), oberoende av repots synlighet.
+      - name: Bifoga SBOM till GitHub-releasen
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            sbom-gateway.spdx.json sbom-login-app.spdx.json \
+            --clobber
+
+      - name: Sammanfattning
+        env:
+          GATEWAY_DIGEST: ${{ steps.build-gateway.outputs.digest }}
+        run: |
+          {
+            echo "### Publicerade images"
+            echo "- \`${GATEWAY_IMAGE}@${GATEWAY_DIGEST}\`"
+            echo ""
+            echo "Verifiera signaturen (kräver bara cosign, ingen GitHub-åtkomst):"
+            echo '```'
+            echo "cosign verify --certificate-identity-regexp '^https://github.com/jimlov-poc-labs/memaix' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  ${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

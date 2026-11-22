@@ -1,6 +1,6 @@
 # Memaix — bekvämlighetskommandon
 
-.PHONY: init install install-no-nextcloud trial go-remote up down seed logs doctor docs-check
+.PHONY: init install install-no-nextcloud trial go-remote up down up-release down-release seed logs doctor docs-check
 
 init:                  ## Front-dörren: ≤3 frågor → genererar all config + hemligheter, seedar demo
 	python3 scripts/bootstrap.py --init
@@ -33,6 +33,23 @@ down:                  ## Stoppa containrar
 		docker compose down; \
 	else \
 		docker compose --profile hydra down; \
+	fi
+
+# Paketerad drift: kör mot publicerade GHCR-images (docs/PACKAGED-INSTALL.md)
+# i stället för att bygga lokalt. Kräver bara docker-compose.yml +
+# docker-compose.release.yml + .env — ingen källkodsklon.
+up-release:            ## Starta från publicerade images (ingen lokal build)
+	@if grep -qs '^COMPOSE_PROFILES=' .env; then \
+		docker compose -f docker-compose.yml -f docker-compose.release.yml up -d; \
+	else \
+		docker compose -f docker-compose.yml -f docker-compose.release.yml --profile hydra up -d; \
+	fi
+
+down-release:          ## Stoppa den paketerade driften
+	@if grep -qs '^COMPOSE_PROFILES=' .env; then \
+		docker compose -f docker-compose.yml -f docker-compose.release.yml down; \
+	else \
+		docker compose -f docker-compose.yml -f docker-compose.release.yml --profile hydra down; \
 	fi
 
 seed:                  ## Bara seed-vaults (om de saknas)

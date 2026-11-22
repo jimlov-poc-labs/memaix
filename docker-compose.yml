@@ -197,27 +197,6 @@ services:
       - "127.0.0.1:8081:80"
     profiles: ["nextcloud"]
 
-  # ntfy — self-hosted push notifications, reachable via Cloudflare tunnel at
-  # ntfy.jimlov.se. Auth: deny-all default, per-topic grants via `ntfy access`.
-  # Bara localhost-exponerad; nås genom tunneln, inte direkt.
-  ntfy:
-    image: binwiederhier/ntfy:latest
-    command: serve
-    restart: unless-stopped
-    environment:
-      NTFY_BASE_URL: "https://ntfy.jimlov.se"
-      NTFY_AUTH_FILE: "/var/lib/ntfy/auth.db"
-      NTFY_AUTH_DEFAULT_ACCESS: "deny-all"
-      NTFY_CACHE_FILE: "/var/cache/ntfy/cache.db"
-      NTFY_BEHIND_PROXY: "true"
-      NTFY_LISTEN_HTTP: ":80"
-    volumes:
-      - ./ntfy/etc:/etc/ntfy
-      - ./ntfy/lib:/var/lib/ntfy
-      - ./ntfy/cache:/var/cache/ntfy
-    ports:
-      - "127.0.0.1:8082:80"
-
 volumes:
   nextcloud-data:
   hydra-db:

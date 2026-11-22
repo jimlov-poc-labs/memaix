@@ -7,7 +7,7 @@ first. The flow:
 
   1. email_send_unlock_request — the server makes a one-time code and sends
      it OUTSIDE the model, through a configured channel (a Discord webhook,
-     ntfy, a webhook, or a dedicated SMTP account). The tool result never
+     a webhook, or a dedicated SMTP account). The tool result never
      contains the code.
   2. The owner reads the code on their phone/mail and types it in the chat.
   3. email_send_unlock(code) — unlocks exactly this (user, MCP session) for
@@ -17,9 +17,9 @@ Why the channel is checked: a code mailed to a mailbox the model can read
 through email_list/email_search would let the model unlock itself. A
 channel is refused if its sender or recipient is any address a mail tool can
 read (every acl.yaml mailbox, every linked account of any user, aliases
-and same-domain addresses included). An ntfy topic or webhook that is also
-a brief channel is refused too: the model sets and reads those itself. The
-webhook URL and the topic are never returned, logged or audited. See
+and same-domain addresses included). A webhook that is also a brief
+channel is refused too: the model sets and reads those itself. The
+webhook URL is never returned, logged or audited. See
 `readable_addresses`, `exposed_identities` and `check_channel`.
 
 State is in memory on purpose: a restart locks every session again, which
@@ -182,13 +182,9 @@ class SendUnlockStore:
 # ------------------------------------------------------------------
 
 # Every error message below is shown to the model (deny()) and written to
-# the audit log, so none of them may contain a webhook URL, an ntfy topic or
-# a token. Only field names and channel types.
+# the audit log, so none of them may contain a webhook URL or a token. Only
+# field names and channel types.
 
-DEFAULT_NTFY_SERVER = "https://ntfy.sh"
-# An ntfy topic is the only thing between the world and the messages on it,
-# so the code topic must be unguessable (and should come from topic_ref).
-MIN_NTFY_TOPIC_LEN = 24
 _DISCORD_HOSTS = frozenset({
     "discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com",
     "ptb.discordapp.com", "canary.discordapp.com",
@@ -281,15 +277,6 @@ def _resolved(spec: dict, key: str) -> str | None:
     return config.secret(spec.get(f"{key}_ref"))
 
 
-def ntfy_identity(server: str | None, topic: str | None) -> str:
-    """Comparable identity of an ntfy topic (scheme and case of host ignored)."""
-    from urllib.parse import urlsplit
-
-    parts = urlsplit((server or DEFAULT_NTFY_SERVER).strip())
-    base = f"{(parts.hostname or '').lower()}{f':{parts.port}' if parts.port else ''}{parts.path.rstrip('/')}"
-    return f"ntfy:{base}/{(topic or '').strip()}"
-
-
 def webhook_identity(url: str | None) -> str:
     """Comparable identity of a webhook: the webhook id for Discord (all its
     host aliases are the same webhook), else host + path."""
@@ -305,7 +292,7 @@ def webhook_identity(url: str | None) -> str:
 
 
 def exposed_identities(notify_store) -> set[str]:
-    """ntfy topics and webhook URLs of every user's brief channels.
+    """Webhook URLs of every user's brief channels.
 
     The model sets those itself through brief_configure and can read them
     back, so a code channel must never be one of them.
@@ -326,11 +313,9 @@ def exposed_identities(notify_store) -> set[str]:
 
 
 def _brief_identity(spec: dict | None) -> str | None:
-    """Comparable identity of one brief channel's ntfy topic or webhook."""
+    """Comparable identity of one brief channel's webhook."""
     spec = spec or {}
     ctype = spec.get("type")
-    if ctype == "ntfy" and spec.get("topic"):
-        return ntfy_identity(spec.get("server"), spec.get("topic"))
     if ctype in ("webhook", "discord"):
         url = _resolved(spec, "url")
         return webhook_identity(url) if url else None
@@ -358,35 +343,14 @@ def check_channel(spec: dict, readable: set[str], exposed: set[str] | frozenset[
     Error texts never contain the URL, topic or token.
     """
     ctype = spec.get("type")
-    if ctype == "ntfy":
-        _check_ntfy(spec, exposed)
-        return
     if ctype in ("discord", "webhook"):
         _check_webhook(spec, ctype, exposed)
         return
     if ctype != "smtp":
         raise ValueError(
-            f"kanaltyp {ctype!r} stöds inte för upplåsningskoder (använd discord, ntfy, webhook eller smtp)"
+            f"kanaltyp {ctype!r} stöds inte för upplåsningskoder (använd discord, webhook eller smtp)"
         )
     _check_smtp(spec, readable)
-
-
-def _check_ntfy(spec: dict, exposed: set[str] | frozenset[str]) -> None:
-    """Unguessable topic, https server, and not a topic the model can see."""
-    from urllib.parse import urlsplit
-
-    topic = _resolved(spec, "topic")
-    if not topic:
-        raise ValueError("ntfy-kanalen behöver 'topic' eller 'topic_ref'")
-    if len(topic) < MIN_NTFY_TOPIC_LEN or not re.fullmatch(r"[A-Za-z0-9_-]+", topic):
-        raise ValueError(
-            f"ntfy-ämnet måste vara minst {MIN_NTFY_TOPIC_LEN} slumpade tecken (A-Z, a-z, 0-9, _ eller -) "
-            "— ett gissningsbart ämne kan vem som helst läsa"
-        )
-    if urlsplit(str(spec.get("server") or DEFAULT_NTFY_SERVER)).scheme.lower() != "https":
-        raise ValueError("ntfy-kanalens server måste vara https — ämnet får aldrig gå i klartext")
-    if ntfy_identity(spec.get("server"), topic) in exposed:
-        raise ValueError("ntfy-ämnet används också av en notiskanal som modellen kan se och ändra")
 
 
 def _check_webhook(spec: dict, ctype: str, exposed: set[str] | frozenset[str]) -> None:
@@ -485,23 +449,6 @@ class WebhookCodeChannel(_HttpCodeChannel):
         super().__init__("webhook", url, _http=_http)
 
 
-class NtfyCodeChannel(_HttpCodeChannel):
-    """ntfy, optionally with an access token (token_ref) for a protected topic."""
-
-    def __init__(self, server: str | None, topic: str, token: str | None = None, *, _http=None) -> None:
-        from ..notify.channels import _header_safe
-
-        headers = {"Title": _header_safe(UNLOCK_SUBJECT)}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        super().__init__(
-            "ntfy", f"{(server or DEFAULT_NTFY_SERVER).rstrip('/')}/{topic}", headers=headers, _http=_http,
-        )
-
-    def _payload(self, subject: str, text: str) -> dict:
-        return {"data": text.encode("utf-8")}
-
-
 class SmtpCodeChannel:
     """Sends the code from a dedicated SMTP account (not a Memaix mailbox)."""
 
@@ -554,11 +501,7 @@ def build_code_channels(
     for spec in specs:
         check_channel(spec, readable, exposed)
         ctype = spec["type"]
-        if ctype == "ntfy":
-            channels.append(NtfyCodeChannel(
-                spec.get("server"), _resolved(spec, "topic") or "", _resolved(spec, "token"), _http=_http,
-            ))
-        elif ctype == "discord":
+        if ctype == "discord":
             channels.append(DiscordCodeChannel(_resolved(spec, "url") or "", _http=_http))
         elif ctype == "webhook":
             channels.append(WebhookCodeChannel(_resolved(spec, "url") or "", _http=_http))
@@ -602,8 +545,6 @@ def channel_hint(spec: dict) -> str:
         to = _norm(str(spec.get("to") or ""))
         local, _, domain = to.partition("@")
         return f"mejl till {local[:1]}***@{domain}" if domain else "mejl"
-    if ctype == "ntfy":
-        return "ntfy-notis"
     if ctype == "discord":
         return "Discord"
     return "webhook" if ctype == "webhook" else "okänd kanal"

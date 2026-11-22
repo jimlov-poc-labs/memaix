@@ -60,8 +60,8 @@ server:
 #   ttl_hours: 4
 #   channels:
 #     - {type: discord, url_ref: "env:UNLOCK_DISCORD_WEBHOOK"}   # utan ?wait=true
-#     # - {type: ntfy, topic_ref: "env:UNLOCK_NTFY_TOPIC", token_ref: "env:UNLOCK_NTFY_TOKEN"}
-#     #   (ämnet minst 24 slumptecken; får inte vara samma som en brief-kanal)
+#     # - {type: webhook, url_ref: "env:UNLOCK_WEBHOOK_URL"}
+#     #   (måste ha ett annat id/url än en brief-kanal)
 #
 # mail_dialog: tak för email_reply(reply_all=True).
 # mail_dialog:

@@ -384,7 +384,6 @@ def test_brief_web_email_channel_needs_owner_of_its_project(rig, tmp_path, monke
 @pytest.mark.parametrize("channel", [
     {"type": "webhook", "url": "https://attacker.test\\@discord.com/api/webhooks/1/HEMLIGT"},
     {"type": "webhook", "url": "http://discord.com/api/webhooks/1/HEMLIGT"},
-    {"type": "ntfy", "topic": "brief", "server": "https://attacker.test\\@ntfy.sh"},
 ])
 def test_brief_web_refuses_ambiguous_or_plain_http_discord_urls(rig, tmp_path, monkeypatch, channel):
     # The web path has no send lock (a human sets it), but the same URL

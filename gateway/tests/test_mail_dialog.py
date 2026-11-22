@@ -192,7 +192,7 @@ def wired(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(registry_mod, "_registry", reg)
 
-    cfg = {"memaix": {"mail_send_unlock": {"enabled": True, "channels": [{"type": "ntfy", "topic": "t"}]}}}
+    cfg = {"memaix": {"mail_send_unlock": {"enabled": True, "channels": [{"type": "webhook", "url": "https://hook.example/t"}]}}}
     monkeypatch.setattr(config, "load", lambda *a, **k: cfg)
 
     sent: list = []
@@ -453,7 +453,7 @@ def test_channel_check_refuses_readable_mailboxes(wired):
     with pytest.raises(ValueError, match="stöds inte"):
         mu.check_channel({"type": "email", "to": "jimmy@annan.se"}, readable)
     mu.check_channel({"type": "smtp", "to": "jimmy@annan.se", "from": "kod@annan.se"}, readable)
-    mu.check_channel({"type": "ntfy", "topic": _TOPIC}, readable)
+    mu.check_channel({"type": "webhook", "url": "https://hook.example/x"}, readable)
 
 
 def test_smtp_code_channel_sends_code_only_in_body():
@@ -592,7 +592,7 @@ def test_code_never_in_result_audit_or_logs(wired, caplog, tmp_path):
     rows = server._get_audit().tail(200)
     assert any(r["tool"] == "email_send_unlock" and r["ok"] for r in rows)
     assert code not in repr(rows)
-    assert result["channels"] == ["ntfy-notis"]
+    assert result["channels"] == ["webhook"]
 
 
 def test_unlocked_reply_sends_from_box_saves_sent_and_hits_timeline(wired):
@@ -771,22 +771,6 @@ _REAL_BUILD = mu.build_code_channels
 # --- 1. The model must not be able to read the code ---------------------
 
 
-def test_ntfy_code_topic_must_be_unguessable():
-    with pytest.raises(ValueError, match="minst 24"):
-        mu.check_channel({"type": "ntfy", "topic": "jimmy-memaix"}, set())
-    mu.check_channel({"type": "ntfy", "topic": _TOPIC}, set())
-
-
-def test_code_channel_sharing_a_brief_ntfy_topic_is_refused(wired, tmp_path):
-    # The brief spec omits server (= ntfy.sh); the code spec spells it differently.
-    server._get_notify().set_prefs("eve", now_iso="2026-10-26T00:00:00", channels=[{"type": "ntfy", "topic": _TOPIC}])
-    exposed = mu.exposed_identities(server._get_notify())
-    with pytest.raises(ValueError, match="notiskanal") as exc:
-        mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "HTTPS://NTFY.SH/"}, set(), exposed)
-    assert _TOPIC not in str(exc.value)
-    mu.check_channel({"type": "ntfy", "topic": _TOPIC[::-1]}, set(), exposed)
-
-
 def test_code_channel_sharing_a_brief_discord_webhook_is_refused(wired):
     alias = _DISCORD.replace("https://discord.com", "https://canary.discordapp.com")
     server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", channels=[{"type": "webhook", "url": alias}])
@@ -874,9 +858,11 @@ def test_discord_failed_code_post_fails_the_channel(status):
 
 def test_other_code_channels_still_get_one_message():
     http = _Http(status=200)
-    (ch,) = mu.build_code_channels([{"type": "ntfy", "topic": _TOPIC}], set(), _http=http)
+    (ch,) = mu.build_code_channels([{"type": "webhook", "url": "https://hook.example/code"}], set(), _http=http)
     mu.deliver_code(ch, "12345678", 10)
-    assert [kw["data"] for _url, kw in http.posts] == [mu.code_message("12345678", 10).encode("utf-8")]
+    assert [kw["json"] for _url, kw in http.posts] == [
+        {"subject": mu.UNLOCK_SUBJECT, "text": mu.code_message("12345678", 10)}
+    ]
 
 
 def test_unlock_discord_failing_code_post_counts_as_failed_channel(wired, monkeypatch, caplog):
@@ -887,31 +873,18 @@ def test_unlock_discord_failing_code_post_counts_as_failed_channel(wired, monkey
         server.email_send_unlock_request(ctx=_Ctx("s1"))
     server._rate_limiter._windows.clear()
     wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [
-        {"type": "discord", "url": _DISCORD}, {"type": "ntfy", "topic": _TOPIC},
+        {"type": "discord", "url": _DISCORD}, {"type": "webhook", "url": "https://hook.example/code"},
     ]
     _real_channels(monkeypatch, _SeqHttp(fail_on=2))
     out = server.email_send_unlock_request(ctx=_Ctx("s2"))
-    assert out["failed_channels"] == 1 and out["channels"] == ["ntfy-notis"]
+    assert out["failed_channels"] == 1 and out["channels"] == ["webhook"]
     assert "HEMLIGT" not in repr(out) and "HEMLIGT" not in caplog.text
-
-
-def test_ntfy_code_channel_sends_token(monkeypatch):
-    monkeypatch.setenv("UNLOCK_NTFY_TOKEN", "tk_abc")
-    monkeypatch.setenv("UNLOCK_NTFY_TOPIC", _TOPIC)
-    http = _Http(status=200)
-    (ch,) = mu.build_code_channels(
-        [{"type": "ntfy", "topic_ref": "env:UNLOCK_NTFY_TOPIC", "token_ref": "env:UNLOCK_NTFY_TOKEN"}], set(), _http=http,
-    )
-    ch.send(mu.UNLOCK_SUBJECT, "x", "kod")
-    url, kwargs = http.posts[0]
-    assert url == f"https://ntfy.sh/{_TOPIC}"
-    assert kwargs["headers"]["Authorization"] == "Bearer tk_abc"
 
 
 @pytest.mark.parametrize("field", ["token_ref", "url_ref", "topic_ref", "password_ref"])
 def test_brief_channels_refuse_secret_refs(wired, field):
     # A model-set ref would resolve a server secret and post it where the model says.
-    spec = {"type": "ntfy", "server": "https://attacker.example", "topic": "x", field: "env:TOKEN_MASTER_KEY"}
+    spec = {"type": "webhook", "url": "https://attacker.example", field: "env:TOKEN_MASTER_KEY"}
     with pytest.raises(ValueError, match="not allowed"):
         server.brief_configure(True, "07:00", "UTC", channels=[spec])
     assert server.brief_status() == {"configured": False}
@@ -947,8 +920,9 @@ def test_failed_delivery_never_leaks_the_url(wired, monkeypatch, caplog, tmp_pat
 
 def test_refused_channel_config_is_charged_against_the_rate_limit(wired, monkeypatch, tmp_path):
     # Probing "is my brief topic the code topic?" must not be free.
-    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "ntfy", "topic": _TOPIC}]
-    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", channels=[{"type": "ntfy", "topic": _TOPIC}])
+    wired.cfg["memaix"]["mail_send_unlock"]["channels"] = [{"type": "webhook", "url": "https://hook.example/shared"}]
+    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00",
+                                    channels=[{"type": "webhook", "url": "https://hook.example/shared"}])
     _real_channels(monkeypatch, _Http())
     for _ in range(mu.DEFAULT_MAX_REQUESTS):
         with pytest.raises(PermissionError, match="osäker kanalkonfiguration") as exc:
@@ -959,16 +933,16 @@ def test_refused_channel_config_is_charged_against_the_rate_limit(wired, monkeyp
     assert b"Kq7xV2" not in (tmp_path / "audit.db").read_bytes()
 
 
-def test_brief_status_and_configure_mask_topics_and_urls(wired):
-    channels = [{"type": "ntfy", "topic": _TOPIC}, {"type": "webhook", "url": _DISCORD, "format": "discord"}]
+def test_brief_status_and_configure_mask_urls(wired):
+    channels = [{"type": "webhook", "url": _DISCORD, "format": "discord"}]
     ctx = _Ctx("s-brief")
     _unlock(wired, ctx)  # new destinations under the send lock
     configured = server.brief_configure(True, "07:00", "UTC", channels=channels, ctx=ctx)
     status = server.brief_status()
     for out in (configured, status):
         text = repr(out)
-        assert _TOPIC not in text and "HEMLIGT" not in text and "1234567890" not in text
-    assert status["prefs"]["channels"][1]["format"] == "discord"
+        assert "HEMLIGT" not in text and "1234567890" not in text
+    assert status["prefs"]["channels"][0]["format"] == "discord"
 
 
 def test_brief_delivery_errors_do_not_echo_the_url():
@@ -1125,11 +1099,11 @@ def test_reply_all_is_refused_above_the_cc_cap(wired):
 
 
 def test_code_channel_error_text_never_contains_the_url():
-    for spec in ({"type": "discord", "url": _DISCORD}, {"type": "ntfy", "topic": _TOPIC}):
+    for spec in ({"type": "discord", "url": _DISCORD}, {"type": "webhook", "url": "https://hook.example/x"}):
         (ch,) = mu.build_code_channels([spec], set(), _http=_Http(fail=True))
         with pytest.raises(RuntimeError) as exc:
             ch.send(mu.UNLOCK_SUBJECT, "x", "kod")
-        assert "HEMLIGT" not in str(exc.value) and _TOPIC not in str(exc.value)
+        assert "HEMLIGT" not in str(exc.value)
         assert exc.value.__context__ is None or exc.value.__suppress_context__
     (ch,) = mu.build_code_channels([{"type": "discord", "url": _DISCORD}], set(), _http=_Http(status=404))
     with pytest.raises(RuntimeError, match="404") as exc:
@@ -1265,7 +1239,6 @@ def test_new_brief_destination_needs_an_unlocked_session(wired, tmp_path):
     server.brief_configure(True, channels=[hook, plain], ctx=ctx)
     for new in ({"type": "webhook", "url": "https://hooks.example.com:8443/x"},
                 {"type": "webhook", "url": "https://hooks.example.com/x?to=evil"},
-                {"type": "ntfy", "topic": _TOPIC},
                 {"type": "webhook", "url": "https://other.example.com/x"},
                 {"type": "email", "to": "x@attacker.test", "project": "jimlov"}):
         with pytest.raises(mu.SendLocked):
@@ -1277,7 +1250,7 @@ def test_new_brief_destination_needs_an_unlocked_session(wired, tmp_path):
 def test_non_owner_cannot_add_brief_destinations_under_the_lock(wired, monkeypatch):
     monkeypatch.setenv("MEMAIX_USER", "eve")
     with pytest.raises(server.AccessDenied, match="ägare"):
-        server.brief_configure(True, channels=[{"type": "ntfy", "topic": _TOPIC}], ctx=_Ctx("s1"))
+        server.brief_configure(True, channels=[{"type": "webhook", "url": "https://hook.example/x"}], ctx=_Ctx("s1"))
 
 
 def test_scheduled_brief_still_reaches_stored_destinations_under_the_lock(wired, smtp_spy, monkeypatch):
@@ -1472,7 +1445,6 @@ def test_backslash_discord_hook_cannot_replace_the_stored_one(wired, real_reques
 
 @pytest.mark.parametrize("evil", [
     {"type": "webhook", "format": "discord", "url": _EVIL_DISCORD},
-    {"type": "ntfy", "topic": "brief", "server": "https://attacker.test\\@ntfy.sh"},
     {"type": "webhook", "format": "raw", "url": "https://user@discord.com/api/webhooks/1/x"},
 ])
 def test_already_stored_ambiguous_channel_never_sends(wired, real_requests, evil):
@@ -1496,7 +1468,7 @@ def test_eve_cannot_exfiltrate_by_mcp_with_or_without_lock(wired, smtp_spy, monk
     assert smtp_spy == []
 
 
-# --- Discord / ntfy identity: scheme + host + port ----------------------
+# --- Discord identity: scheme + host + port ----------------------
 
 
 def _ident(spec):
@@ -1532,63 +1504,13 @@ def test_non_https_discord_hook_is_refused_as_a_channel(wired, bad):
     assert build_channels([{"type": "webhook", "url": bad, "format": "discord"}], _http=_Http()) == []
 
 
-def test_ntfy_identity_is_scheme_host_port_and_topic():
-    base = _ident({"type": "ntfy", "topic": "brief"})
-    assert _ident({"type": "ntfy", "topic": "brief", "server": "https://ntfy.sh/"}) == base
-    assert _ident({"type": "ntfy", "topic": "brief", "server": "https://NTFY.sh:443"}) == base
-    for other in ({"server": "http://ntfy.sh"}, {"server": "https://ntfy.sh:8443"},
-                  {"server": "https://ntfy.example"}, {"topic": "brief2"}):
-        assert _ident({"type": "ntfy", "topic": "brief", **other}) != base
-    bad = {"type": "ntfy", "topic": "brief", "server": "https://attacker.test\\@ntfy.sh"}
-    assert _ident(bad) != _ident(bad)  # an unparseable destination matches nothing, not even itself
-
-
-def test_ntfy_port_change_needs_the_unlock(wired):
-    ctx = _Ctx("s1")
-    _unlock(wired, ctx)
-    server.brief_configure(True, channels=[{"type": "ntfy", "topic": "brief"}], ctx=ctx)
-    # Same list again from a locked session: fine (nothing new).
-    server.brief_configure(True, channels=[{"type": "ntfy", "topic": "brief", "server": "https://ntfy.sh"}],
-                           ctx=_Ctx("locked"))
-    with pytest.raises(mu.SendLocked):
-        server.brief_configure(True, channels=[{"type": "ntfy", "topic": "brief", "server": "https://ntfy.sh:8443"}],
-                               ctx=_Ctx("locked"))
-
-
-@pytest.mark.parametrize("srv", ["http://ntfy.sh", "HTTP://ntfy.example:8080", "http://ntfy.sh:443"])
-def test_ntfy_over_http_is_refused(wired, real_requests, srv):
-    # Jimmy 2026-10-26: an ntfy topic is as secret as a Discord token.
-    from memaix_gateway.notify.channels import _NTFY_HTTPS, build_channels
-
-    spec = {"type": "ntfy", "topic": _TOPIC, "server": srv}
-    ctx = _Ctx("s1")
-    _unlock(wired, ctx)  # refused even unlocked
-    with pytest.raises(ValueError, match="ntfy måste vara https") as exc:
-        server.brief_configure(True, channels=[spec], ctx=ctx)
-    assert _TOPIC not in str(exc.value)
-    # Already stored: skipped at send, and the user is told why.
-    assert build_channels([spec], _http=_Http()) == []
-    server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", enabled=True, channels=[spec])
-    out = server.brief_send_now()
-    assert real_requests.posted == []
-    assert out["rejected_channels"] == [{"index": 0, "type": "ntfy", "reason": _NTFY_HTTPS}]
-
-
-def test_ntfy_on_a_discord_host_still_needs_the_standard_port(wired):
-    spec = {"type": "ntfy", "topic": _TOPIC, "server": "https://discord.com:8443/api/webhooks/123"}
-    with pytest.raises(ValueError, match="https på standardport"):
-        server.brief_configure(True, channels=[spec], ctx=_Ctx("s1"))
-
-
-def test_unlock_code_channel_ntfy_must_be_https():
-    with pytest.raises(ValueError, match="https") as exc:
-        mu.check_channel({"type": "ntfy", "topic": _TOPIC, "server": "http://ntfy.sh"}, set())
-    assert _TOPIC not in str(exc.value)
-    mu.check_channel({"type": "ntfy", "topic": _TOPIC}, set())  # default server is https
+# ntfy removed as a notification/code channel type (Jimmy 2026-11-22).
 
 
 _HTTP_DISCORD = {"type": "webhook", "format": "discord", "url": _DISCORD.replace("https:", "http:")}
-_HTTP_NTFY = {"type": "ntfy", "topic": _TOPIC, "server": "http://ntfy.sh"}
+# A second, differently-refused webhook (SSRF guard, not the Discord-only
+# https rule) — stands in for the old ntfy-over-http fixture below.
+_BLOCKED_WEBHOOK = {"type": "webhook", "format": "raw", "url": "http://127.0.0.1/brief"}
 
 
 def test_brief_send_now_reports_refused_channels(wired, real_requests):
@@ -1616,14 +1538,16 @@ def test_brief_send_now_is_not_ok_when_every_channel_is_refused(wired, real_requ
 def test_brief_status_warns_per_refused_channel_masked(wired, real_requests):
     ok_hook = {"type": "webhook", "format": "raw", "url": "https://hooks.example.com/brief"}
     server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", enabled=True,
-                                   channels=[ok_hook, _HTTP_DISCORD, _HTTP_NTFY])
+                                   channels=[ok_hook, _HTTP_DISCORD, _BLOCKED_WEBHOOK])
     st = server.brief_status()
     warnings = st["channel_warnings"]
-    assert [(w["index"], w["type"]) for w in warnings] == [(1, "webhook"), (2, "ntfy")]
+    assert [(w["index"], w["type"]) for w in warnings] == [(1, "webhook"), (2, "webhook")]
     assert all("vägras" in w["warning"] for w in warnings)
-    assert warnings[1]["channel"]["topic"] == "Kq***"
+    # Host isn't the secret for a plain webhook (only the path/query can carry
+    # a token) — masking hides those, not the host.
+    assert warnings[1]["channel"]["url"] == "http://127.0.0.1/***"
     dumped = json.dumps(st)
-    assert _TOPIC not in dumped and "HEMLIGT" not in dumped
+    assert "/brief" not in dumped and "HEMLIGT" not in dumped
     assert real_requests.posted == []  # status never sends
     # Nothing refused: no warnings.
     server._get_notify().set_prefs("jimmy", now_iso="2026-10-26T00:00:00", channels=[ok_hook])
@@ -1636,19 +1560,13 @@ def test_scheduled_brief_logs_refused_channels(wired, real_requests, caplog):
     from memaix_gateway.notify.deliver import deliver
 
     caplog.set_level(logging.WARNING)
-    prefs = {"timezone": "UTC", "brief_time": "07:00", "projects": [], "channels": [_HTTP_NTFY]}
+    prefs = {"timezone": "UTC", "brief_time": "07:00", "projects": [], "channels": [_BLOCKED_WEBHOOK]}
     out = deliver(server._get_notify(), server._get_acl(), config.load(), "jimmy", prefs,
                   now=datetime(2026, 10, 26, 7, tzinfo=timezone.utc), tools={})
     if out.get("skipped") == "empty":
         pytest.skip("empty brief in this fixture")
     assert out["rejected"] == 1
-    assert "refused" in caplog.text and _TOPIC not in caplog.text
-
-
-@pytest.mark.parametrize("topic", ["a/b", "a?b", "x" * 65, "", "a\\b"])
-def test_ntfy_topic_must_be_a_plain_name(wired, topic):
-    with pytest.raises(ValueError):
-        server.brief_configure(True, channels=[{"type": "ntfy", "topic": topic}], ctx=_Ctx("s1"))
+    assert "refused" in caplog.text and "127.0.0.1" not in caplog.text
 
 
 # --- Rules: fail closed, webhook triggers -------------------------------

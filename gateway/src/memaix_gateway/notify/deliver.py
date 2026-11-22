@@ -55,7 +55,7 @@ def deliver(
     if brief_content.get("empty") and not brief_content.get("markdown"):
         return {"skipped": "empty"}
 
-    # Refused channels (http ntfy/Discord, ambiguous URL, mailbox the user
+    # Refused channels (http webhook/Discord, ambiguous URL, mailbox the user
     # no longer owns) are skipped, but reported: never a silent failure.
     rejected: list[dict] = []
     channels = (
@@ -75,7 +75,7 @@ def deliver(
             ch.send(brief_content["subject"], brief_content["markdown"], brief_content["text"])
             delivered += 1
         except Exception as exc:
-            # Type only: requests' error text contains the webhook URL / ntfy topic.
+            # Type only: requests' error text contains the webhook URL.
             errors.append(f"{type(ch).__name__}: {type(exc).__name__}")
             logger.warning("brief channel delivery failed (%s: %s)", type(ch).__name__, type(exc).__name__)
 

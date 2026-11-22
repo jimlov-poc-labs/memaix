@@ -250,7 +250,7 @@ låsning via `expected_version`.
 
 ### Proaktiv brief & notiser
 `brief_configure` (tidszon, tid, tysta timmar, kanaler), `brief_status`, `brief_preview`,
-`brief_send_now`. Kanaler: e-post/webhook/ntfy (se [FEATURE-PROACTIVE-BRIEF.md](FEATURE-PROACTIVE-BRIEF.md)).
+`brief_send_now`. Kanaler: e-post/webhook (se [FEATURE-PROACTIVE-BRIEF.md](FEATURE-PROACTIVE-BRIEF.md)).
 
 ### Automationsregler & stående instruktioner
 `rule_add/list/set_enabled/delete/rule_test`, `standing_set/standing_get`
