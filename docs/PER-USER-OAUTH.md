@@ -76,11 +76,11 @@ kunden, inte hos oss.
 4. Kopiera **Application (client) ID** och **Directory (tenant) ID** från appens Overview-sida.
 5. Ge appen de delegerade Graph-behörigheterna som motsvarar scopes-listan (Mail.Read,
    Calendars.ReadWrite, offline_access) och godkänn admin consent i tenanten.
-6. **Känt hål (inte löst i detta uppdrag):** gatewayens authorize-/token-URL är idag hårdkodad
-   mot `login.microsoftonline.com/common/...` (`server_http.py`, `_refresh_microsoft_token` i
-   `server.py`). Microsoft avvisar ofta `/common` för en strikt single-tenant app-registrering.
-   `tenant_id` samlas in och skrivs till config redan nu för att inte tvinga en andra
-   migrering senare, men gatewayen läser den inte än — se "Kantfall".
+6. Gatewayens authorize-, token exchange- och refresh-URL (`server_http.py`:
+   `link_start`/`link_callback`, `server.py`: `_refresh_microsoft_token`) läser
+   `oauth_providers.microsoft.tenant_id` ur config och bygger
+   `login.microsoftonline.com/<tenant_id>/...` — fallback till `/common` bara om
+   `tenant_id` saknas (äldre installation eller en medvetet multi-tenant-app).
 
 ## Länkningsflödet (engångs per person & provider)
 
@@ -170,11 +170,11 @@ den inloggade användarens token saknas eller är ogiltig.
 - **Flera konton per person:** `account_list` visar alla; projektets config kan peka på vilket
   konto som gäller, annars fråga.
 - **Admin återkallar i Workspace/tenant:** behandla som `needs_relink`.
-- **Microsoft single-tenant-appen + `/common`-ändpunkten:** instanskonfigurationen samlar in
-  `microsoft_oauth_tenant_id`, men `link_start`/`_exchange_code`/`_refresh_microsoft_token`
-  pekar idag hårdkodat mot `login.microsoftonline.com/common/...`. Ej åtgärdat här —
-  lägg in `provider_cfg.get("tenant_id", "common")` på de tre ställena som egen uppgift
-  innan en kund med en strikt single-tenant-app testar `/link/microsoft`.
+- **Microsoft single-tenant-appen:** `link_start`, `link_callback` och `_refresh_microsoft_token`
+  bygger alla sin Microsoft-URL från samma helpers (`_microsoft_authorize_url`/
+  `_microsoft_token_url` i `server.py`) utifrån `oauth_providers.microsoft.tenant_id` — de tre
+  måste hållas i synk (ett token mintat mot en tenant-URL går inte att refresha mot `/common`
+  eller en annan tenant), så ändra dem bara via dessa helpers, aldrig var för sig.
 
 ## Faser
 1. **Länkningssida + token-store** (krypterad) för en provider (börja med Microsoft Graph).
