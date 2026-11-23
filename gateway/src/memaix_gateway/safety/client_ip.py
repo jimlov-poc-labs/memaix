@@ -9,7 +9,9 @@ En enda sanning för "vem är klienten" för rate limiting m.m. Fail closed:
   spoofa); det behandlas som tom lista.
 * Kedjan läses från höger: första adressen som INTE är en betrodd proxy är
   klienten. Vänstra delen är klientstyrd och ignoreras.
+* Poster med scope-id (%), portar eller tomma poster räknas som trasiga.
 * Trasig/tom header eller icke-IP-värde ger peer-adressen, aldrig en ny hink.
+* IPv6 nycklas på sitt /64-nät (nätadressen returneras); IPv4 oförändrat.
 * IPv4-mappade IPv6-adresser (::ffff:a.b.c.d) normaliseras till IPv4 så att
   hinknyckeln blir densamma.
 """
@@ -29,8 +31,11 @@ _IP = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
 def _normalize(addr: str) -> _IP | None:
+    addr = addr.strip().strip("[]")
+    if "%" in addr:  # scope-id (fe80::1%eth0): aldrig en giltig klientadress
+        return None
     try:
-        ip = ipaddress.ip_address(addr.strip().strip("[]"))
+        ip = ipaddress.ip_address(addr)
     except ValueError:
         return None
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -55,6 +60,13 @@ def _parse_trusted(raw: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Netw
     return tuple(nets)
 
 
+def _key(ip: _IP) -> str:
+    """Hinknyckel: IPv4 som är, IPv6 som sitt /64-nät (annars kan en klient rotera inom sitt prefix)."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address)
+    return _key(ip)
+
+
 def _trusted(ip: _IP, nets) -> bool:
     return any(ip.version == n.version and ip in n for n in nets)
 
@@ -69,14 +81,14 @@ def client_ip(request) -> str:
         return peer_raw  # t.ex. unix socket/testklient; aldrig betrodd
     nets = _parse_trusted(os.environ.get(ENV_VAR, ""))
     if not nets or not _trusted(peer, nets):
-        return str(peer)
+        return _key(peer)
     header = request.headers.get("x-forwarded-for", "")
     if not header.strip():
-        return str(peer)
+        return _key(peer)
     for part in reversed(header.split(",")):
         ip = _normalize(part)
         if ip is None:
-            return str(peer)  # trasig kedja: lita inte på något i den
+            return _key(peer)  # trasig kedja: lita inte på något i den
         if not _trusted(ip, nets):
-            return str(ip)
-    return str(peer)  # hela kedjan är betrodd (intern trafik)
+            return _key(ip)
+    return _key(peer)  # hela kedjan är betrodd (intern trafik)

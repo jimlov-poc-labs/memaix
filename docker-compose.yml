@@ -78,6 +78,9 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    environment:
+      # Peers vars CF-Connecting-IP/X-Forwarded-For Caddy tar emot (cloudflared). Se docs/KLIENT-IP.md.
+      CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-172.16.0.0/12}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     ports:

@@ -85,3 +85,22 @@ def test_client_ip_rules(monkeypatch):
     # '*' accepteras inte
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
     assert client_ip(_req(CADDY, "203.0.113.5")) == "172.21.0.6"
+
+
+def test_ipv6_keyed_on_slash64(monkeypatch):
+    from memaix_gateway.safety.client_ip import client_ip
+
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", TRUSTED)
+    a = client_ip(_req(CADDY, "2001:db8:1:2::1"))
+    assert a == client_ip(_req(CADDY, "2001:db8:1:2:ffff::9"))
+    assert a != client_ip(_req(CADDY, "2001:db8:1:3::1"))
+    assert client_ip(_req(("2001:db8:1:2::5", 1))) == a  # peer utan proxy
+    assert client_ip(_req(CADDY, "::ffff:203.0.113.5")) == "203.0.113.5"
+
+
+@pytest.mark.parametrize("xff", ["fe80::1%eth0", "203.0.113.5:4711", "6.6.6.6,,", "203.0.113.5, ", ",203.0.113.5", "203.0.113.5, fe80::1%1"])
+def test_malformed_chain_entries_fall_back_to_peer(monkeypatch, xff):
+    from memaix_gateway.safety.client_ip import client_ip
+
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", TRUSTED)
+    assert client_ip(_req(CADDY, xff)) == "172.21.0.6"
