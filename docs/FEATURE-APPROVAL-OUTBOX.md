@@ -188,7 +188,7 @@ Nya verktyg i `server.py` (via `_tool_call`, projekt-scope från argument):
 |---------|----------|------|
 | `outbox_list` | `(project: str\|None=None, status: str="pending")` | reader ser sina synliga projekt |
 | `outbox_get` | `(action_id: str)` | som list |
-| `outbox_approve` | `(action_id: str)` | roll som gatade verktyget kräver (t.ex. owner för email_send) |
+| `outbox_approve` | `(action_id: str)` | roll som gatade verktyget kräver (t.ex. owner för email_send). **Mejlundantag:** köade `email_send`/`email_forward`/`email_reply` nekas alltid över MCP (`approval_web_only`); de godkänns bara i webben (sessionscookie) |
 | `outbox_reject` | `(action_id: str, reason: str="")` | samma |
 
 `approve` gör: `claim_for_decision(id, 'approved', user)` → om None: returnera
@@ -291,7 +291,7 @@ Registrera doket i `docs/INDEX.md` (gjort); uppdatera `DEVELOPMENT-PROPOSALS.md`
 
 ### Acceptanskriterier
 - [ ] I `review`-läge returnerar `email_send`/`calendar_create` `{pending, action_id}` och utför inget förrän godkänt.
-- [ ] `outbox_approve` av behörig användare utför exakt en gång; andra försök ger konflikt; `reject` utför aldrig.
+- [ ] `outbox_approve` av behörig användare utför exakt en gång; andra försök ger konflikt; `reject` utför aldrig. Undantag: mejlverktyg nekas över MCP och godkänns bara via webb-API:t.
 - [ ] Ej-allowlistad mottagare tvingas genom utkorgen även i `auto`-läge.
 - [ ] Reader kan lista sina synliga projekts ärenden men inte godkänna utgående som kräver owner.
 - [ ] Utgångna ärenden markeras `expired` och kan inte godkännas.

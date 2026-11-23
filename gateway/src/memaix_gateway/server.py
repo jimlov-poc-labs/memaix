@@ -1087,8 +1087,8 @@ def _refuse_mcp_mail_approval(user: str, action: dict) -> None:
 @mcp.tool()
 def outbox_approve(action_id: str, ctx: Context | None = None) -> dict:
     """Approve a queued action and execute it now (requires the tool's own
-    role). Queued outgoing mail cannot be approved here — only a person can,
-    in the web UI (outbox)."""
+    role). Queued outgoing mail (email_send/forward/reply) is always refused
+    here: do not retry — tell the person to approve it in the web UI (outbox)."""
     user = _user()
     action = _outbox_action_or_404(_get_outbox(), action_id)
     # Checked before the claim, so a refusal leaves the action pending.
