@@ -180,7 +180,9 @@ def _resolve_dav_filtered(project: str, user: str, acl) -> object:
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    from ..safety.client_ip import client_ip
+
+    return client_ip(request)
 
 
 def _link_origins(request: Request) -> set[str]:

@@ -5,6 +5,16 @@
     auto_https off
     admin off
     debug
+
+    # Klient-IP: gatewayen får X-Forwarded-For: <ev. klientstyrt>, <riktig
+    # klient>, <cloudflared-IP> och läser från höger. trusted_proxies gör att
+    # Caddy behåller en inkommande X-Forwarded-For från cloudflared i stället
+    # för att ersätta den. client_ip_headers påverkar bara Caddys egen
+    # {client_ip} och loggar, inte vad gatewayen ser. Se docs/KLIENT-IP.md.
+    servers {
+        trusted_proxies static {$CADDY_TRUSTED_PROXIES:172.16.0.0/12}
+        client_ip_headers CF-Connecting-IP X-Forwarded-For
+    }
 }
 
 # Under en omstart saknas uppströmstjänsten några sekunder. Caddy väntar och

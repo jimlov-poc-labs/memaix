@@ -28,6 +28,11 @@ services:
     environment:
       MEMAIX_TRANSPORT: http
       MEMAIX_DATA_DIR: /data
+      # Proxyer vars X-Forwarded-For gatewayen litar på (klient-IP för rate limit).
+      # Tom/saknad = ingen betrodd, peer-IP används. Aldrig "*". Standardvärdet är
+      # Dockers privata bridge-intervall (Caddy/cloudflared); snäva in till nätets
+      # exakta subnät i .env om du har ett. Se docs/KLIENT-IP.md.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12}
     volumes:
       # rw: /app/admin skriver acl.yaml (AclWriter/MFA) och memaix.yaml:s
       # model-block (AI-valet) atomiskt med backup-rotation; :ro bröt de flödena.
@@ -73,6 +78,9 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    environment:
+      # Peers vars CF-Connecting-IP/X-Forwarded-For Caddy tar emot (cloudflared). Se docs/KLIENT-IP.md.
+      CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-172.16.0.0/12}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     ports:

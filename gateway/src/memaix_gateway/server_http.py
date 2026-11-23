@@ -583,7 +583,9 @@ async def rule_webhook(request: Request) -> JSONResponse:
     """
     # Unauthenticated endpoint — rate-limit per client IP so a valid token
     # can't be guessed by volume (30 attempts / 60 s).
-    client_ip = request.client.host if request.client else "unknown"
+    from .safety.client_ip import client_ip as _resolve_client_ip
+
+    client_ip = _resolve_client_ip(request)
     if not _server._rate_limiter.check(f"webhook:{client_ip}", limit=30, window_s=60):
         return _json_error("rate_limited", 429)
 
