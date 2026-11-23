@@ -1,0 +1,8 @@
+{
+  "tier": "A",
+  "highRisk": [
+    "gateway/src/memaix_gateway/auth/**",
+    "gateway/src/memaix_gateway/safety/**",
+    "gateway/config-example/acl.yaml"
+  ]
+}
