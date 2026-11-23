@@ -64,7 +64,7 @@ def _key(ip: _IP) -> str:
     """Hinknyckel: IPv4 som är, IPv6 som sitt /64-nät (annars kan en klient rotera inom sitt prefix)."""
     if isinstance(ip, ipaddress.IPv6Address):
         return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address)
-    return _key(ip)
+    return str(ip)
 
 
 def _trusted(ip: _IP, nets) -> bool:
