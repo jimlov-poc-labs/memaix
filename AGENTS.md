@@ -69,6 +69,11 @@ chore(CI): automatisk versionshantering via semantic-release
   förväntat, inte ett fel.
 - Squash-merge: det är squash-commiten som analyseras, så PR-titeln bör redan följa formatet.
 
+## 4c. Skriv rätt från början (Sonar-checklista)
+Läs `jimlov-crew/plugins/infra/skills/modulbygge/references/skriv-ratt-fran-borjan.md`
+innan du skriver ny kod — en proaktiv checklista byggd på portföljens vanligaste
+Sonar-fynd (await-i-loop, sammansatta assert-satser, obehanterade löften m.fl.).
+
 ## 5. Innan du öppnar PR (checklista)
 Speglar `CONTRIBUTING.md`:
 - [ ] Tester för det du rört — särskilt **deterministiska motorn** och **RBAC-enforcement** (`TESTING.md`).
