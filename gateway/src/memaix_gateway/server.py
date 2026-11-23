@@ -1016,6 +1016,8 @@ def _approve_action(user: str, action_id: str) -> dict:
     acl = _get_acl()
     outbox = _get_outbox()
     action = _outbox_action_or_404(outbox, action_id)
+    # One gate for every MCP-side approval (outbox_approve and elicitation).
+    _refuse_mcp_mail_approval(user, action)
     need = _OUTBOX_APPROVAL_ROLE.get(action["tool"], "owner")
     acl.enforce(user, action["project"], need)
 
@@ -1053,13 +1055,22 @@ def _reject_action(user: str, action_id: str, reason: str = "") -> dict:
 
 async def _maybe_elicit_approval(ctx: Context | None, user: str, result):
     """If enabled and the client supports it, let the caller approve a freshly
-    queued action in the same call (outbox/elicit.py)."""
+    queued action in the same call (outbox/elicit.py). Never for queued mail
+    (_MAIL_SEND_TOOLS): those stay pending for approval in the web UI."""
     from .outbox.elicit import resolve_via_elicitation
 
     enabled = bool(((config.load().get("memaix", {}) or {}).get("outbox", {}) or {}).get("elicit_approval", False))
+
+    def _get_non_mail_action(aid: str) -> dict | None:
+        # Mail is never approved through elicitation (fail closed, regardless of
+        # elicit_approval or the client's answer): hiding it from the resolver
+        # means no dialog is shown and the action stays pending for the web UI.
+        action = _get_outbox().get(aid)
+        return None if action is None or action.get("tool") in _MAIL_SEND_TOOLS else action
+
     return await resolve_via_elicitation(
         ctx, result, enabled=enabled,
-        get_action=lambda aid: _get_outbox().get(aid),
+        get_action=_get_non_mail_action,
         approve=lambda aid: _approve_action(user, aid),
         reject=lambda aid, reason: _reject_action(user, aid, reason),
     )
@@ -1068,7 +1079,7 @@ async def _maybe_elicit_approval(ctx: Context | None, user: str, result):
 # Queued actions that send mail. These are never approved over MCP: the model
 # that queued a mail must not be able to approve (= send) it itself, with or
 # without a send unlock. Approval is human-only: the web UI/board API with a
-# session cookie (can_approve), or elicitation (a form the person answers).
+# session cookie (can_approve). Elicitation is closed for mail too.
 _MAIL_SEND_TOOLS = frozenset({"email_send", "email_forward", "email_reply"})
 
 

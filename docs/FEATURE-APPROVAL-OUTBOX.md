@@ -188,7 +188,7 @@ Nya verktyg i `server.py` (via `_tool_call`, projekt-scope från argument):
 |---------|----------|------|
 | `outbox_list` | `(project: str\|None=None, status: str="pending")` | reader ser sina synliga projekt |
 | `outbox_get` | `(action_id: str)` | som list |
-| `outbox_approve` | `(action_id: str)` | roll som gatade verktyget kräver (t.ex. owner för email_send). **Mejlundantag:** köade `email_send`/`email_forward`/`email_reply` nekas alltid över MCP (`approval_web_only`); de godkänns bara i webben (sessionscookie) |
+| `outbox_approve` | `(action_id: str)` | roll som gatade verktyget kräver (t.ex. owner för email_send). **Mejlundantag:** köade `email_send`/`email_forward`/`email_reply` nekas alltid över MCP (`approval_web_only`); de godkänns bara i webben (sessionscookie). Elicitation (`elicit_approval`) gäller inte mejl: de ligger kvar som `pending` oavsett klientens svar |
 | `outbox_reject` | `(action_id: str, reason: str="")` | samma |
 
 `approve` gör: `claim_for_decision(id, 'approved', user)` → om None: returnera

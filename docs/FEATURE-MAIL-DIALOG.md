@@ -165,8 +165,7 @@ styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det
   Identiteten räknas fram med samma URL-parser som `requests` skickar med (urllib3);
 - forward och reply kräver som förut upplåst session.
 
-Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
-människan själv besvarar i klienten), systemutskick (`_confirmed=True`: bokningsbekräftelser och
+Påverkas inte: godkännande i webbgränssnittet och tavlan, systemutskick (`_confirmed=True`: bokningsbekräftelser och
 utkorgsåtgärder som en människa godkänt), brief-inställningar i webbgränssnittet (där sitter människan,
 inte modellen) och **utskick till redan sparade brief-mottagare**: den schemalagda briefen, `brief_send_now`
 och `notify` från `schedule`/`internal`-regler (utom till e-postkanaler, se ovan). Mottagare som sparades innan spärren slogs på räknas som sparade;
