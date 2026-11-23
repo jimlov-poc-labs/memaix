@@ -3,7 +3,7 @@
 Nivå: A
 Täckningsgolv: 0 (ej uppmätt eller satt ännu — ingen `--cov-fail-under` i `gateway/pyproject.toml`.
   Sätts till en mätt nivå när den tas, och höjs sedan men sänks aldrig.)
-Kritiska filer: gateway/src/memaix_gateway/auth/, gateway/src/memaix_gateway/safety/, gateway/config-example/acl.yaml
+Kritiska filer: gateway/src/memaix_gateway/auth/, gateway/src/memaix_gateway/safety/, gateway/config-example/acl.yaml, gateway/src/memaix_gateway/acl.py, gateway/src/memaix_gateway/server.py (RBAC kontrolleras mot acl.yaml INNAN ett verktyg körs — enforcement-punkten, se REVIEW.md)
 Sabotörtester i CI: nej — krävs av nivå A, saknas ännu
 Mutationskontroll: nej — krävs av nivå A (veckovis), saknas ännu
 Standard: https://github.com/jimlov-poc-labs/kvalitet/blob/main/STANDARD.md
