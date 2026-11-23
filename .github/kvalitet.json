@@ -1,0 +1,10 @@
+{
+  "tier": "A",
+  "highRisk": [
+    "gateway/src/memaix_gateway/auth/**",
+    "gateway/src/memaix_gateway/safety/**",
+    "gateway/config-example/acl.yaml",
+    "gateway/src/memaix_gateway/acl.py",
+    "gateway/src/memaix_gateway/server.py"
+  ]
+}
