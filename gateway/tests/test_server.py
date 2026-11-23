@@ -156,17 +156,17 @@ def test_outbox_get_denied_for_invisible_project(wired):
 
 def test_outbox_approve_executes_and_is_idempotent(wired, monkeypatch):
     aid = server._get_outbox().enqueue(
-        "alice", "proj", "email_send", {"to": "x@y.com", "subject": "s", "body": "b", "cc": None}, "p"
+        "alice", "proj", "calendar_create", {"to": "x@y.com", "subject": "s", "body": "b", "cc": None}, "p"
     )
     calls = []
 
-    def fake_email_send(acl, user, project, **kwargs):
+    def fake_tool(acl, user, project, **kwargs):
         calls.append(kwargs)
         return {"status": "sent"}
 
     monkeypatch.setattr(
         "memaix_gateway.outbox.execute._default_dispatch",
-        lambda: {"email_send": fake_email_send},
+        lambda: {"calendar_create": fake_tool},
     )
 
     result = server.outbox_approve(aid)
@@ -181,7 +181,7 @@ def test_outbox_approve_executes_and_is_idempotent(wired, monkeypatch):
 
 
 def test_outbox_approve_requires_correct_role(wired):
-    aid = server._get_outbox().enqueue("alice", "proj", "email_send", {"to": "x@y.com"}, "p")
+    aid = server._get_outbox().enqueue("alice", "proj", "calendar_create", {"to": "x@y.com"}, "p")
     import os
     os.environ["MEMAIX_USER"] = "bob"  # reader — email_send needs owner
     try:
@@ -210,14 +210,14 @@ def test_outbox_reject_never_executes(wired, monkeypatch):
 
 
 def test_outbox_approve_records_failure_on_exception(wired, monkeypatch):
-    aid = server._get_outbox().enqueue("alice", "proj", "email_send", {"to": "x@y.com"}, "p")
+    aid = server._get_outbox().enqueue("alice", "proj", "calendar_create", {"to": "x@y.com"}, "p")
 
     def boom(*a, **kw):
         raise RuntimeError("smtp unreachable")
 
     monkeypatch.setattr(
         "memaix_gateway.outbox.execute._default_dispatch",
-        lambda: {"email_send": boom},
+        lambda: {"calendar_create": boom},
     )
     result = server.outbox_approve(aid)
     assert result["ok"] is False

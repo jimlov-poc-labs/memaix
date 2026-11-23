@@ -1065,23 +1065,34 @@ async def _maybe_elicit_approval(ctx: Context | None, user: str, result):
     )
 
 
-# Queued actions that send mail. With memaix.mail_send_unlock.enabled the
-# MCP tool may only approve these from an unlocked session — otherwise a
-# model could queue a mail and approve it itself. Human approval in the web
-# UI/board and via elicitation (a form the person answers) is unaffected.
+# Queued actions that send mail. These are never approved over MCP: the model
+# that queued a mail must not be able to approve (= send) it itself, with or
+# without a send unlock. Approval is human-only: the web UI/board API with a
+# session cookie (can_approve), or elicitation (a form the person answers).
 _MAIL_SEND_TOOLS = frozenset({"email_send", "email_forward", "email_reply"})
+
+
+def _refuse_mcp_mail_approval(user: str, action: dict) -> None:
+    """Fail closed: raise (audited) for a queued mail action. One check for
+    every MCP approval path; the action stays pending."""
+    if action.get("tool") in _MAIL_SEND_TOOLS:
+        reason = (
+            "approval_web_only: utgående mejl kan inte godkännas via MCP — "
+            "godkänn åtgärden i webbgränssnittet (utkorgen)"
+        )
+        _get_audit().log(user, action.get("project", "-"), "outbox_approve", False, reason)
+        raise PermissionError(reason)
 
 
 @mcp.tool()
 def outbox_approve(action_id: str, ctx: Context | None = None) -> dict:
     """Approve a queued action and execute it now (requires the tool's own
-    role). Approving a queued mail needs an unlocked session when send
-    unlock is enabled (email_send_unlock)."""
+    role). Queued outgoing mail cannot be approved here — only a person can,
+    in the web UI (outbox)."""
     user = _user()
     action = _outbox_action_or_404(_get_outbox(), action_id)
-    if action.get("tool") in _MAIL_SEND_TOOLS and _unlock_settings()["enabled"]:
-        # Checked before the claim, so a refusal leaves the action pending.
-        _require_send_unlocked(user, action["project"], "outbox_approve", ctx)
+    # Checked before the claim, so a refusal leaves the action pending.
+    _refuse_mcp_mail_approval(user, action)
     return _approve_action(user, action_id)
 
 
