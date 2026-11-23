@@ -145,8 +145,10 @@ mail_dialog:
 styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det svagaste projektet):
 
 - `email_send` från en modell kräver en upplåst session i **alla** projekt;
-- `outbox_approve` (MCP-verktyget) av en köad `email_send`/`email_forward`/`email_reply` kräver en upplåst
-  session. Kontrollen görs före godkännandet, så en vägrad åtgärd ligger kvar som `pending`;
+- `outbox_approve` (MCP-verktyget) av en köad `email_send`/`email_forward`/`email_reply` nekas **alltid**
+  (`approval_web_only`), även i en upplåst session och oavsett om upplåsningen är påslagen. Mejl godkänns
+  av en person i webbgränssnittet (utkorgen, sessionscookie). Kontrollen görs före godkännandet, så en
+  nekad åtgärd ligger kvar som `pending`;
 - regelåtgärder (`rules`) som skickar mejl vägras, eftersom de saknar session. Det gäller även
   `notify`: dess e-postkanaler hoppas över;
 - `notify` från en regel vägras helt om regeln inte utlöses av `schedule` eller `internal`. Det gäller
@@ -163,8 +165,7 @@ styra**, oavsett projektets flagga (granskning 2026-10-26: annars bestämmer det
   Identiteten räknas fram med samma URL-parser som `requests` skickar med (urllib3);
 - forward och reply kräver som förut upplåst session.
 
-Påverkas inte: godkännande i webbgränssnittet och tavlan, godkännande via elicitation (ett formulär som
-människan själv besvarar i klienten), systemutskick (`_confirmed=True`: bokningsbekräftelser och
+Påverkas inte: godkännande i webbgränssnittet och tavlan, systemutskick (`_confirmed=True`: bokningsbekräftelser och
 utkorgsåtgärder som en människa godkänt), brief-inställningar i webbgränssnittet (där sitter människan,
 inte modellen) och **utskick till redan sparade brief-mottagare**: den schemalagda briefen, `brief_send_now`
 och `notify` från `schedule`/`internal`-regler (utom till e-postkanaler, se ovan). Mottagare som sparades innan spärren slogs på räknas som sparade;

@@ -1020,6 +1020,8 @@ def _approve_action(user: str, action_id: str) -> dict:
     acl = _get_acl()
     outbox = _get_outbox()
     action = _outbox_action_or_404(outbox, action_id)
+    # One gate for every MCP-side approval (outbox_approve and elicitation).
+    _refuse_mcp_mail_approval(user, action)
     need = _OUTBOX_APPROVAL_ROLE.get(action["tool"], "owner")
     acl.enforce(user, action["project"], need)
 
@@ -1057,35 +1059,55 @@ def _reject_action(user: str, action_id: str, reason: str = "") -> dict:
 
 async def _maybe_elicit_approval(ctx: Context | None, user: str, result):
     """If enabled and the client supports it, let the caller approve a freshly
-    queued action in the same call (outbox/elicit.py)."""
+    queued action in the same call (outbox/elicit.py). Never for queued mail
+    (_MAIL_SEND_TOOLS): those stay pending for approval in the web UI."""
     from .outbox.elicit import resolve_via_elicitation
 
     enabled = bool(((config.load().get("memaix", {}) or {}).get("outbox", {}) or {}).get("elicit_approval", False))
+
+    def _get_non_mail_action(aid: str) -> dict | None:
+        # Mail is never approved through elicitation (fail closed, regardless of
+        # elicit_approval or the client's answer): hiding it from the resolver
+        # means no dialog is shown and the action stays pending for the web UI.
+        action = _get_outbox().get(aid)
+        return None if action is None or action.get("tool") in _MAIL_SEND_TOOLS else action
+
     return await resolve_via_elicitation(
         ctx, result, enabled=enabled,
-        get_action=lambda aid: _get_outbox().get(aid),
+        get_action=_get_non_mail_action,
         approve=lambda aid: _approve_action(user, aid),
         reject=lambda aid, reason: _reject_action(user, aid, reason),
     )
 
 
-# Queued actions that send mail. With memaix.mail_send_unlock.enabled the
-# MCP tool may only approve these from an unlocked session — otherwise a
-# model could queue a mail and approve it itself. Human approval in the web
-# UI/board and via elicitation (a form the person answers) is unaffected.
+# Queued actions that send mail. These are never approved over MCP: the model
+# that queued a mail must not be able to approve (= send) it itself, with or
+# without a send unlock. Approval is human-only: the web UI/board API with a
+# session cookie (can_approve). Elicitation is closed for mail too.
 _MAIL_SEND_TOOLS = frozenset({"email_send", "email_forward", "email_reply"})
+
+
+def _refuse_mcp_mail_approval(user: str, action: dict) -> None:
+    """Fail closed: raise (audited) for a queued mail action. One check for
+    every MCP approval path; the action stays pending."""
+    if action.get("tool") in _MAIL_SEND_TOOLS:
+        reason = (
+            "approval_web_only: utgående mejl kan inte godkännas via MCP — "
+            "godkänn åtgärden i webbgränssnittet (utkorgen)"
+        )
+        _get_audit().log(user, action.get("project", "-"), "outbox_approve", False, reason)
+        raise PermissionError(reason)
 
 
 @mcp.tool()
 def outbox_approve(action_id: str, ctx: Context | None = None) -> dict:
     """Approve a queued action and execute it now (requires the tool's own
-    role). Approving a queued mail needs an unlocked session when send
-    unlock is enabled (email_send_unlock)."""
+    role). Queued outgoing mail (email_send/forward/reply) is always refused
+    here: do not retry — tell the person to approve it in the web UI (outbox)."""
     user = _user()
     action = _outbox_action_or_404(_get_outbox(), action_id)
-    if action.get("tool") in _MAIL_SEND_TOOLS and _unlock_settings()["enabled"]:
-        # Checked before the claim, so a refusal leaves the action pending.
-        _require_send_unlocked(user, action["project"], "outbox_approve", ctx)
+    # Checked before the claim, so a refusal leaves the action pending.
+    _refuse_mcp_mail_approval(user, action)
     return _approve_action(user, action_id)
 
 

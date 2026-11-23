@@ -1010,20 +1010,20 @@ def test_enabled_unlock_gates_email_send_in_every_project(wired):
     assert len(sent) == 1
 
 
-def test_outbox_approve_of_a_mail_needs_an_unlocked_session(wired, monkeypatch):
+def test_outbox_approve_of_a_mail_is_refused_over_mcp_even_when_unlocked(wired, monkeypatch):
     from memaix_gateway.tools import email as t_email
 
     delivered = []
     monkeypatch.setattr(t_email, "_smtp_deliver", lambda msg, *a: delivered.append(msg))
     aid = server._get_outbox().enqueue("jimmy", "memaix", "email_send",
                                        {"to": "a@x.se", "subject": "Hej", "body": "Text", "cc": None}, "preview")
-    with pytest.raises(mu.SendLocked):
+    with pytest.raises(PermissionError, match="approval_web_only"):
+        server.outbox_approve(aid, ctx=_Ctx("s1"))
+    _unlock(wired, _Ctx("s1"))
+    with pytest.raises(PermissionError, match="approval_web_only"):
         server.outbox_approve(aid, ctx=_Ctx("s1"))
     assert server._get_outbox().get(aid)["status"] == "pending"
     assert delivered == []
-    _unlock(wired, _Ctx("s1"))
-    out = server.outbox_approve(aid, ctx=_Ctx("s1"))
-    assert out["ok"] is True and len(delivered) == 1
 
 
 # --- 4. Owner check per project in _send_from_box ------------------------

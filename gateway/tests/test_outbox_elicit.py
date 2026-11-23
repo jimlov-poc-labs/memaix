@@ -170,3 +170,38 @@ def test_e2e_client_without_elicitation_stays_pending(wired, monkeypatch):
     _flag(monkeypatch, True)
     out = asyncio.run(_call("project_member_set", {"project": "proj", "member": "bob", "role": "reader"}, None))
     assert out["pending"] is True
+
+
+def test_e2e_mail_is_never_approved_via_elicitation(wired, monkeypatch, tmp_path):
+    """Even with elicit_approval on and a client that answers accept: no dialog,
+    no mail, the action stays pending for approval in the web UI."""
+    from memaix_gateway.tools import email as t_email
+
+    acl = Acl(
+        users={"alice": {"grants": {"proj": "owner"}}},
+        projects={"proj": {
+            "vault": str(tmp_path / "vault"), "allow_send": True, "outbox": "review",
+            "mailbox": {"host": "imap.invalid", "user": "box@example.test", "password_ref": "env:X"},
+            "smtp": {"from_addr": "box@example.test"},
+        }},
+    )
+    monkeypatch.setattr(server, "_acl", acl)
+    _flag(monkeypatch, True)
+    sent = []
+    monkeypatch.setattr(t_email, "_smtp_deliver", lambda msg, *a, **k: sent.append(msg))
+    cb = _answer("accept")
+    out = asyncio.run(_call(
+        "email_send", {"project": "proj", "to": "x@example.test", "subject": "s", "body": "b"}, cb,
+    ))
+    assert out["pending"] is True and "approved_via" not in out
+    assert not hasattr(cb, "seen"), "no elicitation dialog may be shown for mail"
+    assert sent == []
+    assert server._get_outbox().get(out["action_id"])["status"] == "pending"
+
+
+def test_approve_action_refuses_mail_directly(wired):
+    """The shared gate sits in _approve_action itself, so no MCP-side path can skip it."""
+    aid = server._get_outbox().enqueue("alice", "proj", "email_send", {"to": "x@y.se"}, "p")
+    with pytest.raises(PermissionError, match="approval_web_only"):
+        server._approve_action("alice", aid)
+    assert server._get_outbox().get(aid)["status"] == "pending"

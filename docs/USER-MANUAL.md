@@ -193,6 +193,7 @@ default-läge**:
   `outbox: review` på projektet (eller `outbox.default_mode: review` globalt). Utan det körs
   åtgärderna direkt (`auto`). En `allowlist` tvingar `review` för okända mottagare även i auto-läge.
   Godkänn/avvisa köade åtgärder med `outbox_list` / `outbox_get` / `outbox_approve` / `outbox_reject`.
+  Köade mejl godkänns inte via `outbox_approve`: det nekas. Godkänn dem i webbgränssnittet (utkorgen).
 
 **Rekommendation:** för alla projekt där AI:n kan skicka utgående, sätt `outbox: review` tills du
 litar på flödet. Granska alltid utkast och köade åtgärder innan de släpps.
@@ -291,7 +292,7 @@ AI:n kör `email_list`/`email_read`, och för varje åtgärdspunkt `backlog_add`
 
 **"Svara på det här mejlet."**
 AI:n gör `email_create_draft` (alltid tillåtet). `email_send` bara om `allow_send: true`; i
-`review`-läge hamnar det i utkorgen tills du godkänner med `outbox_approve`.
+`review`-läge hamnar det i utkorgen tills du godkänner det i webbgränssnittet (utkorgen). `outbox_approve` över MCP nekas för mejl.
 
 **"Planera sprinten / vad händer om vi tappar Anna två veckor?"**
 Kör prompten `pm_plan_session` respektive `pm_whatif_session`. Motorn räknar; AI:n förklarar kritisk

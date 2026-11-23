@@ -49,6 +49,7 @@ auth:
 #                          # klienten direkt (MCP elicitation) och godkänner/avvisar i samma anrop.
 #                          # Klienter utan elicitation, och avbrutna dialoger, lämnar åtgärden
 #                          # kvar i utkorgen som vanligt. Samma rollkontroll och audit som outbox_approve.
+#                          # Gäller aldrig utgående mejl: de ligger alltid kvar för godkännande i webben.
 
 # brief:
 #   enabled: true                  # global switch for the scheduler (default true);
