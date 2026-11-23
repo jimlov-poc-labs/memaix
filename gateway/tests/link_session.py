@@ -14,13 +14,26 @@ from urllib.parse import urlencode
 from memaix_gateway import server_http
 from memaix_gateway.tools import account
 
+DISABLED = {"disabled-user"}
+
+
+def _session_user(request) -> str | None:
+    raw = request.cookies.get("memaix_board") or None
+    if raw is None:
+        return None
+    try:  # servers decode header bytes as latin-1; undo it for UTF-8 names
+        return raw.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return raw
+
 
 def patch_session(monkeypatch) -> None:
     from memaix_gateway.board import routes as board_routes
 
     monkeypatch.delenv("MEMAIX_STATE_DB", raising=False)
     account._pending_states.clear()
-    monkeypatch.setattr(board_routes, "_check_cookie", lambda request: request.cookies.get("memaix_board") or None)
+    monkeypatch.setattr(board_routes, "_may_log_in", lambda user: user not in DISABLED)
+    monkeypatch.setattr(board_routes, "_check_cookie", _session_user)
 
 
 def mint(state: str = "good", user: str = "u1", provider: str = "google", ttl: int = 600) -> str:

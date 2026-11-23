@@ -181,3 +181,58 @@ def test_legitimate_flow_start_callback_confirm_stores_under_owner(env):
         headers={"Content-Type": "application/x-www-form-urlencoded", **h},
     )
     assert replay.status_code == 400 and len(env.stored) == 1
+
+
+# ---- Simon's conditions -------------------------------------------------------
+
+
+def _flow(state, user):
+    start = _client().get(f"/link/google?state={state}", headers=ls.cookies(state, session_user=user, link_cookie=False),
+                          follow_redirects=False)
+    return start
+
+
+def test_non_ascii_username_legit_flow_succeeds(env):
+    ls.mint("uni", user="åsa-ö")
+    h = {"Cookie": "memaix_board=åsa-ö; memaix_link_google=" + __import__("memaix_gateway.server_http", fromlist=["x"])._link_nonce("uni")}
+    hb = {"Cookie": h["Cookie"].encode("utf-8")}
+    page = _client().get("/link/google/callback?code=c&state=uni", headers=hb)
+    assert page.status_code == 200, page.text
+    done = _client().post("/link/google/confirm", content="code=c&state=uni",
+                          headers={"Content-Type": "application/x-www-form-urlencoded", **hb})
+    assert done.status_code == 200
+    assert [s[0] for s in env.stored] == ["åsa-ö"]
+
+
+def test_non_ascii_session_user_mismatch_is_403_not_500(env):
+    state = _attacker_state()
+    hb = {"Cookie": "memaix_board=åäö; memaix_link_google=x".encode("utf-8")}
+    assert _client().get(f"/link/google/callback?code=c&state={state}", headers=hb).status_code == 403
+
+
+def test_non_ascii_broken_flow_cookie_is_403_not_500(env):
+    state = _attacker_state()
+    hb = {"Cookie": "memaix_board=attacker; memaix_link_google=åäö".encode("utf-8")}
+    assert _client().get(f"/link/google/callback?code=c&state={state}", headers=hb).status_code == 403
+    r = _client().post("/link/google/confirm", content=f"code=c&state={state}",
+                       headers={"Content-Type": "application/x-www-form-urlencoded", **hb})
+    assert r.status_code == 403
+    assert env.stored == []
+
+
+def test_disabled_user_is_refused_everywhere(env):
+    ls.mint("dis", user="disabled-user")
+    r = _client().get("/link/google?state=dis", headers=ls.cookies("dis", session_user="disabled-user", link_cookie=False),
+                      follow_redirects=False)
+    assert r.status_code == 403 and "set-cookie" not in r.headers
+    assert ls.callback(_client(), state="dis", session_user="disabled-user").status_code == 403
+    assert ls.confirm(_client(), state="dis", session_user="disabled-user").status_code == 403
+    assert env.stored == []
+
+
+def test_confirmation_page_forbids_framing(env):
+    state = _attacker_state()
+    r = ls.callback(_client(), state=state, session_user="attacker")
+    assert r.status_code == 200
+    assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert r.headers["x-frame-options"] == "DENY"

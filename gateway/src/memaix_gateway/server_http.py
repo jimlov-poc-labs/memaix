@@ -285,7 +285,7 @@ def _link_guard(request: Request, provider: str, state: str, *, need_cookie: boo
     Fail closed: unknown/expired/other-provider state -> 400, no web session ->
     401, session user is not the user the state was minted for -> 403, missing
     or wrong per-flow cookie -> 403. Does not consume the state."""
-    from .board.routes import _check_cookie
+    from .board.routes import _check_cookie, _may_log_in
     from .tools.account import peek_state
 
     pending = peek_state(state)
@@ -294,12 +294,16 @@ def _link_guard(request: Request, provider: str, state: str, *, need_cookie: boo
     user = _check_cookie(request)
     if not user:
         return pending, None, _json_error("not_authenticated", 401)
-    if not hmac.compare_digest(str(user), str(pending.get("user_id", ""))):
+    # compare_digest on str raises TypeError for non-ASCII; compare bytes.
+    if not hmac.compare_digest(str(user).encode(), str(pending.get("user_id", "")).encode()):
+        return pending, user, _json_error("forbidden", 403)
+    # _check_cookie lets a disabled user's session through; a kill-switched user must not link.
+    if not _may_log_in(user):
         return pending, user, _json_error("forbidden", 403)
     if need_cookie:
         expected = _link_nonce(state)
         got = request.cookies.get(_link_cookie_name(provider), "")
-        if expected is None or not got or not hmac.compare_digest(got, expected):
+        if expected is None or not got or not hmac.compare_digest(got.encode(), expected.encode()):
             return pending, user, _json_error("forbidden", 403)
     return pending, user, None
 
@@ -479,6 +483,11 @@ def _link_confirm_html(provider: str, user_id: str, code: str, state: str) -> st
 
 
 _LINK_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+_CONFIRM_HEADERS = {
+    **_LINK_HEADERS,
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+}
 
 
 async def link_callback(request: Request) -> Response:
@@ -497,7 +506,7 @@ async def link_callback(request: Request) -> Response:
         return err
     if not code or pending is None:
         return _json_error("invalid_or_expired_state", 400)
-    return HTMLResponse(_link_confirm_html(provider, str(pending["user_id"]), code, state), headers=_LINK_HEADERS)
+    return HTMLResponse(_link_confirm_html(provider, str(pending["user_id"]), code, state), headers=_CONFIRM_HEADERS)
 
 
 async def link_confirm(request: Request) -> Response:
