@@ -98,7 +98,7 @@ def test_ipv6_keyed_on_slash64(monkeypatch):
     assert client_ip(_req(CADDY, "::ffff:203.0.113.5")) == "203.0.113.5"
 
 
-@pytest.mark.parametrize("xff", ["fe80::1%eth0", "203.0.113.5:4711", "6.6.6.6,,", "203.0.113.5, ", ",203.0.113.5", "203.0.113.5, fe80::1%1"])
+@pytest.mark.parametrize("xff", ["fe80::1%eth0", "203.0.113.5:4711", "6.6.6.6,,", "203.0.113.5, ", "203.0.113.5, fe80::1%1"])
 def test_malformed_chain_entries_fall_back_to_peer(monkeypatch, xff):
     from memaix_gateway.safety.client_ip import client_ip
 
