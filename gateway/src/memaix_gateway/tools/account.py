@@ -80,6 +80,16 @@ class _PendingStateSQLite:
             conn.commit()
         return {"user_id": row["user_id"], "provider": row["provider"], "exp": row["exp"]}
 
+    def peek(self, state: str) -> dict | None:
+        """Read a pending state WITHOUT consuming it (no schema change)."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, provider, exp FROM oauth_pending WHERE state=?", (state,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"user_id": row["user_id"], "provider": row["provider"], "exp": row["exp"]}
+
     def purge(self, now: int) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM oauth_pending WHERE exp < ?", (now,))
@@ -106,6 +116,13 @@ def _put_state(state: str, data: dict) -> None:
         store.put(state, data)
     else:
         _pending_states[state] = data
+
+
+def _peek_state(state: str) -> dict | None:
+    store = _get_state_store()
+    if store is not None:
+        return store.peek(state)
+    return _pending_states.get(state)
 
 
 def _pop_state(state: str) -> dict | None:
@@ -135,7 +152,11 @@ def account_link(
     """Generate a link URL for the given provider.
 
     For OAuth providers (PROVIDERS) this is an authorization-code state URL
-    consumed by /link/{provider}'s callback. IMAP has no OAuth flow — it
+    consumed by /link/{provider}'s callback. The link is bound to the web
+    session of `user_id`: whoever opens it must first be logged in to the
+    Memaix web app as that same user (otherwise they are sent to the login
+    page, or refused), and the callback re-checks the session, a per-flow
+    cookie and shows a confirmation page before anything is stored. IMAP has no OAuth flow — it
     links via a credential form instead (web/api/accounts.py's
     api_accounts_link_imap), so this returns a link_url to that form page
     with no server-side state token (the form POSTs host/user/password
@@ -329,6 +350,18 @@ def account_unlink(
     if not deleted:
         raise FileNotFoundError(f"no linked account: {provider}/{account}")
     return {"ok": True}
+
+
+def peek_state(state: str) -> dict | None:
+    """Like validate_state but does NOT consume the state. Used by the link flow
+    to check session binding before the single-use state is spent, so a
+    refused attempt (wrong browser) cannot burn the owner's state."""
+    import time
+
+    pending = _peek_state(state) if state else None
+    if pending and pending["exp"] >= int(time.time()):
+        return pending
+    return None
 
 
 def validate_state(state: str) -> dict | None:

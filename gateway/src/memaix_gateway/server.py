@@ -916,6 +916,10 @@ def _build_tour_for_user(user: str, profile_text: str) -> dict:
 def account_link(provider: str, capabilities: list[str] | None = None) -> dict:
     """Get an OAuth link URL to connect your account.
 
+    Open the link in your own browser while logged in to the Memaix web app
+    (you are sent to the login page first); it is bound to your web session
+    and refused for anyone else.
+
     capabilities: optional extra access to request on top of the base scopes,
     e.g. ["mail"] to also allow read-only Gmail (Google only). Omit for the
     default (calendar only)."""

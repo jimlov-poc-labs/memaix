@@ -24,6 +24,7 @@ EXPECTED_HEAD = [
     ("/oauth2/register/{client_id}", ["DELETE", "GET", "HEAD", "PUT"], "dcr_klient_handler"),
     ("/link/{provider}", ["GET", "HEAD"], "link_start"),
     ("/link/{provider}/callback", ["GET", "HEAD"], "link_callback"),
+    ("/link/{provider}/confirm", ["POST"], "link_confirm"),
     ("/hooks", ["POST"], "rule_webhook"),
     ("/hooks/{token}", ["POST"], "rule_webhook"),
     ("/board/auth/login", ["POST"], "board_login"),
@@ -51,7 +52,7 @@ EXPECTED_END = [
     ("/booking/{token}/cancel", ["POST"], "booking_cancel"),
     ("/booking/{token}/cancel", ["OPTIONS"], "booking_options"),
 ]
-EXPECTED_ROUTE_COUNT = 88
+EXPECTED_ROUTE_COUNT = 89
 HYDRA = "http://hydra:4444"
 ISSUER = "https://i.example"
 
@@ -407,12 +408,16 @@ def test_dcr_klient_upstream_error_is_500(cfg, monkeypatch):
     assert r.json() == {"error": "server_error"}
 
 
-def test_link_start_google_redirect(cfg):
+def test_link_start_google_redirect(cfg, monkeypatch):
     from urllib.parse import parse_qs, urlparse
+
+    from tests import link_session as ls
+    ls.patch_session(monkeypatch)
+    ls.mint("st1")
 
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "scopes": ["a", "b"]}}
     cfg["server"] = {"public_url": "https://pub.example/"}
-    r = _client().get("/link/google?state=st1", follow_redirects=False)
+    r = _client().get("/link/google?state=st1", headers=ls.cookies("st1", link_cookie=False), follow_redirects=False)
     assert r.status_code == 307
     u = urlparse(r.headers["location"])
     assert f"{u.scheme}://{u.netloc}{u.path}" == "https://accounts.google.com/o/oauth2/v2/auth"
@@ -426,15 +431,23 @@ def test_link_start_google_redirect(cfg):
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
+        "code_challenge": q["code_challenge"],
+        "code_challenge_method": "S256",
     }
+    assert len(q["code_challenge"]) == 43
+    assert "memaix_link_google=" in r.headers["set-cookie"]
+    assert "HttpOnly" in r.headers["set-cookie"] and "SameSite=lax" in r.headers["set-cookie"]
 
 
-def test_link_start_microsoft_default_public_url(cfg):
-    r = _client().get("/link/microsoft", follow_redirects=False)
+def test_link_start_microsoft_default_public_url(cfg, monkeypatch):
+    from tests import link_session as ls
+    ls.patch_session(monkeypatch)
+    ls.mint("st2", provider="microsoft")
+    r = _client().get("/link/microsoft?state=st2", headers=ls.cookies("st2", "microsoft", link_cookie=False), follow_redirects=False)
     loc = r.headers["location"]
     assert loc.startswith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?")
     assert "redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Flink%2Fmicrosoft%2Fcallback" in loc
-    assert "state=&" in loc
+    assert "state=st2&" in loc
 
 
 def test_link_start_unknown_provider(cfg):
@@ -458,8 +471,10 @@ class _Store:
 def link_env(cfg, monkeypatch):
     from memaix_gateway.tools import account
 
+    from tests import link_session as ls
     store = _Store()
-    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1", "provider": "google"} if s == "good" else None)
+    ls.patch_session(monkeypatch)
+    ls.mint("good")
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
     monkeypatch.setattr(config_mod, "secret", lambda ref: "sekret")
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}
@@ -467,24 +482,28 @@ def link_env(cfg, monkeypatch):
     return store
 
 
-CALLBACK = "/link/google/callback?code=thecode&state=good"
+def _confirm():
+    from tests import link_session as ls
+    return ls.confirm(_client())
 
 
 def test_link_callback_error_param(link_env):
-    r = _client().get("/link/google/callback?error=denied&state=good")
+    from tests import link_session as ls
+    r = _client().get("/link/google/callback?error=denied&state=good", headers=ls.cookies("good"))
     assert r.status_code == 400
     assert r.json() == {"error": "denied"}
 
 
 def test_link_callback_invalid_state(link_env):
-    r = _client().get("/link/google/callback?code=c&state=bad")
+    from tests import link_session as ls
+    r = _client().get("/link/google/callback?code=c&state=bad", headers=ls.cookies("bad"))
     assert r.status_code == 400
     assert r.json() == {"error": "invalid_or_expired_state"}
 
 
 def test_link_callback_token_exchange_fails(link_env, monkeypatch):
     _fake_async_client(monkeypatch, _boom, [])
-    r = _client().get(CALLBACK)
+    r = _confirm()
     assert r.status_code == 500
     assert r.json() == {"error": "token_exchange_failed"}
     assert link_env.stored == []
@@ -494,7 +513,7 @@ def test_link_callback_success_stores_and_renders(link_env, monkeypatch):
     calls: list = []
     token = {"email": "a<b>@x.se", "access_token": "tok", "expires_in": 100}
     _fake_async_client(monkeypatch, lambda m, u, kw: _FakeResp(200, token), calls)
-    r = _client().get(CALLBACK)
+    r = _confirm()
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert "Google</span> kopplat" in r.text
@@ -504,7 +523,9 @@ def test_link_callback_success_stores_and_renders(link_env, monkeypatch):
     assert 'lang="sv"' in r.text
     post = calls[1]
     assert post[1] == server_mod._GOOGLE_TOKEN_URI
-    assert post[2]["data"] == {
+    sent = dict(post[2]["data"])
+    assert len(sent.pop("code_verifier")) == 43  # PKCE
+    assert sent == {
         "grant_type": "authorization_code",
         "code": "thecode",
         "redirect_uri": "https://pub.example/link/google/callback",
@@ -520,7 +541,7 @@ def test_link_callback_success_stores_and_renders(link_env, monkeypatch):
 def test_link_callback_unknown_account_label(link_env, monkeypatch):
     _fake_async_client(monkeypatch, lambda m, u, kw: _FakeResp(200, {"access_token": "tok"}), [])
     monkeypatch.setattr(server_mod, "_get_account_email", lambda p, d: "")
-    r = _client().get(CALLBACK)
+    r = _confirm()
     assert r.status_code == 200
     assert "okänt konto" in r.text
 
@@ -531,7 +552,7 @@ def test_link_callback_http_error_status_is_generic_500(link_env, monkeypatch):
             raise RuntimeError("401")
 
     _fake_async_client(monkeypatch, lambda m, u, kw: _Bad(401, {}), [])
-    r = _client().get(CALLBACK)
+    r = _confirm()
     assert r.status_code == 500
 
 
@@ -620,16 +641,12 @@ def test_hook_get_not_allowed(hook_env):
 
 def test_link_callback_rejects_state_from_other_provider(link_env, monkeypatch):
     """State minted for one provider cannot be redeemed on another's callback."""
-    import time
+    from tests import link_session as ls
 
-    from memaix_gateway.tools import account
-
-    monkeypatch.undo()  # drop link_env's validate_state stub; use the real store
-    monkeypatch.delenv("MEMAIX_STATE_DB", raising=False)
-    account._pending_states.clear()
-    account._put_state("st1", {"user_id": "u1", "provider": "microsoft", "exp": int(time.time()) + 600})
-    r = _client().get("/link/google/callback?code=c&state=st1")
+    ls.mint("st1", provider="microsoft")
+    r = ls.callback(_client(), state="st1", provider="google")
     assert r.status_code == 400
     assert r.json() == {"error": "invalid_or_expired_state"}
-    assert "st1" not in account._pending_states  # consumed, no replay
-    assert account.validate_state("st1") is None
+    r = ls.confirm(_client(), state="st1", provider="google")
+    assert r.status_code == 400
+    assert link_env.stored == []

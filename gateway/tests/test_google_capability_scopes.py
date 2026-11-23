@@ -15,6 +15,7 @@ from memaix_gateway.acl import Acl
 from memaix_gateway.notify import brief as brief_mod
 from memaix_gateway.notify.brief import build
 from memaix_gateway.tools import account
+from tests import link_session as ls
 from tests.test_http_app_characterization import _client, _fake_async_client, _FakeResp, cfg  # noqa: F401
 
 BASE = ["openid", "email", "https://www.googleapis.com/auth/calendar.events"]
@@ -32,17 +33,23 @@ def _q(resp):
     return {k: v[0] for k, v in parse_qs(urlparse(resp.headers["location"]).query).items()}
 
 
-def test_base_only_scopes(cfg):  # noqa: F811
+def _start(monkeypatch, path):
+    ls.patch_session(monkeypatch)
+    ls.mint("s")
+    return _client().get(path, headers=ls.cookies("s", link_cookie=False), follow_redirects=False)
+
+
+def test_base_only_scopes(cfg, monkeypatch):  # noqa: F811
     _google_cfg(cfg)
-    q = _q(_client().get("/link/google?state=s", follow_redirects=False))
+    q = _q(_start(monkeypatch, "/link/google?state=s"))
     assert q["scope"].split() == BASE
     assert q["include_granted_scopes"] == "true"
     assert q["access_type"] == "offline" and q["prompt"] == "consent"
 
 
-def test_base_plus_mail_scopes_and_never_compose(cfg):  # noqa: F811
+def test_base_plus_mail_scopes_and_never_compose(cfg, monkeypatch):  # noqa: F811
     _google_cfg(cfg)
-    q = _q(_client().get("/link/google?state=s&capabilities=mail", follow_redirects=False))
+    q = _q(_start(monkeypatch, "/link/google?state=s&capabilities=mail"))
     assert q["scope"].split() == [*BASE, GMAIL_RO]
     assert "compose" not in q["scope"] and "send" not in q["scope"] and "modify" not in q["scope"]
 
@@ -60,8 +67,10 @@ def test_capability_not_configured_rejected(cfg):  # noqa: F811
     assert r.status_code == 400
 
 
-def test_microsoft_has_no_include_granted_scopes(cfg):  # noqa: F811
-    r = _client().get("/link/microsoft", follow_redirects=False)
+def test_microsoft_has_no_include_granted_scopes(cfg, monkeypatch):  # noqa: F811
+    ls.patch_session(monkeypatch)
+    ls.mint("s", provider="microsoft")
+    r = _client().get("/link/microsoft?state=s", headers=ls.cookies("s", "microsoft", link_cookie=False), follow_redirects=False)
     assert "include_granted_scopes" not in r.headers["location"]
 
 
@@ -94,12 +103,13 @@ class _Store:
 
 def _relink(cfg, monkeypatch, existing, token):  # noqa: F811
     store = _Store(existing)
-    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1", "provider": "google"})
+    ls.patch_session(monkeypatch)
+    ls.mint("good")
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
     monkeypatch.setattr(config_mod, "secret", lambda ref: "x")
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}
     _fake_async_client(monkeypatch, lambda m, u, kw: _FakeResp(200, token), [])
-    r = _client().get("/link/google/callback?code=c&state=good")
+    r = ls.confirm(_client(), code="c")
     assert r.status_code == 200
     return store.stored[0][3]
 
@@ -122,13 +132,14 @@ def test_relink_decrypt_error_logs_and_still_stores(cfg, monkeypatch, caplog):  
         def load_one(self, *a):
             raise ValueError("fernet SECRET-KEY-MATERIAL")
     store = Boom()
-    monkeypatch.setattr(account, "validate_state", lambda s: {"user_id": "u1", "provider": "google"})
+    ls.patch_session(monkeypatch)
+    ls.mint("good")
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: store)
     monkeypatch.setattr(config_mod, "secret", lambda ref: "x")
     cfg["oauth_providers"] = {"google": {"client_id": "cid", "client_secret_ref": "env:X"}}
     _fake_async_client(monkeypatch, lambda m, u, kw: _FakeResp(200, {"email": "a@x.se", "scope": "n"}), [])
     with caplog.at_level("WARNING"):
-        r = _client().get("/link/google/callback?code=c&state=good")
+        r = ls.confirm(_client(), code="c")
     assert r.status_code == 200 and store.stored[0][3]["scope"] == "n"
     assert "ValueError" in caplog.text and "SECRET" not in caplog.text
 
