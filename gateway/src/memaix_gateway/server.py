@@ -4156,7 +4156,9 @@ def main() -> None:
         cfg = config.load()
         bind = cfg.get("memaix", {}).get("server", {}).get("bind", "0.0.0.0:8080")
         host, port = bind.rsplit(":", 1)
-        uvicorn.run(app, host=host, port=int(port), log_level="info")
+        # proxy_headers=False: klient-IP löses på ett ställe (safety/client_ip.py)
+        # med FORWARDED_ALLOW_IPS, så uvicorn ska inte skriva om scope["client"].
+        uvicorn.run(app, host=host, port=int(port), log_level="info", proxy_headers=False)
     else:
         mcp.run()
 

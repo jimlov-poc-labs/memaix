@@ -55,6 +55,7 @@ Läs i den ordning som passar din roll.
    · [QUICK-INSTALL.md](QUICK-INSTALL.md) — **ett kommando i terminalen** (curl … | sh).
    · [PACKAGED-INSTALL.md](PACKAGED-INSTALL.md) — publicerade, signerade images (GHCR) utan källkodsåtkomst till det privata repot.
    · [EXPOSE.md](EXPOSE.md) — alla sätt att exponera Memaix: Cloudflare Tunnel, Caddy, Tailscale, ngrok, underkatalog.
+   · [KLIENT-IP.md](KLIENT-IP.md) — klient-IP bakom Cloudflare/Caddy: trusted_proxies, FORWARDED_ALLOW_IPS, fail closed.
    · [SETUP-SIMPLIFICATION.md](SETUP-SIMPLIFICATION.md) — tre nivåer; börja smått (trial → remote).
    · [IMPORT.md](IMPORT.md) — kallstart & import (största adoptionshindret).
 2. [WIZARD.md](WIZARD.md) — den guidade uppsättningen, steg för steg.

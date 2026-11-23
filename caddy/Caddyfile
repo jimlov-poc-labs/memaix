@@ -5,6 +5,15 @@
     auto_https off
     admin off
     debug
+
+    # Klient-IP: Caddys egen peer är cloudflared. Bara när peern ligger i
+    # trusted_proxies tas klientens adress ur CF-Connecting-IP (som Cloudflare
+    # sätter om) och en inkommande X-Forwarded-For bevaras; från alla andra
+    # peers ignoreras båda headrarna. Se docs/KLIENT-IP.md.
+    servers {
+        trusted_proxies static {$CADDY_TRUSTED_PROXIES:172.16.0.0/12}
+        client_ip_headers CF-Connecting-IP X-Forwarded-For
+    }
 }
 
 # Under en omstart saknas uppströmstjänsten några sekunder. Caddy väntar och
