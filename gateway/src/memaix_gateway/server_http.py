@@ -10,8 +10,10 @@ via ``_server`` — aldrig bundet vid import."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
+import hmac
 import json
 from html import escape as _html_escape
 from urllib.parse import urlencode, urlparse
@@ -237,8 +239,80 @@ def _provider_settings(provider: str) -> tuple[dict, str, str]:
     return provider_cfg, public_url, f"{public_url.rstrip('/')}/link/{provider}/callback"
 
 
-def link_start(request: Request) -> "RedirectResponse | JSONResponse":
-    """Start OAuth flow for a provider."""
+_LINK_COOKIE = "memaix_link"
+_LINK_COOKIE_TTL = 600
+
+
+def _link_key() -> bytes | None:
+    """Signing key shared with the web session cookie; None = disabled (fail closed)."""
+    from .board.routes import BoardDisabled, _secret
+    try:
+        return _secret()
+    except BoardDisabled:
+        return None
+
+
+def _link_mac(label: bytes, state: str) -> bytes | None:
+    key = _link_key()
+    if key is None:
+        return None
+    return hmac.new(key, label + state.encode(), "sha256").digest()
+
+
+def _link_nonce(state: str) -> str | None:
+    """Per-flow cookie value. Only link_start (after the session check) hands it out."""
+    mac = _link_mac(b"memaix-link-nonce:", state)
+    return mac.hex() if mac else None
+
+
+def _pkce_verifier(state: str) -> str | None:
+    """Server-side PKCE verifier derived from the state: no storage, no schema."""
+    mac = _link_mac(b"memaix-link-pkce:", state)
+    return base64.urlsafe_b64encode(mac).decode().rstrip("=") if mac else None
+
+
+def _pkce_challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+
+
+def _link_cookie_name(provider: str) -> str:
+    return f"{_LINK_COOKIE}_{provider}"
+
+
+def _link_guard(request: Request, provider: str, state: str, *, need_cookie: bool) -> "tuple[dict | None, str | None, Response | None]":
+    """The one gate every link route passes. Returns (pending, session_user, error).
+
+    Fail closed: unknown/expired/other-provider state -> 400, no web session ->
+    401, session user is not the user the state was minted for -> 403, missing
+    or wrong per-flow cookie -> 403. Does not consume the state."""
+    from .board.routes import _check_cookie, _may_log_in
+    from .tools.account import peek_state
+
+    pending = peek_state(state)
+    if not pending or pending.get("provider") != provider:
+        return None, None, _json_error("invalid_or_expired_state", 400)
+    user = _check_cookie(request)
+    if not user:
+        return pending, None, _json_error("not_authenticated", 401)
+    # compare_digest on str raises TypeError for non-ASCII; compare bytes.
+    if not hmac.compare_digest(str(user).encode(), str(pending.get("user_id", "")).encode()):
+        return pending, user, _json_error("forbidden", 403)
+    # _check_cookie lets a disabled user's session through; a kill-switched user must not link.
+    if not _may_log_in(user):
+        return pending, user, _json_error("forbidden", 403)
+    if need_cookie:
+        expected = _link_nonce(state)
+        got = request.cookies.get(_link_cookie_name(provider), "")
+        if expected is None or not got or not hmac.compare_digest(got.encode(), expected.encode()):
+            return pending, user, _json_error("forbidden", 403)
+    return pending, user, None
+
+
+def link_start(request: Request) -> Response:
+    """Start OAuth flow for a provider.
+
+    Requires a logged-in web session belonging to the user the state was minted
+    for. Without a session the browser is sent to the login page and back."""
     provider = request.path_params["provider"]
     state = request.query_params.get(_STATE, "")
 
@@ -253,6 +327,19 @@ def link_start(request: Request) -> "RedirectResponse | JSONResponse":
         if cap not in extra:
             return _json_error("unknown_capability", 400)
         scopes += [sc for sc in extra[cap] if sc not in scopes]
+
+    pending, user, err = _link_guard(request, provider, state, need_cookie=False)
+    if err is not None:
+        if user is None and pending is not None:
+            # Valid state but nobody logged in: log in first, then come back here.
+            back = request.url.path + ("?" + request.url.query if request.url.query else "")
+            return RedirectResponse("/app/login?" + urlencode({"next": back}), status_code=303)
+        return err
+    nonce = _link_nonce(state)
+    verifier = _pkce_verifier(state)
+    if nonce is None or verifier is None:
+        return _json_error("forbidden", 403)
+
     params = {
         _CLIENT_ID: provider_cfg.get(_CLIENT_ID, ""),
         "response_type": "code",
@@ -261,11 +348,19 @@ def link_start(request: Request) -> "RedirectResponse | JSONResponse":
         "scope": " ".join(scopes),
         "access_type": "offline",
         "prompt": "consent",
+        "code_challenge": _pkce_challenge(verifier),
+        "code_challenge_method": "S256",
     }
     if provider == _GOOGLE:
         # Incremental authorization: a re-link keeps scopes granted earlier.
         params["include_granted_scopes"] = "true"
-    return RedirectResponse(_provider_authorize_url(provider, provider_cfg) + "?" + urlencode(params))
+    resp = RedirectResponse(_provider_authorize_url(provider, provider_cfg) + "?" + urlencode(params))
+    resp.set_cookie(
+        _link_cookie_name(provider), nonce, max_age=_LINK_COOKIE_TTL, path="/link",
+        httponly=True, samesite="lax", secure=True,
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 async def _exchange_code(token_url: str, form: dict) -> dict:
@@ -368,8 +463,37 @@ def _merge_with_existing(token_store, user_id: str, provider: str, account: str,
     return merged
 
 
+def _link_confirm_html(provider: str, user_id: str, code: str, state: str) -> str:
+    label = _html_escape({_GOOGLE: "Google", _MICROSOFT: "Microsoft"}.get(provider, provider.title()))
+    return f"""<!doctype html>
+<html lang="sv"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Bekräfta koppling — Memaix</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:480px;margin:4rem auto;padding:0 1rem">
+<h1>Koppla {label}?</h1>
+<p>Kontot du just godkände hos {label} kopplas till Memaix-kontot
+<strong>{_html_escape(user_id)}</strong>.</p>
+<p>Är det inte ditt konto, eller var det inte du som startade kopplingen? Stäng sidan.</p>
+<form method="post" action="/link/{_html_escape(provider)}/confirm">
+<input type="hidden" name="code" value="{_html_escape(code)}">
+<input type="hidden" name="state" value="{_html_escape(state)}">
+<button type="submit">Ja, koppla till {_html_escape(user_id)}</button>
+</form></body></html>"""
+
+
+_LINK_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+_CONFIRM_HEADERS = {
+    **_LINK_HEADERS,
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+}
+
+
 async def link_callback(request: Request) -> Response:
-    """Handle OAuth callback: exchange code for tokens and store them."""
+    """OAuth callback step 1: verify the binding, then ask for confirmation.
+
+    Nothing is exchanged or stored here; the single-use state is not spent."""
     provider = request.path_params["provider"]
     code = request.query_params.get("code", "")
     state = request.query_params.get(_STATE, "")
@@ -377,27 +501,52 @@ async def link_callback(request: Request) -> Response:
 
     if error:
         return _json_error(error, 400)
+    pending, _user, err = _link_guard(request, provider, state, need_cookie=True)
+    if err is not None:
+        return err
+    if not code or pending is None:
+        return _json_error("invalid_or_expired_state", 400)
+    return HTMLResponse(_link_confirm_html(provider, str(pending["user_id"]), code, state), headers=_CONFIRM_HEADERS)
+
+
+async def link_confirm(request: Request) -> Response:
+    """OAuth callback step 2 (POST): same gate again, then exchange and store.
+
+    SameSite=Lax cookies are not sent on cross-site POSTs, so a forged form
+    post from another site fails the session check."""
+    from urllib.parse import parse_qs
 
     from .tools.account import validate_state
+    provider = request.path_params["provider"]
+    form = parse_qs((await request.body()).decode("utf-8", "replace"))
+    code = (form.get("code") or [""])[0]
+    state = (form.get(_STATE) or [""])[0]
+
+    _pending, _user, err = _link_guard(request, provider, state, need_cookie=True)
+    if err is not None:
+        return err
+    # Binding verified; now spend the single-use state.
     pending = validate_state(state)
-    # State is already consumed (single-use); a state minted for another
-    # provider must not be redeemable on this provider's callback.
-    if not pending or pending.get("provider") != provider:
+    if not pending or pending.get("provider") != provider or not code:
         return _json_error("invalid_or_expired_state", 400)
 
     user_id = pending["user_id"]
     provider_cfg, public_url, redirect_uri = _provider_settings(provider)
     token_url = _provider_token_url(provider, provider_cfg)
     client_secret = config.secret(provider_cfg.get("client_secret_ref", "")) or ""
-    form = {
+    verifier = _pkce_verifier(state)
+    if verifier is None:
+        return _json_error("forbidden", 403)
+    form_data = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
         _CLIENT_ID: provider_cfg.get(_CLIENT_ID, ""),
         "client_secret": client_secret,
+        "code_verifier": verifier,
     }
     try:
-        token_data = await _exchange_code(token_url, form)
+        token_data = await _exchange_code(token_url, form_data)
     except Exception as exc:
         # Don't echo the raw exception (can carry internal URLs / response
         # fragments) back to the caller — log it, return a generic error.
@@ -408,7 +557,9 @@ async def link_callback(request: Request) -> Response:
     token_store = _server._get_token_store()
     token_data = _merge_with_existing(token_store, user_id, provider, account_email, token_data)
     token_store.store(user_id, provider, account_email, _server._stamp_expiry(token_data))
-    return HTMLResponse(_link_success_html(provider, account_email, public_url))
+    resp = HTMLResponse(_link_success_html(provider, account_email, public_url), headers=_LINK_HEADERS)
+    resp.delete_cookie(_link_cookie_name(provider), path="/link")
+    return resp
 
 
 def _webhook_event(token: str, body: dict) -> dict:
@@ -466,6 +617,7 @@ def custom_routes() -> list:
         Route(f"{_REGISTER_PATH}/{{client_id}}", dcr_klient_handler, methods=["GET", "PUT", "DELETE"]),
         Route("/link/{provider}", link_start),
         Route("/link/{provider}/callback", link_callback),
+        Route("/link/{provider}/confirm", link_confirm, methods=["POST"]),
         Route("/hooks", rule_webhook, methods=["POST"]),
         Route("/hooks/{token}", rule_webhook, methods=["POST"]),
         *board_routes,

@@ -22,6 +22,7 @@ from starlette.testclient import TestClient
 from memaix_gateway import config as config_mod
 from memaix_gateway import server as server_mod
 from memaix_gateway.backends.token_store import TokenStore
+from tests import link_session as ls
 
 TENANT = "11111111-2222-3333-4444-555555555555"
 
@@ -72,16 +73,20 @@ def _client():
     return TestClient(server_mod.build_http_app())
 
 
-def test_link_start_microsoft_uses_configured_tenant(http_cfg):
+def test_link_start_microsoft_uses_configured_tenant(http_cfg, monkeypatch):
     http_cfg["oauth_providers"] = {"microsoft": {"client_id": "cid", "tenant_id": TENANT}}
-    r = _client().get("/link/microsoft", follow_redirects=False)
+    ls.patch_session(monkeypatch)
+    ls.mint("s", provider="microsoft")
+    r = _client().get("/link/microsoft?state=s", headers=ls.cookies("s", "microsoft", link_cookie=False), follow_redirects=False)
     loc = r.headers["location"]
     assert loc.startswith(f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/authorize?")
 
 
-def test_link_start_microsoft_without_tenant_id_falls_back_to_common(http_cfg):
+def test_link_start_microsoft_without_tenant_id_falls_back_to_common(http_cfg, monkeypatch):
     http_cfg["oauth_providers"] = {"microsoft": {"client_id": "cid"}}
-    r = _client().get("/link/microsoft", follow_redirects=False)
+    ls.patch_session(monkeypatch)
+    ls.mint("s", provider="microsoft")
+    r = _client().get("/link/microsoft?state=s", headers=ls.cookies("s", "microsoft", link_cookie=False), follow_redirects=False)
     loc = r.headers["location"]
     assert loc.startswith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?")
 
@@ -122,10 +127,8 @@ def _fake_async_client(monkeypatch, responder):
 def test_link_callback_microsoft_token_exchange_uses_configured_tenant(http_cfg, monkeypatch):
     from memaix_gateway.tools import account
 
-    monkeypatch.setattr(
-        account, "validate_state",
-        lambda s: {"user_id": "u1", "provider": "microsoft"} if s == "good" else None,
-    )
+    ls.patch_session(monkeypatch)
+    ls.mint("good", provider="microsoft")
     store_calls: list = []
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: type(
         "S", (), {
@@ -144,7 +147,7 @@ def test_link_callback_microsoft_token_exchange_uses_configured_tenant(http_cfg,
                    "json": lambda self: {"access_token": "tok", "expires_in": 100}},
     )())
 
-    r = _client().get("/link/microsoft/callback?code=thecode&state=good")
+    r = ls.confirm(_client(), provider="microsoft")
     assert r.status_code == 200
     assert calls[0][0] == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
 
@@ -152,10 +155,8 @@ def test_link_callback_microsoft_token_exchange_uses_configured_tenant(http_cfg,
 def test_link_callback_microsoft_token_exchange_falls_back_to_common(http_cfg, monkeypatch):
     from memaix_gateway.tools import account
 
-    monkeypatch.setattr(
-        account, "validate_state",
-        lambda s: {"user_id": "u1", "provider": "microsoft"} if s == "good" else None,
-    )
+    ls.patch_session(monkeypatch)
+    ls.mint("good", provider="microsoft")
     monkeypatch.setattr(server_mod, "_get_token_store", lambda: type(
         "S", (), {
             "load_one": lambda self, *a: None,
@@ -171,7 +172,7 @@ def test_link_callback_microsoft_token_exchange_falls_back_to_common(http_cfg, m
                    "json": lambda self: {"access_token": "tok", "expires_in": 100}},
     )())
 
-    r = _client().get("/link/microsoft/callback?code=thecode&state=good")
+    r = ls.confirm(_client(), provider="microsoft")
     assert r.status_code == 200
     assert calls[0][0] == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 
